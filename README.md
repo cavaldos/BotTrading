@@ -8,7 +8,6 @@ python -m venv venv
 2. Activate environment
 ```bash
 source venv/bin/activate # Linux
-venv\Scripts\activate # Windows
 ```
 3. update pip
 ```bash
@@ -22,4 +21,9 @@ pip install -r requirements.txt
 5. Export requirements
 ```bash
 pip freeze > requirements.txt
+```
+6. Docker
+```bash
+docker build -t my-python-app .
+docker run -d my-python-app
 ```

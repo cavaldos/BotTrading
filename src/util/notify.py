@@ -1,0 +1,53 @@
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
+from datetime import datetime, timedelta
+
+# Đặt token bot và CHAT_ID của bạn
+my_token = '***REMOVED-TOKEN***'
+CHAT_ID = '***REMOVED-CHATID***'
+
+
+# Hàm gửi tin nhắn từ string được truyền vào
+async def send_custom_message(application, message: str) -> None:
+    await application.bot.send_message(
+        chat_id=CHAT_ID, 
+        text=message
+    )
+
+# Hàm để gửi tin nhắn tuỳ chỉnh cho CHAT_ID
+def send_message_to_chat(message: str):
+    async def send_message():
+        app = ApplicationBuilder().token(my_token).build()
+        await send_custom_message(app, message)
+    
+    asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
+
+
+
+def entry_point(type, entry, stoploss, takeprofit, time):
+    # Chuyển chuỗi time thành đối tượng datetime
+    time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
+    
+    # Cộng thêm 5 giờ vào thời gian
+    new_time = time_obj + timedelta(hours=5)
+    
+    # Chuyển đổi lại thời gian sang chuỗi theo định dạng mong muốn
+    new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
+    
+    # Gửi tin nhắn
+    send_message_to_chat(
+        'Time: ' + new_time_str + '\n' +
+        'Type: ' + type + '\n' +
+        'Entry: ' + str(entry) + '\n' +
+        'Stoploss: ' + str(stoploss) + '\n' +
+        'Takeprofit: ' + str(takeprofit)
+    )
+# entry_point('Buy','1.2345',1.2345,1.2345,'2021-10-10 10:10:10')
+
+# def main1():
+#     for i in range(1,15):
+#         Entry_point('Buy','1.2345',i,1.2345)
+
+
+
