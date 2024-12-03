@@ -10,6 +10,10 @@ CHAT_ID = '***REMOVED-CHATID***'
 
 # Hàm gửi tin nhắn từ string được truyền vào
 async def send_custom_message(application, message: str) -> None:
+    # Hiển thị trạng thái "typing"
+    await application.bot.send_chat_action(chat_id=CHAT_ID, action="typing")
+    
+    # Gửi tin nhắn thực tế
     await application.bot.send_message(
         chat_id=CHAT_ID, 
         text=message
@@ -24,13 +28,12 @@ def send_message_to_chat(message: str):
     asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
 
 
-
 def entry_point(type, entry, stoploss, takeprofit, time):
     # Chuyển chuỗi time thành đối tượng datetime
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
     
     # Cộng thêm 5 giờ vào thời gian
-    new_time = time_obj + timedelta(hours=5)
+    new_time = time_obj + timedelta(hours=7)
     
     # Chuyển đổi lại thời gian sang chuỗi theo định dạng mong muốn
     new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
@@ -43,11 +46,6 @@ def entry_point(type, entry, stoploss, takeprofit, time):
         'Stoploss: ' + str(stoploss) + '\n' +
         'Takeprofit: ' + str(takeprofit)
     )
-# entry_point('Buy','1.2345',1.2345,1.2345,'2021-10-10 10:10:10')
 
-# def main1():
-#     for i in range(1,15):
-#         Entry_point('Buy','1.2345',i,1.2345)
-
-
-
+# Test
+# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10')

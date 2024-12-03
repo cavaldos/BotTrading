@@ -127,9 +127,9 @@ def continuous_analysis(file_path):
 
 
 
-def analysis():
+def analysis_func():
     # Đường dẫn file dữ liệu
-    file_path = "src/data/NEARUSDT_1m.csv"  # Thay đổi đường dẫn phù hợp
+    file_path = "src/data/NEARUSDT_15m.csv"  # Thay đổi đường dẫn phù hợp
     
     # Tạo và bắt đầu luồng phân tích liên tục
     analysis_thread = threading.Thread(target=continuous_analysis, args=(file_path,))
@@ -144,4 +144,4 @@ def analysis():
         print("\nDừng chương trình...")
 
 if __name__ == '__main__':
-    analysis()
+    analysis_func()

@@ -4,6 +4,8 @@ import numpy as np
 from datetime import datetime, timedelta
 import os
 import time
+import threading
+from util.config_file import remove_all_files
 
 # Hàm lấy dữ liệu nến (candlestick) từ Binance
 def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, limit=1000):
@@ -30,9 +32,13 @@ def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, l
         print(f"Lỗi khi kết nối tới Binance API: {e}")
         return []
 
-# Chuyển đổi timestamp và lưu vào file .txt
+# Chuyển đổi timestamp và lưu vào file .csv
 def save_to_csv(candles, filename):
+    file_exists = os.path.exists(filename)
+
     with open(filename, 'a') as file:
+        if not file_exists:
+            file.write("Time,Open,High,Low,Close,Volume\n")
         # Viết dữ liệu vào file, nếu file không tồn tại thì sẽ tạo mới
         for candle in candles:
             timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
@@ -75,16 +81,34 @@ def get_and_save_data_real_time(symbol, start_date, filename, time_interval='1h'
         # Chờ 1 phút (hoặc thời gian tương ứng với khung thời gian nến) trước khi lấy dữ liệu tiếp theo
         time.sleep(60)
 
+# Hàm chạy song song các đồng coin với các thread
+def run_in_thread(currency, timeframe, folder_path, start_date):
+    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+    print(f"Bắt đầu tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
+    get_and_save_data_real_time(currency, start_date, filename, time_interval=timeframe)
 
-if __name__ == '__main__':
+
+
+def getdata():
     currencies = ['NEARUSDT', 'SOLUSDT']
-    timeframes = ['5m']
-
+    timeframes = [ '15m']
     folder_path = 'src/data'
-    
-    # Bắt đầu tải và lưu dữ liệu theo thời gian thực
+    start_date = "2022-01-01"
+    remove_all_files(folder_path)
+    # Tạo và bắt đầu các thread cho từng đồng coin và khung thời gian
+    threads = []
     for currency in currencies:
         for timeframe in timeframes:
-            filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-            print(f"Bắt đầu tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
-            get_and_save_data_real_time(currency, start_date="2024-12-03", filename=filename, time_interval=timeframe)
+            thread = threading.Thread(target=run_in_thread, args=(currency, timeframe, folder_path, start_date))
+            threads.append(thread)
+            thread.start()
+
+    # Đảm bảo tất cả các thread đều hoàn thành
+    for thread in threads:
+        thread.join()
+
+    print("Tất cả dữ liệu đã được tải và lưu thành công!")
+
+
+if __name__ == '__main__':
+    getdata()
