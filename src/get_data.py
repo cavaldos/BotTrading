@@ -87,14 +87,23 @@ def run_in_thread(currency, timeframe, folder_path, start_date):
     print(f"Bắt đầu tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
     get_and_save_data_real_time(currency, start_date, filename, time_interval=timeframe)
 
+# Hàm kiểm tra và tạo thư mục nếu không tồn tại
+def create_folder_if_not_exists(folder_path):
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+        print(f"Thư mục {folder_path} đã được tạo!")
+
+# Thêm đoạn này vào phần khởi tạo của bạn
+
 
 
 def getdata():
     currencies = ['NEARUSDT', 'SOLUSDT']
-    timeframes = [ '15m']
-    folder_path = 'src/data'
-    start_date = "2022-01-01"
+    timeframes = [ '1m']
+    folder_path = './data'
+    start_date = "2024-12-04"
     remove_all_files(folder_path)
+
     # Tạo và bắt đầu các thread cho từng đồng coin và khung thời gian
     threads = []
     for currency in currencies:

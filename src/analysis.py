@@ -12,7 +12,7 @@ def load_data(filename):
     return df
 
 # Tìm mức hỗ trợ và kháng cự (đỉnh và đáy gần nhất trong cửa sổ thời gian)
-def find_support_resistance(df, window=24):
+def find_support_resistance(df, window=1):
     df['Resistance'] = df['High'].rolling(window=window).max()
     df['Support'] = df['Low'].rolling(window=window).min()
     return df
@@ -40,33 +40,35 @@ def check_breakout_and_retest(df, order_blocks, min_reversal_signal=1):
                     df.at[index, 'Short_Signal'] = -1
     return df
 
-def execute_trades(df, lot_size=1, stoploss_increment=10, RR_ratio=2):
+def execute_trades(df, RR_ratio=2):
     trades = []
     
+    trades = []
     for index, row in df.iterrows():
         if row['Long_Signal'] == 1:
-            # Tính toán stoploss kéo dài theo số lot
-            stoploss = row['Support'] - stoploss_increment * lot_size
-            take_profit = row['Close'] + RR_ratio * (row['Close'] - row['Support'])
+            stoploss = row['Support']  # Stoploss dưới vùng hỗ trợ
+            take_profit = row['Close'] + RR_ratio * (row['Close'] - stoploss)  # Tỷ lệ R/R là 2
             trades.append({
                 'Time': row['Time'],
                 'Type': 'Long',
                 'Entry': row['Close'],
                 'Stoploss': stoploss,
                 'Take_Profit': take_profit,
+                'Status': 'Ongoing'  # Mặc định trạng thái là "Ongoing"
             })
         elif row['Short_Signal'] == -1:
-            # Tính toán stoploss kéo dài theo số lot
-            stoploss = row['Resistance'] + stoploss_increment * lot_size
-            take_profit = row['Close'] - RR_ratio * (row['Resistance'] - row['Close'])
+            stoploss = row['Resistance']  # Stoploss trên vùng kháng cự
+            take_profit = row['Close'] - RR_ratio * (stoploss - row['Close'])  # Tỷ lệ R/R là 2
             trades.append({
                 'Time': row['Time'],
                 'Type': 'Short',
                 'Entry': row['Close'],
                 'Stoploss': stoploss,
                 'Take_Profit': take_profit,
+                'Status': 'Ongoing'  # Mặc định trạng thái là "Ongoing"
             })
     return trades
+
 
 # Hàm phân tích dữ liệu và kiểm tra sự thay đổi
 def analyze_data(file_path, last_trades):
@@ -88,7 +90,7 @@ def analyze_data(file_path, last_trades):
         df = check_breakout_and_retest(df, order_blocks)
         
         # Thực hiện giao dịch
-        trades = execute_trades(df, lot_size=1, stoploss_increment=5, RR_ratio=2)
+        trades = execute_trades(df, RR_ratio=2)
 
         # Lọc các giao dịch mới chưa được in
         new_trades = [trade for trade in trades if trade not in last_trades]
@@ -129,7 +131,7 @@ def continuous_analysis(file_path):
 
 def analysis_func():
     # Đường dẫn file dữ liệu
-    file_path = "src/data/NEARUSDT_15m.csv"  # Thay đổi đường dẫn phù hợp
+    file_path = "src/data/NEARUSDT_1m.csv"  # Thay đổi đường dẫn phù hợp
     
     # Tạo và bắt đầu luồng phân tích liên tục
     analysis_thread = threading.Thread(target=continuous_analysis, args=(file_path,))
