@@ -79,7 +79,7 @@ def get_and_save_data_real_time(symbol, start_date, filename, time_interval='1h'
         start_timestamp = candles[-1][0] + 1  # +1 ms để lấy dữ liệu tiếp theo
 
         # Chờ 1 phút (hoặc thời gian tương ứng với khung thời gian nến) trước khi lấy dữ liệu tiếp theo
-        time.sleep(60)
+        time.sleep(1)
 
 # Hàm chạy song song các đồng coin với các thread
 def run_in_thread(currency, timeframe, folder_path, start_date):
@@ -101,10 +101,9 @@ def getdata():
     currencies = ['NEARUSDT', 'SOLUSDT']
     timeframes = [ '1m']
     folder_path = './data'
-    start_date = "2024-12-04"
+    start_date = "2024-11-04"
     remove_all_files(folder_path)
 
-    # Tạo và bắt đầu các thread cho từng đồng coin và khung thời gian
     threads = []
     for currency in currencies:
         for timeframe in timeframes:

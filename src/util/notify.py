@@ -29,7 +29,7 @@ def send_message_to_chat(message: str):
     asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
 
 
-def entry_point(type, entry, stoploss, takeprofit, time):
+def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
     # Chuyển chuỗi time thành đối tượng datetime
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
     
@@ -38,10 +38,12 @@ def entry_point(type, entry, stoploss, takeprofit, time):
     
     # Chuyển đổi lại thời gian sang chuỗi theo định dạng mong muốn
     new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
-    
+    time_obj_str = time_obj.strftime('%Y-%m-%d %H:%M:%S')
     # Gửi tin nhắn
     send_message_to_chat(
-        'Time: ' + new_time_str + '\n' +
+        'Coin: ' + name_coin + '\n' +
+        'Time(binance): ' + time_obj_str + '\n' +
+        'Time(tradingview): ' + new_time_str + '\n' +
         'Type: ' + type + '\n' +
         'Entry: ' + str(entry) + '\n' +
         'Stoploss: ' + str(stoploss) + '\n' +
