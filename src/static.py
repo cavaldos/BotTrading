@@ -5,6 +5,7 @@ import numpy as np
 import shutil
 import time
 import schedule
+from util.config_file import remove_all_files
 
 def load_data(filename):
     df = pd.read_csv(filename, parse_dates=['Time'])
@@ -21,15 +22,6 @@ def check_reversal_candles(df):
     df['Engulfing'] = np.where(((df['Close'] > df['Open']) & (df['Close'].shift(1) < df['Open'].shift(1))) |
                                 ((df['Close'] < df['Open']) & (df['Close'].shift(1) > df['Open'].shift(1))), 1, 0)
     df['Hammer'] = np.where((df['Close'] > df['Open']) & (df['High'] - df['Low'] > 3 * (df['Close'] - df['Open'])), 1, 0)
-    df['Hanging_Man'] = np.where((df['Close'] < df['Open']) & 
-                                  (df['High'] - df['Close'] > 2 * (df['Close'] - df['Open'])), 1, 0)
-    df['Shooting_Star'] = np.where((df['Close'] < df['Open']) & 
-                                    (df['High'] - df['Open'] > 2 * (df['Close'] - df['Open'])), 1, 0)
-    df['Morning_Star'] = np.where(
-        (df['Open'].shift(2) > df['Close'].shift(2)) & 
-        (df['Close'].shift(1) < df['Open'].shift(1)) &
-        (df['Close'] > df['Open']) &
-        (df['Close'] > (df['Open'].shift(2) + df['Close'].shift(2)) / 2), 1, 0)
     return df
 
 def check_breakout_and_retest(df, order_blocks, min_reversal_signal=1):
@@ -37,15 +29,15 @@ def check_breakout_and_retest(df, order_blocks, min_reversal_signal=1):
     df['Short_Signal'] = 0
     
     for index, row in df.iterrows():
-        # Kiểm tra nếu hỗ trợ hoặc kháng cự trùng với vùng order block
-        if (row['Support'] in order_blocks or row['Resistance'] in order_blocks):
-            # Kiểm tra nếu có nến đảo chiều tại điểm hỗ trợ/kháng cự
-            if row['Doji'] >= min_reversal_signal or row['Engulfing'] >= min_reversal_signal or row['Hammer'] >= min_reversal_signal:
+        if (row['Support'] in order_blocks and row['Resistance'] in order_blocks):
+            if  row['Doji'] >= min_reversal_signal or \
+                row['Hammer'] >= min_reversal_signal:
                 if row['Close'] > df['Resistance'].shift(1).iloc[index]:  # Lệnh Long
                     df.at[index, 'Long_Signal'] = 1
                 elif row['Close'] < df['Support'].shift(1).iloc[index]:  # Lệnh Short
                     df.at[index, 'Short_Signal'] = -1
     return df
+
 
 def execute_trades(df, RR_ratio=2):
     trades = []
@@ -73,6 +65,7 @@ def execute_trades(df, RR_ratio=2):
                 'Status': 'Ongoing'  # Mặc định trạng thái là "Ongoing"
             })
     return trades
+
 
 def save_trades_to_file(trades, filename):
     trades_df = pd.DataFrame(trades)
@@ -121,25 +114,6 @@ def evaluate_trades(df, trades):
     
     return results
 
-
-def remove_all_files(folder_path):
-    # Kiểm tra xem thư mục có tồn tại không
-    if not os.path.exists(folder_path):
-        print(f"Thư mục {folder_path} không tồn tại.")
-        return
-
-    # Lặp và xóa tất cả các file
-    for filename in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, filename)
-        try:
-            if os.path.isfile(file_path) or os.path.islink(file_path):
-                os.unlink(file_path)
-            elif os.path.isdir(file_path):
-                shutil.rmtree(file_path)
-        except Exception as e:
-            print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
-
-
 def process_and_update_files(data_folder, result_folder, RR_ratio):
     print(f"Bắt đầu xử lý dữ liệu tại: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
@@ -173,14 +147,13 @@ def process_and_update_files(data_folder, result_folder, RR_ratio):
 
                 # Lưu kết quả vào file CSV
                 save_trades_to_file(results, result_path)
-        
         print(f"Hoàn thành xử lý dữ liệu tại: {time.strftime('%Y-%m-%d %H:%M:%S')}")
     
     except Exception as e:
         print(f"Lỗi trong quá trình xử lý: {e}")
 
 # Hàm chính để chạy liên tục
-def main():
+def main_static():
     data_folder = "./data"  # Thư mục chứa các file CSV đầu vào
     result_folder = "./output"  # Thư mục lưu kết quả
     RR_ratio = 3  # Tỷ lệ R/R
@@ -205,5 +178,4 @@ def main():
         print("\nDừng chương trình.")
 
 if __name__ == '__main__':
-
-    main()
+    main_static()

@@ -17,3 +17,5 @@ def remove_all_files(folder_path):
                 shutil.rmtree(file_path)
         except Exception as e:
             print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
+            
+            

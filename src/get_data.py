@@ -98,10 +98,10 @@ def create_folder_if_not_exists(folder_path):
 
 
 def getdata():
-    currencies = ['NEARUSDT', 'SOLUSDT']
-    timeframes = [ '1m']
+    currencies = ['NEARUSDT', 'SOLUSDT', 'BTCUSDT']
+    timeframes = [ '15m', '1h']
     folder_path = './data'
-    start_date = "2024-11-04"
+    start_date = "2024-01-01"
     remove_all_files(folder_path)
 
     threads = []

@@ -109,8 +109,9 @@ def monitor_folder(folder_path):
     except KeyboardInterrupt:
         observer.stop()
     observer.join()
-
-if __name__ == '__main__':
+def main_send():
     send_message_to_chat("Start monitoring folder...")
     folder_path = './output'  # Thư mục bạn muốn theo dõi
     monitor_folder(folder_path)
+if __name__ == '__main__':
+    main_send()

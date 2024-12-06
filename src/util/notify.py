@@ -3,8 +3,9 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import asyncio
 from datetime import datetime, timedelta
 
-# Đặt token bot và CHAT_ID của bạn
-# my_token = '***REMOVED-TOKEN***'
+# token_test=***REMOVED-TOKEN***
+# token_near=***REMOVED-TOKEN***
+
 my_token = '***REMOVED-TOKEN***'
 CHAT_ID = '***REMOVED-CHATID***'
 
