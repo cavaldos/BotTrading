@@ -3,9 +3,6 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import asyncio
 from datetime import datetime, timedelta
 
-# token_test=***REMOVED-TOKEN***
-# token_near=***REMOVED-TOKEN***
-
 my_token = '***REMOVED-TOKEN***'
 CHAT_ID = '***REMOVED-CHATID***'
 
@@ -43,8 +40,8 @@ def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
     # Gửi tin nhắn
     send_message_to_chat(
         'Coin: ' + name_coin + '\n' +
-        'Time(binance): ' + time_obj_str + '\n' +
-        'Time(tradingview): ' + new_time_str + '\n' +
+        'GMT+0: ' + time_obj_str + '\n' +
+        'GMT+7: ' + new_time_str + '\n' +
         'Type: ' + type + '\n' +
         'Entry: ' + str(entry) + '\n' +
         'Stoploss: ' + str(stoploss) + '\n' +
@@ -52,4 +49,4 @@ def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
     )
 
 # Test
-# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10')
+# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10', 'BTCUSDT')
