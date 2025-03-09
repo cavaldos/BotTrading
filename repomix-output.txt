@@ -1,0 +1,1164 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+================================================================
+File Summary
+================================================================
+
+Purpose:
+--------
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+
+File Format:
+------------
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Multiple file entries, each consisting of:
+  a. A separator line (================)
+  b. The file path (File: path/to/file)
+  c. Another separator line
+  d. The full contents of the file
+  e. A blank line
+
+Usage Guidelines:
+-----------------
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+
+Notes:
+------
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+
+Additional Info:
+----------------
+
+================================================================
+Directory Structure
+================================================================
+src/
+  util/
+    caculate.py
+    command.py
+    config_file.py
+    notify copy.py
+    notify.py
+  get_data.py
+  main.py
+  send.py
+  static.py
+.gitignore
+docker-compose.yml
+Dockerfile
+README.md
+requirements.txt
+
+================================================================
+Files
+================================================================
+
+================
+File: src/util/caculate.py
+================
+def calculate_trade_size(entry: float, stoploss: float, takeprofit: float, leverage=50, risk_per_trade=5):
+    entry = float(entry)
+    stoploss = float(stoploss)
+    takeprofit = float(takeprofit)
+
+    # Xác định khoảng cách từ entry đến stoploss
+    risk_distance = abs(entry - stoploss)
+
+    if risk_distance == 0:
+        raise ValueError("Entry và Stoploss không được bằng nhau.")
+
+    # Tính khối lượng (position size) dựa trên mức độ rủi ro cố định mỗi lệnh
+    position_size = risk_per_trade / risk_distance
+
+    # Tính toán margin cần thiết với đòn bẩy cố định là 50
+    required_margin = (position_size * entry) / leverage
+
+    return {
+        # "position_size": round(position_size, 4),
+        "volume": round(required_margin, 2)*leverage,
+        "margin": leverage,
+        "risk": risk_per_trade
+    }
+
+
+if __name__ == '__main__':
+    # Test
+    trade_info = calculate_trade_size(entry=86397, stoploss=85765, takeprofit=87573)
+    print(trade_info)
+
+================
+File: src/util/command.py
+================
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, JobQueue
+import asyncio
+
+my_token = '***REMOVED-TOKEN***'
+CHAT_ID = '***REMOVED-CHATID***'
+
+
+# Hàm "hello"
+async def hello(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.message.reply_text(f'Hello {update.effective_user.first_name}')
+
+# Hàm "test"
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    print(f"Chat ID: {chat_id}")
+    await context.bot.send_message(chat_id, text=f"Your Chat ID is: {chat_id}")
+
+# Hàm periodic_task được gọi mỗi 5 giây
+async def periodic_task(context: ContextTypes.DEFAULT_TYPE) -> None:
+    # Gọi hàm test mà không cần `update`
+    chat_id = context.job.context  # Lấy chat_id từ context
+    await context.bot.send_message(chat_id, text="This is a periodic message!")
+
+def main2():
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    app = ApplicationBuilder().token(my_token).build()
+
+    # Thêm handler
+    app.add_handler(CommandHandler("hello", hello))
+    app.add_handler(CommandHandler("test", test))
+
+    app.run_polling()
+    
+main2()
+
+================
+File: src/util/config_file.py
+================
+import os
+import shutil
+
+def remove_all_files(folder_path):
+    # Kiểm tra xem thư mục có tồn tại không
+    if not os.path.exists(folder_path):
+        print(f"Thư mục {folder_path} không tồn tại.")
+        return
+
+    # Lặp và xóa tất cả các file
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
+
+================
+File: src/util/notify copy.py
+================
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
+from datetime import datetime, timedelta
+
+my_token = '***REMOVED-TOKEN***'
+
+# Lưu các chat_id đã từng tương tác vào một set
+user_chat_ids = set()
+
+# Hàm lưu chat_id khi người dùng tương tác với bot
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    user_chat_ids.add(chat_id)
+    await context.bot.send_message(chat_id=chat_id, text='Bạn đã đăng ký nhận thông báo.')
+
+# Hàm gửi tin nhắn đến tất cả mọi người đã từng tương tác
+async def send_message_to_all(application, message: str):
+    for chat_id in user_chat_ids:
+        try:
+            await application.bot.send_chat_action(chat_id=chat_id, action="typing")
+            await application.bot.send_message(chat_id=chat_id, text=message)
+        except Exception as e:
+            print(f"Lỗi khi gửi cho chat_id {chat_id}: {e}")
+
+# Hàm để xuất ra và dùng ở chỗ khác
+def export_entry_point():
+    app = ApplicationBuilder().token(my_token).build()
+    app.add_handler(CommandHandler("start", start))
+
+    async def scheduled_entry_point():
+        while True:
+            type, entry, stoploss, takeprofit, time, name_coin = 'Long', '1.2345', 1.2345, 1.2345, datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S'), 'TestCoin'
+
+            time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
+            new_time = time_obj + timedelta(hours=7)
+
+            message = (
+                f'Coin: {name_coin}\n'
+                f'GMT+0: {time_obj.strftime("%Y-%m-%d %H:%M:%S")}\n'
+                f'GMT+7: {new_time.strftime("%Y-%m-%d %H:%M:%S")}\n'
+                f'Type: {type}\n'
+                f'Entry: {entry}\n'
+                f'Stoploss: {stoploss}\n'
+                f'Takeprofit: {takeprofit}'
+            )
+
+            await send_message_to_all(app, message)
+            await asyncio.sleep(60)
+
+    asyncio.ensure_future(scheduled_entry_point())
+    app.run_polling()
+
+if __name__ == '__main__':
+    export_entry_point()
+
+================
+File: src/util/notify.py
+================
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+import asyncio
+from datetime import datetime, timedelta
+from caculate import calculate_trade_size
+my_token = '***REMOVED-TOKEN***'
+CHAT_ID = '***REMOVED-CHATID***'
+
+
+# Hàm gửi tin nhắn từ string được truyền vào
+async def send_custom_message(application, message: str) -> None:
+    # Hiển thị trạng thái "typing"
+    await application.bot.send_chat_action(chat_id=CHAT_ID, action="typing")
+    
+    # Gửi tin nhắn thực tế
+    await application.bot.send_message(
+        chat_id=CHAT_ID, 
+        text=message
+    )
+
+# Hàm để gửi tin nhắn tuỳ chỉnh cho CHAT_ID
+def send_message_to_chat(message: str):
+    async def send_message():
+        app = ApplicationBuilder().token(my_token).build()
+        await send_custom_message(app, message)
+    
+    asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
+
+
+def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
+    # Chuyển chuỗi time thành đối tượng datetime
+    time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
+    
+    # Cộng thêm 5 giờ vào thời gian
+    new_time = time_obj + timedelta(hours=7)
+    
+    # Chuyển đổi lại thời gian sang chuỗi theo định dạng mong muốn
+    new_time_str = new_time.strftime('%Y-%m-%d %H:%M:%S')
+    time_obj_str = time_obj.strftime('%Y-%m-%d %H:%M:%S')
+    # Gửi tin nhắn
+    send_message_to_chat(
+        'Coin: ' + name_coin + '\n' +
+        'GMT+0: ' + time_obj_str + '\n' +
+        'GMT+7: ' + new_time_str + '\n' +
+        'Type: ' + type + '\n' +
+        'Entry: ' + str(entry) + '\n' +
+        'Stoploss: ' + str(stoploss) + '\n' +
+        'Takeprofit: ' + str(takeprofit)+ '\n' +
+        'Trade size: ' + str(calculate_trade_size(entry, stoploss, takeprofit)) + '\n' 
+    )
+ 
+# Test
+entry_point('Long', 86397, 85765, 87573, '2021-10-10 10:10:10', 'TestCoin')
+
+================
+File: src/get_data.py
+================
+import requests
+import pandas as pd
+import numpy as np
+from datetime import datetime, timedelta
+import os
+import shutil
+import time
+
+
+# Hàm lấy dữ liệu nến (candlestick) từ Binance
+def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, limit=10000):
+    url = f'https://api.binance.com/api/v3/klines'
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        'limit': limit
+    }
+
+    # Nếu có start_time và end_time thì thêm vào params
+    if start_time:
+        params['startTime'] = start_time
+    if end_time:
+        params['endTime'] = end_time
+
+    try:
+        # Gửi yêu cầu GET tới Binance API
+        response = requests.get(url, params=params)
+        response.raise_for_status()
+        candles = response.json()
+        return candles
+    except requests.exceptions.RequestException as e:
+        print(f"Lỗi khi kết nối tới Binance API: {e}")
+        return []
+
+# Hàm lấy dữ liệu nến mới nhất (hỗ trợ lấy nhiều cây nến)
+def get_latest_candles(symbol, interval='1h', limit=100):
+    """
+    Lấy dữ liệu nến mới nhất từ Binance API.
+    
+    Args:
+        symbol: Mã cặp tiền tệ (ví dụ: 'BTCUSDT')
+        interval: Khung thời gian (ví dụ: '1h', '5m')
+        limit: Số lượng cây nến cần lấy
+    
+    Returns:
+        Danh sách các cây nến, mỗi cây nến là một mảng theo định dạng Binance API
+    """
+    # API Binance có giới hạn tối đa 1000 cây nến mỗi yêu cầu
+    MAX_API_LIMIT = 1000
+    url = f'https://api.binance.com/api/v3/klines'
+    
+    # Nếu limit <= 1000, chỉ cần một yêu cầu API
+    if limit <= MAX_API_LIMIT:
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': limit
+        }
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Lỗi khi kết nối tới Binance API: {e}")
+            return []
+    
+    # Nếu limit > 1000, cần phải thực hiện nhiều yêu cầu API
+    else:
+        all_candles = []
+        remaining = limit
+        
+        # Đầu tiên lấy MAX_API_LIMIT cây nến mới nhất
+        params = {
+            'symbol': symbol,
+            'interval': interval,
+            'limit': MAX_API_LIMIT
+        }
+        
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            candles = response.json()
+            
+            if not candles:
+                return []
+                
+            all_candles.extend(candles)
+            remaining -= len(candles)
+            
+            # Nếu cần thêm cây nến, tiếp tục lấy về quá khứ
+            while remaining > 0:
+                # Lấy endTime từ cây nến đầu tiên của lần lấy trước
+                end_time = candles[0][0] - 1  # Thời điểm bắt đầu của cây nến đầu tiên - 1ms
+                
+                params = {
+                    'symbol': symbol,
+                    'interval': interval,
+                    'limit': min(MAX_API_LIMIT, remaining),
+                    'endTime': end_time
+                }
+                
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                candles = response.json()
+                
+                if not candles:
+                    break
+                    
+                all_candles = candles + all_candles  # Thêm vào đầu để duy trì thứ tự thời gian tăng dần
+                remaining -= len(candles)
+                
+                # Thêm độ trễ nhỏ để tránh quá tải API
+                time.sleep(0.1)
+            
+            # Cắt bớt nếu lấy quá số lượng yêu cầu
+            if len(all_candles) > limit:
+                all_candles = all_candles[-limit:]
+                
+            return all_candles
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Lỗi khi kết nối tới Binance API: {e}")
+            return all_candles if all_candles else []
+
+# Chuyển đổi timestamp và lưu vào file .txt
+def save_to_csv(candles, filename):
+    with open(filename, 'w') as file:
+        # Viết header
+        file.write("Time,Open,High,Low,Close,Volume\n")
+
+        # Viết từng dòng dữ liệu
+        for candle in candles:
+            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            open_price = float(candle[1])
+            high_price = float(candle[2])
+            low_price = float(candle[3])
+            close_price = float(candle[4])
+            volume = float(candle[5])
+
+            # Làm tròn các giá trị, loại bỏ các số 0 không cần thiết
+            open_price = round(open_price, 2)
+            high_price = round(high_price, 2)
+            low_price = round(low_price, 2)
+            close_price = round(close_price, 2)
+
+            # Ghi dữ liệu vào file theo định dạng yêu cầu
+            file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
+
+def get_and_save_data(symbol, start_date, filename, time_interval='1h'):
+    # Chuyển đổi ngày bắt đầu thành timestamp
+    start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
+
+    all_candles = []
+    while True:
+        candles = get_binance_candles(symbol, interval=time_interval, start_time=start_timestamp)
+
+        if not candles:
+            break
+
+        # Thêm dữ liệu vào danh sách
+        all_candles.extend(candles)
+
+        # Cập nhật thời gian bắt đầu cho lần lấy tiếp theo (cây nến cuối cùng)
+        start_timestamp = candles[-1][0] + 1  # +1 ms để lấy dữ liệu tiếp theo
+
+    save_to_csv(all_candles, filename)
+
+
+def remove_all_files(folder_path):
+    # Kiểm tra xem thư mục có tồn tại không
+    if not os.path.exists(folder_path):
+        print(f"Thư mục {folder_path} không tồn tại.")
+        return
+
+    # Lặp và xóa tất cả các file
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
+
+
+def get_and_save_multiple_data(currencies, timeframes, start_date, folder_path):
+    for currency in currencies:
+        for timeframe in timeframes:
+            filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+            print(f"Đang tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
+            get_and_save_data(currency, start_date, filename, time_interval=timeframe)
+
+def continuous_data_collection(currencies, timeframes, folder_path, limit=100, sleep_time=60):
+
+    # Tạo thư mục nếu chưa tồn tại
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
+    print(f"Bắt đầu thu thập dữ liệu liên tục với {limit} cây nến gần nhất...")
+    
+    try:
+        while True:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            print(f"Đang cập nhật dữ liệu vào {current_time}")
+            for currency in currencies:
+                for timeframe in timeframes:
+                    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+                    print(f"Đang lấy {limit} cây nến cho {currency} với khung thời gian {timeframe}...")
+                    
+                    # Lấy số lượng cây nến theo yêu cầu
+                    latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit)
+                    
+                    if latest_candles:
+                        # Lưu dữ liệu vào file
+                        save_to_csv(latest_candles, filename)
+                        print(f"Đã cập nhật {len(latest_candles)} cây nến cho {currency}_{timeframe}")
+                    else:
+                        print(f"Không lấy được dữ liệu cho {currency}_{timeframe}")
+            
+            # Đợi một khoảng thời gian trước khi lấy dữ liệu mới
+            print(f"Đợi {sleep_time} giây cho lần cập nhật tiếp theo...")
+            time.sleep(sleep_time)
+            
+    except KeyboardInterrupt:
+        print("Đã dừng thu thập dữ liệu.")
+
+
+def getdata():
+    # Cấu hình dễ dàng thay đổi
+    currencies = ['BTCUSDT','BNBUSDT','NEARUSDT']
+    timeframes = ['5m','15m']
+    folder_path = 'src/data'
+    candles_limit = 2000  # Số lượng cây nến muốn lấy
+    update_interval = 60    # Thời gian cập nhật (giây)
+    
+    # Xóa dữ liệu cũ (nếu có)
+    remove_all_files(folder_path) 
+    
+    # Tạo thư mục nếu chưa tồn tại
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
+    # Bắt đầu thu thập dữ liệu liên tục
+    continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
+
+
+if __name__ == '__main__':
+    getdata()
+
+================
+File: src/main.py
+================
+from send import main_send
+from get_data import getdata
+from static import mainstatic
+import threading
+import os
+
+def main():
+    # # Kiểm tra và tạo thư mục nếu chưa tồn tại
+    # os.makedirs('./data', exist_ok=True)
+    # os.makedirs('./results', exist_ok=True)
+
+    # Tạo các thread
+    t1 = threading.Thread(target=getdata, daemon=True)
+    t2 = threading.Thread(target=mainstatic, daemon=True)
+    t3 = threading.Thread(target=main_send, daemon=True)
+
+    # Bắt đầu các thread
+    t1.start()
+    t2.start()
+    t3.start()
+
+    print("Chương trình đang chạy. Nhấn Ctrl+C để dừng.")
+    try:
+        while True:
+            pass
+    except KeyboardInterrupt:
+        print("Dừng chương trình.")
+
+if __name__ == '__main__':
+    main()
+
+================
+File: src/send.py
+================
+import os
+import time
+import pandas as pd
+import threading
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+from util.notify import entry_point
+
+class ResultFolderHandler(FileSystemEventHandler):
+    def __init__(self, result_folder):
+        self.result_folder = os.path.abspath(result_folder)
+        self.last_processed = {}
+        self.processing_cooldown = 3
+        print(f"Watching result directory: {self.result_folder}")
+
+    def on_modified(self, event):
+        if not event.is_directory and event.src_path.endswith(".csv"):
+            self.handle_file(event.src_path)
+
+    def on_created(self, event):
+        if not event.is_directory and event.src_path.endswith(".csv"):
+            self.handle_file(event.src_path)
+
+    def handle_file(self, file_path):
+        file_path = os.path.abspath(file_path)
+        file_name = os.path.basename(file_path)
+        current_time = time.time()
+
+        if file_name in self.last_processed and current_time - self.last_processed[file_name] < self.processing_cooldown:
+            return
+
+        self.last_processed[file_name] = current_time
+        self.process_result_file(file_path)
+
+    def process_result_file(self, file_path):
+        try:
+            df = pd.read_csv(file_path)
+            df['Time'] = pd.to_datetime(df['Time'])
+            df = df.sort_values(by='Time').reset_index(drop=True)
+
+            for i in range(1, len(df)):
+                current_trade = df.iloc[i]
+                previous_trade = df.iloc[i - 1]
+
+                if current_trade['Status'] == 'OnGoing' and previous_trade['Status'] == 'win':
+                    self.print_trade_signal(current_trade, file_path)
+                    print(f"📊 Signal found in: {os.path.basename(file_path)}")
+
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+
+    def print_trade_signal(self, trade, file_path):
+        border = "=" * 50
+        signal_emoji = "🟢" if trade['Type'] == "Long" else "🔴"
+        direction = "↗️" if trade['Type'] == "Long" else "↘️"
+        
+        # Convert pandas Timestamp to string format before passing to entry_point
+        time_str = trade['Time'].strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Run entry_point in a separate thread to prevent blocking
+        notification_thread = threading.Thread(
+            target=entry_point,
+            args=(trade['Type'], trade['Entry'], trade['Stoploss'], trade['Take_Profit'], time_str, os.path.basename(file_path))
+        )
+        notification_thread.daemon = True  # Allow program to exit even if thread is running
+        notification_thread.start()
+        
+        print(f"\n{border}")
+        print(f"{signal_emoji} SIGNAL ALERT - After Winning Trade {signal_emoji}")
+        print(f"File: {os.path.basename(file_path)}")
+        print(f"Time: {trade['Time']}")
+        print(f"Type: {trade['Type']} {direction}")
+        print(f"Entry: {trade['Entry']}")
+        print(f"Stop Loss: {trade['Stoploss']}")
+        print(f"Take Profit: {trade['Take_Profit']}")
+        print(f"{border}\n")
+
+def start_result_watcher(result_folder):
+    result_folder = os.path.abspath(result_folder)
+
+    if not os.path.exists(result_folder):
+        print(f"Result folder {result_folder} does not exist.")
+        return
+
+    handler = ResultFolderHandler(result_folder)
+    observer = Observer()
+    observer.schedule(handler, path=result_folder, recursive=False)
+
+    observer.start()
+    print(f"Monitoring {result_folder} for signal opportunities...")
+    print("Press Ctrl+C to stop monitoring")
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+
+def main_send():
+    print("Starting to monitor for signals...")
+    result_folder = "src/results"
+    start_result_watcher(result_folder)
+
+if __name__ == "__main__":
+    main_send()
+
+================
+File: src/static.py
+================
+import os
+import pandas as pd
+import numpy as np
+import shutil
+import time
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler, FileModifiedEvent, FileCreatedEvent
+
+def load_data(filename):
+    df = pd.read_csv(filename, parse_dates=['Time'])
+    df['Time'] = pd.to_datetime(df['Time'])
+    return df
+
+def find_support_resistance(df, window=24):
+    df['Resistance'] = df['High'].rolling(window=window).max()
+    df['Support'] = df['Low'].rolling(window=window).min()
+    return df
+
+def check_reversal_candles(df):
+    df['Doji'] = np.where(abs(df['Close'] - df['Open']) <= 0.1 * (df['High'] - df['Low']), 1, 0)
+    df['Engulfing'] = np.where(((df['Close'] > df['Open']) & (df['Close'].shift(1) < df['Open'].shift(1))) |
+                                ((df['Close'] < df['Open']) & (df['Close'].shift(1) > df['Open'].shift(1))), 1, 0)
+    df['Hammer'] = np.where((df['Close'] > df['Open']) & (df['High'] - df['Low'] > 3 * (df['Close'] - df['Open'])), 1, 0)
+    df['Hanging_Man'] = np.where((df['Close'] < df['Open']) & 
+                                  (df['High'] - df['Close'] > 2 * (df['Close'] - df['Open'])), 1, 0)
+    df['Shooting_Star'] = np.where((df['Close'] < df['Open']) & 
+                                    (df['High'] - df['Open'] > 2 * (df['Close'] - df['Open'])), 1, 0)
+    df['Morning_Star'] = np.where(
+        (df['Open'].shift(2) > df['Close'].shift(2)) & 
+        (df['Close'].shift(1) < df['Open'].shift(1)) &
+        (df['Close'] > df['Open']) &
+        (df['Close'] > (df['Open'].shift(2) + df['Close'].shift(2)) / 2), 1, 0)
+    return df
+
+def check_breakout_and_retest(df, order_blocks, min_reversal_signal=1):
+    df['Long_Signal'] = 0
+    df['Short_Signal'] = 0
+    
+    for index, row in df.iterrows():
+        # cac mau nen dao chieu co the su dung: Hammer, Hanging,
+        if (row['Support'] in order_blocks and row['Resistance'] in order_blocks):
+            if row['Doji'] >= min_reversal_signal or row['Hammer'] >= min_reversal_signal:
+                if row['Close'] > df['Resistance'].shift(1).iloc[index]:  # Lệnh Long
+                    df.at[index, 'Long_Signal'] = 1
+                elif row['Close'] < df['Support'].shift(1).iloc[index]:  # Lệnh Short
+                    df.at[index, 'Short_Signal'] = -1
+    return df
+
+def execute_trades(df, RR_ratio=2):
+    
+    trades = []
+    for index, row in df.iterrows():
+        if row['Long_Signal'] == 1:
+            stoploss = row['Support']  # Stoploss dưới vùng hỗ trợ
+            take_profit = row['Close'] + RR_ratio * (row['Close'] - stoploss)  # Tỷ lệ R/R là 2
+            trades.append({
+                'Time': row['Time'],
+                'Type': 'Long',
+                'Entry': row['Close'],
+                'Stoploss': stoploss,
+                'Take_Profit': take_profit,
+                'Status': 'Ongoing'  # Mặc định trạng thái là "Ongoing"
+            })
+        elif row['Short_Signal'] == -1:
+            stoploss = row['Resistance']  # Stoploss trên vùng kháng cự
+            take_profit = row['Close'] - RR_ratio * (stoploss - row['Close'])  # Tỷ lệ R/R là 2
+            trades.append({
+                'Time': row['Time'],
+                'Type': 'Short',
+                'Entry': row['Close'],
+                'Stoploss': stoploss,
+                'Take_Profit': take_profit,
+                'Status': 'Ongoing'  # Mặc định trạng thái là "Ongoing"
+            })
+    return trades
+
+def save_trades_to_file(sumary_name,trades, filename, result, RR_ratio):
+    trades_df = pd.DataFrame(trades)
+    trades_df.to_csv(filename, index=False)
+    win_rate, wins, losses, ongoing = calculate_win_rate(result)
+    
+    # Tạo khung viền
+    border_line = '-' * 44
+    result_text = (
+        
+        f"\n{border_line}\n"
+        f"=> {filename}:\n"
+        f"Tỉ lệ R/R: {RR_ratio}\n"
+        f"Tỉ lệ win: {win_rate * 100:.2f}%\n"
+        f"ROE (Return on Equity): {win_rate * RR_ratio * 100:.2f}%\n"
+        f"Số lệnh win: {wins}\n"
+        f"Số lệnh loss: {losses}\n"
+        f"Số lệnh OnGoing (OnGoing): {ongoing}\n"
+        f"{border_line}\n"
+    )
+    # Mở file và ghi kết quả
+    with open(sumary_name, "a") as file:  # 'a' để append vào file nếu đã tồn tại
+        file.write(result_text)
+
+# claude
+def evaluate_trades(df, trades):
+    results = []
+    
+    for trade in trades:
+        entry_price = trade['Entry']
+        stoploss = trade['Stoploss']
+        take_profit = trade['Take_Profit']
+        entry_time = trade['Time']
+        trade_type = trade['Type']
+        
+        future_data = df[df['Time'] >= entry_time]
+        
+        if trade_type == 'Long':
+            # Kiểm tra theo thứ tự thời gian
+            for _, future_row in future_data.iterrows():
+                if future_row['Low'] <= stoploss:
+                    status = 'loss'
+                    break
+                if future_row['High'] >= take_profit:
+                    status = 'win'
+                    break
+            else:
+                status = 'OnGoing'
+        
+        elif trade_type == 'Short':
+            # Tương tự cho lệnh Short
+            for _, future_row in future_data.iterrows():
+                if future_row['High'] >= stoploss:
+                    status = 'loss'
+                    break
+                if future_row['Low'] <= take_profit:
+                    status = 'win'
+                    break
+            else:
+                status = 'OnGoing'
+                
+        trade['Status'] = status
+        results.append(trade)
+    
+    return results
+
+
+# Tính toán tỉ lệ win
+def calculate_win_rate(results):
+    wins = sum([1 for result in results if result['Status'] == 'win'])
+    losses = sum([1 for result in results if result['Status'] == 'loss'])
+    ongoing = sum([1 for result in results if result['Status'] == 'OnGoing'])
+    
+    total_trades = wins + losses
+    win_rate = wins / total_trades if total_trades > 0 else 0.0
+    
+    return win_rate, wins, losses, ongoing
+
+
+def remove_all_files(folder_path):
+    # Kiểm tra xem thư mục có tồn tại không
+    if not os.path.exists(folder_path):
+        print(f"Thư mục {folder_path} không tồn tại.")
+        return
+
+    # Lặp và xóa tất cả các file
+    for filename in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, filename)
+        try:
+            if os.path.isfile(file_path) or os.path.islink(file_path):
+                os.unlink(file_path)
+            elif os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+        except Exception as e:
+            print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
+
+
+# Xử lý tất cả các file trong thư mục "data"
+def process_all_files(data_folder, result_folder, RR_ratio):
+    if not os.path.exists(data_folder):
+        print(f"Data folder {data_folder} does not exist yet. Waiting for files...")
+        return
+        
+    files = [f for f in os.listdir(data_folder) if f.endswith(".csv")]
+    if not files:
+        print(f"No CSV files found in {data_folder}. Waiting for files to be created...")
+        return
+        
+    for file_name in files:
+        try:
+            process_single_file(data_folder, result_folder, file_name, RR_ratio)
+        except Exception as e:
+            print(f"Error processing file {file_name}: {str(e)}")
+
+# Function to process a single file
+def process_single_file(data_folder, result_folder, file_name, RR_ratio):
+    if file_name.endswith(".csv"):
+        file_path = os.path.join(data_folder, file_name)
+        
+        # Check if file exists and is not empty
+        if not os.path.exists(file_path):
+            print(f"File {file_path} does not exist. Skipping...")
+            return
+            
+        try:
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                print(f"File {file_path} is empty. Skipping...")
+                return
+                
+            print(f"Processing file: {file_path}")
+            df = load_data(file_path)
+            window = 20
+            # Tìm hỗ trợ và kháng cự
+            df = find_support_resistance(df, window=window)
+            
+            # Nhận diện nến đảo chiều
+            df = check_reversal_candles(df)
+
+            # Giả định có dữ liệu về "order blocks"
+            order_blocks = df['Support'].values.tolist() + df['Resistance'].values.tolist()
+
+            # Kiểm tra tín hiệu Long và Short
+            df = check_breakout_and_retest(df, order_blocks)
+        
+            trades = execute_trades(df, RR_ratio=RR_ratio) 
+            
+            results = evaluate_trades(df, trades)
+
+            # Lưu kết quả vào file CSV trong thư mục results
+            result_file_name = os.path.join(result_folder, file_name)
+            # Lưu kết quả summary vào file txt
+            sumary_name='sum/result.md'
+            save_trades_to_file(sumary_name, results, result_file_name, results, RR_ratio)
+            print(f"Results saved to: {result_file_name}")
+        except Exception as e:
+            print(f"Error processing file {file_path}: {str(e)}")
+
+# File watcher class to monitor changes in data folder
+class DataFolderHandler(FileSystemEventHandler):
+    def __init__(self, data_folder, result_folder, rr_ratio):
+        self.data_folder = os.path.abspath(data_folder)  # Convert to absolute path
+        self.result_folder = result_folder
+        self.rr_ratio = rr_ratio
+        self.last_processed = {}  # Dictionary to track last processing time for each file
+        self.processing_cooldown = 5  # Seconds to wait before processing the same file again
+        print(f"Watching directory: {self.data_folder}")
+    
+    def on_modified(self, event):
+        self._process_event(event, "modified")
+            
+    def on_created(self, event):
+        self._process_event(event, "created")
+    
+    def on_moved(self, event):
+        if not event.is_directory and event.dest_path.endswith(".csv"):
+            file_name = os.path.basename(event.dest_path)
+            print(f"File moved: {file_name}. Processing...")
+            self.last_processed[file_name] = time.time()
+            try:
+                process_single_file(self.data_folder, self.result_folder, file_name, self.rr_ratio)
+            except Exception as e:
+                print(f"Error processing moved file {file_name}: {str(e)}")
+    
+    def _process_event(self, event, event_type):
+        if not event.is_directory:
+            file_path = os.path.abspath(event.src_path)
+            file_name = os.path.basename(file_path)
+            
+            # Debug information
+            print(f"Event {event_type} detected for: {file_path}")
+            print(f"File name: {file_name}")
+            print(f"Is CSV: {file_name.endswith('.csv')}")
+            print(f"In data folder: {os.path.dirname(file_path) == self.data_folder}")
+            
+            # Check if this is a CSV file in our data folder
+            if file_name.endswith(".csv") and os.path.dirname(file_path) == self.data_folder:
+                current_time = time.time()
+                
+                # Check if we recently processed this file
+                if file_name in self.last_processed:
+                    time_since_last_process = current_time - self.last_processed[file_name]
+                    if time_since_last_process < self.processing_cooldown:
+                        print(f"Skipping {file_name} - processed {time_since_last_process:.1f}s ago")
+                        return
+                
+                # Update the last processed time
+                self.last_processed[file_name] = current_time
+                
+                print(f"Change detected in file: {file_name}. Processing...")
+                try:
+                    process_single_file(self.data_folder, self.result_folder, file_name, self.rr_ratio)
+                except Exception as e:
+                    print(f"Error processing file {file_name}: {str(e)}")
+
+def start_file_watcher(data_folder, result_folder, rr_ratio):
+    # Convert to absolute paths
+    data_folder = os.path.abspath(data_folder)
+    result_folder = os.path.abspath(result_folder)
+    
+    # Ensure the folders exist
+    if not os.path.exists(data_folder):
+        os.makedirs(data_folder)
+    if not os.path.exists(result_folder):
+        os.makedirs(result_folder)
+    
+    # Create event handler and observer
+    event_handler = DataFolderHandler(data_folder, result_folder, rr_ratio)
+    observer = Observer()
+    observer.schedule(event_handler, path=data_folder, recursive=False)
+    
+    # Start the observer
+    observer.start()
+    print(f"Monitoring {data_folder} for changes. Results will be saved to {result_folder}")
+    print("Press Ctrl+C to stop monitoring")
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()
+
+def mainstatic():
+    # Use absolute paths
+    data_folder = os.path.abspath("src/data")
+    result_folder = os.path.abspath("src/results")
+    rr_ratio = 2
+    
+    # Create the summary directory if it doesn't exist
+    summary_dir = os.path.dirname('result.md')
+    if not os.path.exists(summary_dir):
+        os.makedirs(summary_dir)
+    
+    # Make sure the result folder exists and is empty
+    if not os.path.exists(result_folder):
+        os.makedirs(result_folder)
+    else:
+        remove_all_files(result_folder)
+    
+    # Ensure data folder exists
+    if not os.path.exists(data_folder):
+        os.makedirs(data_folder)
+        print(f"Created data folder: {data_folder}")
+    
+    # Process existing files first
+    print("Checking for existing files...")
+    process_all_files(data_folder, result_folder, rr_ratio)
+    
+    # Start monitoring the data folder for changes
+    start_file_watcher(data_folder, result_folder, rr_ratio)
+
+if __name__ == "__main__":
+    mainstatic()
+
+================
+File: .gitignore
+================
+.env
+/venv
+src/data/*
+src/output/*
+src/results/*
+sum/results.md
+
+================
+File: docker-compose.yml
+================
+version: '3.8'
+
+services:
+  bot-trade:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot-trade
+    volumes:
+      - ./main.py:/app/main.py
+      - ./src:/app/src
+      - ./requirements.txt:/app/requirements.txt
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    # Use pull_policy to avoid credential issues when image exists locally
+    image: bot-trade-image
+    pull_policy: never
+    # Uncomment the following lines if your app needs ports exposed
+    # ports:
+    #   - "8000:8000"
+    # Uncomment the following lines if you need environment variables
+    # env_file:
+    #   - .env
+
+================
+File: Dockerfile
+================
+# Bắt đầu từ một image Python chính thức
+FROM python:3.9.21
+
+# Cài đặt thư viện và công cụ cần thiết (ví dụ: để cài đặt môi trường ảo, git, v.v.)
+RUN apt-get update && apt-get install -y \
+    python3-venv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Thiết lập thư mục làm việc
+WORKDIR /app
+
+# Sao chép các file vào thư mục làm việc
+COPY requirements.txt /app/
+COPY main.py /app/
+COPY src /app/src/
+
+# Tạo môi trường ảo
+RUN python -m venv venv
+
+# Cập nhật pip
+RUN venv/bin/pip install --upgrade pip
+
+# Cài đặt các thư viện từ requirements.txt
+RUN venv/bin/pip install -r requirements.txt
+
+# Lệnh chạy main.py trong môi trường ảo
+CMD ["venv/bin/python", "main.py"]
+
+================
+File: README.md
+================
+# Bot_Trade
+
+
+1. Create environment
+```bash
+python -m venv venv
+```
+2. Activate environment
+```bash
+source venv/bin/activate # Linux
+```
+3. update pip
+```bash
+pip install --upgrade pip
+```
+4. Install requirements
+```bash
+pip install -r requirements.txt
+```
+
+5. Export requirements
+```bash
+pip freeze > requirements.txt
+```
+6. Docker
+```bash
+docker build -t my-python-app .
+docker run -d my-python-app
+```
+
+2024-12-04 08:40:00,Short,7.38,7.45,7.169999999999999,OnGoing
+2024-12-04 10:46:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-04 10:50:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-04 10:51:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-04 10:52:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-04 10:53:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-04 10:54:00,Long,237.46,235.95,241.99000000000007,loss
+2024-12-04 10:55:00,Long,237.46,235.95,241.99000000000007,OnGoing
+2024-12-02 08:30:00,Short,0.99,1.07,0.7499999999999998,OnGoing
+
+================
+File: requirements.txt
+================
+mpmath==1.3.0
+networkx==3.2.1
+numpy==2.0.2
+pandas==2.2.3
+pyparsing==3.2.0
+pyTelegramBotAPI==4.24.0
+python-dotenv==1.0.1
+python-telegram-bot==21.8
+requests==2.32.3
+watchdog==6.0.0
+
+
+
+================================================================
+End of Codebase
+================================================================

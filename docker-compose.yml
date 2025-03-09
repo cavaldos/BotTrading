@@ -1,0 +1,14 @@
+services:
+  bot-trade:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bot-trade
+    # volumes:
+    #   - ./main.py:/app/main.py
+    #   - ./src:/app/src
+    #   - ./requirements.txt:/app/requirements.txt
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: always
+    # version attribute removed

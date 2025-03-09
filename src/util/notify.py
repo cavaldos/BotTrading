@@ -2,7 +2,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 import asyncio
 from datetime import datetime, timedelta
-
+from caculate import calculate_trade_size
 my_token = '***REMOVED-TOKEN***'
 CHAT_ID = '***REMOVED-CHATID***'
 
@@ -45,8 +45,9 @@ def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
         'Type: ' + type + '\n' +
         'Entry: ' + str(entry) + '\n' +
         'Stoploss: ' + str(stoploss) + '\n' +
-        'Takeprofit: ' + str(takeprofit)
+        'Takeprofit: ' + str(takeprofit)+ '\n' +
+        'Trade size: ' + str(calculate_trade_size(entry, stoploss, takeprofit)) + '\n' 
     )
-
+ 
 # Test
-# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10', 'TestCoin')
+entry_point('Long', 86397, 85765, 87573, '2021-10-10 10:10:10', 'TestCoin')

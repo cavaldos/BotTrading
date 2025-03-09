@@ -323,7 +323,7 @@ def mainstatic():
     rr_ratio = 2
     
     # Create the summary directory if it doesn't exist
-    summary_dir = os.path.dirname('sum/result.md')
+    summary_dir = os.path.dirname('result.md')
     if not os.path.exists(summary_dir):
         os.makedirs(summary_dir)
     
