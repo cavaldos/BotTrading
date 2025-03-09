@@ -79,19 +79,18 @@ def save_trades_to_file(sumary_name,trades, filename, result, RR_ratio):
     trades_df.to_csv(filename, index=False)
     win_rate, wins, losses, ongoing = calculate_win_rate(result)
     
-    # Tạo khung viền
-    border_line = '-' * 44
+
     result_text = (
         
-        f"\n{border_line}\n"
-        f"=> {filename}:\n"
+
+        f"## {filename}:\n"
         f"Tỉ lệ R/R: {RR_ratio}\n"
         f"Tỉ lệ win: {win_rate * 100:.2f}%\n"
         f"ROE (Return on Equity): {win_rate * RR_ratio * 100:.2f}%\n"
         f"Số lệnh win: {wins}\n"
         f"Số lệnh loss: {losses}\n"
         f"Số lệnh OnGoing (OnGoing): {ongoing}\n"
-        f"{border_line}\n"
+
     )
     # Mở file và ghi kết quả
     with open(sumary_name, "a") as file:  # 'a' để append vào file nếu đã tồn tại
@@ -323,7 +322,7 @@ def mainstatic():
     rr_ratio = 2
     
     # Create the summary directory if it doesn't exist
-    summary_dir = os.path.dirname('result.md')
+    summary_dir = os.path.dirname('sum/result.md')
     if not os.path.exists(summary_dir):
         os.makedirs(summary_dir)
     

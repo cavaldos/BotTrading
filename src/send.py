@@ -100,7 +100,7 @@ def start_result_watcher(result_folder):
 
 def main_send():
     print("Starting to monitor for signals...")
-    result_folder = "src/results"
+    result_folder = "src/results"  # Remove 'src/' prefix
     start_result_watcher(result_folder)
 
 if __name__ == "__main__":
