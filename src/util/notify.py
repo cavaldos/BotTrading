@@ -49,4 +49,4 @@ def entry_point(type, entry, stoploss, takeprofit, time,name_coin):
     )
 
 # Test
-# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10', 'BTCUSDT')
+# entry_point('Long', '1.2345', 1.2345, 1.2345, '2021-10-10 10:10:10', 'TestCoin')
