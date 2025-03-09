@@ -249,7 +249,7 @@ def getdata():
     currencies = ['BTCUSDT','BNBUSDT','NEARUSDT']
     timeframes = ['5m','15m']
     folder_path = 'src/data'
-    candles_limit = 20  # Số lượng cây nến muốn lấy
+    candles_limit = 1500  # Số lượng cây nến muốn lấy
     
     # Xóa dữ liệu cũ (nếu có)
     remove_all_files(folder_path) 
