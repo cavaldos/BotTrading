@@ -117,3 +117,45 @@ ROE (Return on Equity): 100.00%
 Số lệnh win: 2
 Số lệnh loss: 2
 Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/BTCUSDT_5m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/BTCUSDT_15m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/BNBUSDT_5m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/BNBUSDT_15m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/NEARUSDT_5m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0
+## /Users/bourbon/Code/AI/Bot_Trade/src/results/NEARUSDT_15m.csv:
+Tỉ lệ R/R: 2
+Tỉ lệ win: 0.00%
+ROE (Return on Equity): 0.00%
+Số lệnh win: 0
+Số lệnh loss: 0
+Số lệnh OnGoing (OnGoing): 0

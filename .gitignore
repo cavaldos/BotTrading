@@ -4,5 +4,5 @@ src/data/*
 src/output/*
 src/results/*
 src/sum/*
-sum/results.md
+sum/result.md
 results.md

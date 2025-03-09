@@ -1,14 +1,19 @@
+version: '3.8'
+
 services:
   bot-trade:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: bot-trade
-    # volumes:
-    #   - ./main.py:/app/main.py
-    #   - ./src:/app/src
-    #   - ./requirements.txt:/app/requirements.txt
+    # Volumes removed - using container storage only
     environment:
       - PYTHONUNBUFFERED=1
-    restart: always
-    # version attribute removed
+      # Add any other environment variables your application needs
+      # - TELEGRAM_TOKEN=your_token_here
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

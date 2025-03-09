@@ -1,18 +1,29 @@
+# Use official Python image with Python 3.9
 FROM python:3.9-slim
 
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
 
-# Cài đặt virtualenv và tạo môi trường ảo
-RUN python -m pip install --upgrade pip && \
-    pip install virtualenv && \
-    python -m virtualenv venv
-
-# Kích hoạt môi trường ảo và cài đặt thư viện
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
-RUN . /app/venv/bin/activate && pip install -r requirements.txt
 
-# Copy thư mục src vào trong container
-COPY ./src /app/src
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Kích hoạt môi trường ảo và chạy main.py trong src
-CMD ["/bin/bash", "-c", "source /app/bin/activate && python src/main.py"]
+# Copy only the necessary application files
+COPY src/ /app/src/
+COPY run.sh /app/
+
+# Create necessary directories
+RUN mkdir -p /app/src/data /app/src/results /app/src/sum
+
+# Make the run script executable
+RUN chmod +x /app/run.sh
+
+# Command to run the application
+CMD ["python", "src/main.py"]
