@@ -1,20 +1,28 @@
+import psutil
+import time
+import threading
 from send import main_send
 from get_data import getdata
 from static import mainstatic
-import threading
-import os
+
+def limit_cpu_usage(max_percent=50):
+    """Giới hạn CPU sử dụng tối đa theo phần trăm"""
+    process = psutil.Process()
+    while True:
+        cpu_usage = process.cpu_percent(interval=1)
+        if cpu_usage > max_percent:
+            time.sleep(0.1)  # Giảm tải CPU nếu vượt ngưỡng
 
 def main():
-    # # Kiểm tra và tạo thư mục nếu chưa tồn tại
-    # os.makedirs('./data', exist_ok=True)
-    # os.makedirs('./results', exist_ok=True)
+    # Chạy giới hạn CPU trong một thread riêng
+    cpu_limiter = threading.Thread(target=limit_cpu_usage, daemon=True)
+    cpu_limiter.start()
 
-    # Tạo các thread
+    # Chạy các thread chính
     t1 = threading.Thread(target=getdata, daemon=True)
     t2 = threading.Thread(target=mainstatic, daemon=True)
     t3 = threading.Thread(target=main_send, daemon=True)
 
-    # Bắt đầu các thread
     t1.start()
     t2.start()
     t3.start()
