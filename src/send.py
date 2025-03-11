@@ -2,6 +2,8 @@ import os
 import time
 import pandas as pd
 import threading
+import csv
+from datetime import datetime
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from util.notify import entry_point
@@ -11,7 +13,17 @@ class ResultFolderHandler(FileSystemEventHandler):
         self.result_folder = os.path.abspath(result_folder)
         self.last_processed = {}
         self.processing_cooldown = 3
+        self.signals_log_file = os.path.join(os.path.dirname(self.result_folder), "signals_log.csv")
+        self.initialize_signals_log()
         print(f"Watching result directory: {self.result_folder}")
+
+    def initialize_signals_log(self):
+        # Create signals log file if it doesn't exist
+        if not os.path.exists(self.signals_log_file):
+            with open(self.signals_log_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(['Timestamp', 'File', 'Signal_Time', 'Type', 'Entry', 'Stoploss', 'Take_Profit'])
+            print(f"Created signals log file: {self.signals_log_file}")
 
     def on_modified(self, event):
         if not event.is_directory and event.src_path.endswith(".csv"):
@@ -57,13 +69,16 @@ class ResultFolderHandler(FileSystemEventHandler):
         # Convert pandas Timestamp to string format before passing to entry_point
         time_str = trade['Time'].strftime('%Y-%m-%d %H:%M:%S')
         
-        # Run entry_point in a separate thread to prevent blocking
-        notification_thread = threading.Thread(
-            target=entry_point,
-            args=(trade['Type'], trade['Entry'], trade['Stoploss'], trade['Take_Profit'], time_str, os.path.basename(file_path))
-        )
-        notification_thread.daemon = True  # Allow program to exit even if thread is running
-        notification_thread.start()
+        # # Run entry_point in a separate thread to prevent blocking
+        # notification_thread = threading.Thread(
+        #     target=entry_point,
+        #     args=(trade['Type'], trade['Entry'], trade['Stoploss'], trade['Take_Profit'], time_str, os.path.basename(file_path))
+        # )
+        # notification_thread.daemon = True  # Allow program to exit even if thread is running
+        # notification_thread.start()
+        
+        # Save signal to CSV log file
+        self.save_signal_to_csv(trade, file_path)
         
         print(f"\n{border}")
         print(f"{signal_emoji} SIGNAL ALERT - After Winning Trade {signal_emoji}")
@@ -74,6 +89,26 @@ class ResultFolderHandler(FileSystemEventHandler):
         print(f"Stop Loss: {trade['Stoploss']}")
         print(f"Take Profit: {trade['Take_Profit']}")
         print(f"{border}\n")
+
+    def save_signal_to_csv(self, trade, file_path):
+        try:
+            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            signal_time = trade['Time'].strftime('%Y-%m-%d %H:%M:%S')
+            
+            with open(self.signals_log_file, 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    current_time,
+                    os.path.basename(file_path),
+                    signal_time,
+                    trade['Type'],
+                    trade['Entry'],
+                    trade['Stoploss'],
+                    trade['Take_Profit']
+                ])
+            print(f"Signal saved to log file: {self.signals_log_file}")
+        except Exception as e:
+            print(f"Error saving signal to log file: {str(e)}")
 
 def start_result_watcher(result_folder):
     result_folder = os.path.abspath(result_folder)
@@ -100,7 +135,7 @@ def start_result_watcher(result_folder):
 
 def main_send():
     print("Starting to monitor for signals...")
-    result_folder = "src/results"  # Remove 'src/' prefix
+    result_folder = "src/res"  # Remove 'src/' prefix
     start_result_watcher(result_folder)
 
 if __name__ == "__main__":

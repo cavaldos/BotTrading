@@ -192,7 +192,8 @@ def get_and_save_multiple_data(currencies, timeframes, start_date, folder_path):
             print(f"Đang tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
             get_and_save_data(currency, start_date, filename, time_interval=timeframe)
 
-def continuous_data_collection(currencies, timeframes, folder_path, limit=100):
+def continuous_data_collection(currencies, timeframes, folder_path, limit=100, sleep_time=60):
+
     # Tạo thư mục nếu chưa tồn tại
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
@@ -201,44 +202,26 @@ def continuous_data_collection(currencies, timeframes, folder_path, limit=100):
     
     try:
         while True:
-            # Tính toán thời gian cho mốc 5 phút tiếp theo
-            now = datetime.now()
-            
-            # Tính phút của mốc thời gian tiếp theo (phải là bội số của 5)
-            minutes = now.minute
-            target_minute = ((minutes // 5) + 1) * 5
-            
-            # Tạo datetime cho mốc thời gian tiếp theo
-            next_interval = now.replace(minute=(target_minute % 60), second=0, microsecond=0)
-            
-            # Điều chỉnh giờ nếu phút chuyển sang giờ tiếp theo
-            if target_minute >= 60:
-                next_interval = next_interval.replace(hour=(now.hour + 1) % 24)
-                
-            # Tính số giây cần chờ đến mốc thời gian tiếp theo
-            wait_seconds = (next_interval - now).total_seconds()
-            
-            # Chờ đến mốc thời gian tiếp theo
-            if wait_seconds > 0:
-                print(f"Đợi {wait_seconds:.1f} giây cho đến {next_interval.strftime('%H:%M:%S')}...")
-                time.sleep(wait_seconds)
-            
-            # Thu thập và lưu dữ liệu
             current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             print(f"Đang cập nhật dữ liệu vào {current_time}")
-            
             for currency in currencies:
                 for timeframe in timeframes:
                     filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
                     print(f"Đang lấy {limit} cây nến cho {currency} với khung thời gian {timeframe}...")
                     
+                    # Lấy số lượng cây nến theo yêu cầu
                     latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit)
                     
                     if latest_candles:
+                        # Lưu dữ liệu vào file
                         save_to_csv(latest_candles, filename)
                         print(f"Đã cập nhật {len(latest_candles)} cây nến cho {currency}_{timeframe}")
                     else:
                         print(f"Không lấy được dữ liệu cho {currency}_{timeframe}")
+            
+            # Đợi một khoảng thời gian trước khi lấy dữ liệu mới
+            print(f"Đợi {sleep_time} giây cho lần cập nhật tiếp theo...")
+            time.sleep(sleep_time)
             
     except KeyboardInterrupt:
         print("Đã dừng thu thập dữ liệu.")
@@ -246,10 +229,11 @@ def continuous_data_collection(currencies, timeframes, folder_path, limit=100):
 
 def getdata():
     # Cấu hình dễ dàng thay đổi
-    currencies = ['BTCUSDT','BNBUSDT','NEARUSDT']
+    currencies = ['BTCUSDT', 'BNBUSDT']
     timeframes = ['5m','15m']
-    folder_path = 'src/data'
-    candles_limit = 1500  # Số lượng cây nến muốn lấy
+    folder_path = 'src/data'  # Remove 'src/' prefix
+    candles_limit = 10000  # Số lượng cây nến muốn lấy
+    update_interval = 60    # Thời gian cập nhật (giây)
     
     # Xóa dữ liệu cũ (nếu có)
     remove_all_files(folder_path) 
@@ -258,8 +242,8 @@ def getdata():
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
     
-    # Bắt đầu thu thập dữ liệu liên tục tại các mốc thời gian chẵn
-    continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit)
+    # Bắt đầu thu thập dữ liệu liên tục
+    continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
 
 
 if __name__ == '__main__':
