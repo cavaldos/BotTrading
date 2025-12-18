@@ -232,7 +232,7 @@ def getdata():
     currencies = ['BTCUSDT']
     timeframes = ['15m']
     folder_path = 'src/data'  # Remove 'src/' prefix
-    candles_limit = 1000  # Số lượng cây nến muốn lấy
+    candles_limit = 10000  # Số lượng cây nến muốn lấy
     update_interval = 60    # Thời gian cập nhật (giây)
     
     # Xóa dữ liệu cũ (nếu có)
@@ -242,8 +242,8 @@ def getdata():
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
     
-    # Bắt đầu thu thập dữ liệu liên tục
-    continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
+    # # Bắt đầu thu thập dữ liệu liên tục
+    # continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
 
 
 if __name__ == '__main__':

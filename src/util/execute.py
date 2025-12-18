@@ -160,49 +160,29 @@ def save_trades_to_csv(trades, output_path):
 
 
 def generate_result_report(trades, output_path):
-    """Tạo báo cáo kết quả và lưu vào file Markdown"""
+    """Tạo báo cáo kết quả đơn giản và lưu vào file Markdown"""
     total_trades = len(trades)
     wins = sum(1 for t in trades if t['result'] == 'WIN')
     losses = sum(1 for t in trades if t['result'] == 'LOSS')
     opens = sum(1 for t in trades if t['result'] == 'OPEN')
     
     win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
-    
     total_pnl = sum(t['pnl_percent'] for t in trades if t['result'] != 'OPEN')
-    avg_win = np.mean([t['pnl_percent'] for t in trades if t['result'] == 'WIN']) if wins > 0 else 0
-    avg_loss = np.mean([t['pnl_percent'] for t in trades if t['result'] == 'LOSS']) if losses > 0 else 0
     
-    report = f"""# Báo Cáo Kết Quả Backtest
+    # Làm tròn để hiển thị ngắn gọn
+    win_rate_str = f"{win_rate:.2f}%"
+    total_pnl_str = f"{total_pnl:.2f}%"
 
-## Chiến Lược: Price Action Breakout (2R)
+    report = f"""# Backtest Summary
 
-### Thống Kê Tổng Quan
+- Strategy: Price Action Breakout (2R)
+- Total trades: {total_trades}
+- Wins: {wins}
+- Losses: {losses}
+- Win rate: {win_rate_str}
+- Total PnL: {total_pnl_str}
 
-| Chỉ số | Giá trị |
-|--------|---------|
-| Tổng số lệnh | {total_trades} |
-| Số lệnh thắng | {wins} |
-| Số lệnh thua | {losses} |
-| Số lệnh chưa đóng | {opens} |
-| Tỉ lệ thắng | {win_rate:.2f}% |
-
-### Thống Kê Lợi Nhuận
-
-| Chỉ số | Giá trị |
-|--------|---------|
-| Tổng PnL (%) | {total_pnl:.4f}% |
-| Trung bình lệnh thắng (%) | {avg_win:.4f}% |
-| Trung bình lệnh thua (%) | {avg_loss:.4f}% |
-
-### Mô Tả Chiến Lược
-
-- **Entry**: Khi giá phá vỡ swing high (đỉnh cục bộ)
-- **Stop Loss**: Đặt tại swing low (đáy cục bộ) trước đó
-- **Take Profit**: Entry + 2 * Risk (tỉ lệ Risk:Reward = 1:2)
-- **Swing Lookback**: {SWING_LOOKBACK} nến
-
----
-*Báo cáo được tạo tự động vào: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+*Report generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
 """
     
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -237,6 +217,7 @@ def run_backtest():
     # In tóm tắt
     wins = sum(1 for t in trades if t['result'] == 'WIN')
     losses = sum(1 for t in trades if t['result'] == 'LOSS')
+    
     print(f"\n📊 KẾT QUẢ: {wins} WIN / {losses} LOSS")
     if wins + losses > 0:
         print(f"📈 TỈ LỆ THẮNG: {wins/(wins+losses)*100:.2f}%")
