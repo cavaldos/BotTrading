@@ -1,6 +1,6 @@
-import requests
-import pandas as pd
-import numpy as np
+import requests # pyright: ignore[reportMissingModuleSource]
+import pandas as pd # pyright: ignore[reportMissingModuleSource]
+import numpy as np # pyright: ignore[reportMissingImports]
 from datetime import datetime, timedelta
 import os
 import shutil
@@ -229,10 +229,10 @@ def continuous_data_collection(currencies, timeframes, folder_path, limit=100, s
 
 def getdata():
     # Cấu hình dễ dàng thay đổi
-    currencies = ['BTCUSDT', 'BNBUSDT']
-    timeframes = ['5m','15m']
+    currencies = ['BTCUSDT']
+    timeframes = ['15m']
     folder_path = 'src/data'  # Remove 'src/' prefix
-    candles_limit = 10000  # Số lượng cây nến muốn lấy
+    candles_limit = 1000  # Số lượng cây nến muốn lấy
     update_interval = 60    # Thời gian cập nhật (giây)
     
     # Xóa dữ liệu cũ (nếu có)
