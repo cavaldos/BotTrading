@@ -6,10 +6,24 @@ from datetime import datetime
 DATA_PATH = "/Users/bourbon/Code/Workspace/Bot_Trade/src/data/BTCUSDT_15m.csv"
 TRADES_OUTPUT = "/Users/bourbon/Code/Workspace/Bot_Trade/src/res/trades.csv"
 RESULT_OUTPUT = "/Users/bourbon/Code/Workspace/Bot_Trade/src/res/result.md"
-SWING_LOOKBACK = 5  # Số nến để xác định swing high/low
+
+# === STRATEGY PARAMETERS ===
+SWING_LOOKBACK = 7          # Số nến để xác định swing high/low (tăng từ 5 -> 7)
+EMA_PERIOD = 50             # EMA period cho trend filter
+VOLUME_MA_PERIOD = 20       # Period để tính volume trung bình
+VOLUME_MULTIPLIER = 1.2     # Volume breakout phải >= 1.2x trung bình
+MIN_RISK_PERCENT = 0.3      # Risk tối thiểu (% của giá entry)
+MAX_RISK_PERCENT = 3.0      # Risk tối đa (% của giá entry)
 
 
-def find_swing_points(df, lookback=5):
+def calculate_indicators(df):
+    """Tính các chỉ báo kỹ thuật"""
+    df['EMA'] = df['Close'].ewm(span=EMA_PERIOD, adjust=False).mean()
+    df['Volume_MA'] = df['Volume'].rolling(window=VOLUME_MA_PERIOD).mean()
+    return df
+
+
+def find_swing_points(df, lookback=7):
     """Tìm các điểm swing high và swing low"""
     swing_highs = []
     swing_lows = []
