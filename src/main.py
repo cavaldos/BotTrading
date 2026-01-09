@@ -305,10 +305,11 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             'losses': 0,
             'win_rate': 0.0,
             'net_profit': 0.0,
-            'avg_win': 0.0,
-            'avg_loss': 0.0,
             'profit_factor': 0.0,
-            'max_drawdown': 0.0
+            'max_drawdown': 0.0,
+            'risk_reward': config.risk_reward_ratio,
+            'max_win_streak': 0,
+            'max_loss_streak': 0
         }
     
     wins = [t for t in trades if t.result == 'WIN']
@@ -323,8 +324,6 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
     total_loss = abs(sum(t.pnl for t in losses))
     net_profit = sum(t.pnl for t in trades)
     
-    avg_win = total_win / win_count if win_count > 0 else 0
-    avg_loss = total_loss / loss_count if loss_count > 0 else 0
     profit_factor = total_win / total_loss if total_loss > 0 else float('inf')
     
     # Calculate max drawdown
@@ -343,6 +342,24 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         if dd > max_dd:
             max_dd = dd
     
+    # Calculate max win/loss streaks
+    max_win_streak = 0
+    max_loss_streak = 0
+    current_win_streak = 0
+    current_loss_streak = 0
+    
+    for t in trades:
+        if t.result == 'WIN':
+            current_win_streak += 1
+            current_loss_streak = 0
+            if current_win_streak > max_win_streak:
+                max_win_streak = current_win_streak
+        else:
+            current_loss_streak += 1
+            current_win_streak = 0
+            if current_loss_streak > max_loss_streak:
+                max_loss_streak = current_loss_streak
+    
     return {
         'symbol': symbol,
         'total_trades': total_trades,
@@ -352,7 +369,9 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         'net_profit': round(net_profit, 2),
         'profit_factor': round(profit_factor, 2),
         'max_drawdown': round(max_dd, 2),
-        'risk_reward': config.risk_reward_ratio
+        'risk_reward': config.risk_reward_ratio,
+        'max_win_streak': max_win_streak,
+        'max_loss_streak': max_loss_streak
     }
 
 
@@ -373,6 +392,8 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
             f"- Profit Factor : {summary['profit_factor']}",
             f"- Max Drawdown : ${summary['max_drawdown']}",
             f"- Risk/Reward : {summary['risk_reward']}",
+            f"- Max Win Streak : {summary['max_win_streak']}",
+            f"- Max Loss Streak : {summary['max_loss_streak']}",
             ""
         ])
     
