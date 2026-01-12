@@ -197,7 +197,7 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
             f"| Short Trades | {summary['short_trades']} |",
             f"| Wins | {summary['wins']} |",
             f"| Losses | {summary['losses']} |",
-            f"| Win Rate | {summary['win_rate']}% |",
+            f"| Win Rate | **{summary['win_rate']}%**|",
             f"| Net Profit | ${summary['net_profit']} |",
             f"| Profit Factor | {summary['profit_factor']} |",
             f"| Max Drawdown | ${summary['max_drawdown']} |",
