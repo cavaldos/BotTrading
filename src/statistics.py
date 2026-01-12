@@ -1,23 +1,154 @@
 """
-Statistics and Report Generation Module
-=======================================
-Contains functions for generating trade reports and statistics:
-- Trade CSV reports
-- Summary statistics
-- Markdown reports
+Statistics and Trade Simulation Module
+======================================
+Contains:
+- TradeSimulator: Simulates trade exits based on signals and price data
+- Trade: Completed trade with exit information
+- Report generation functions
 """
 
 import os
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple
+from dataclasses import dataclass
 
-try:
-    from strategy import Trade, Config
-except ImportError:
-    from .strategy import Trade, Config
+from strategy import STRATEGY_NAME, Signal, Config
 
 
+# ==================== DATA CLASSES ====================
+@dataclass
+class Trade:
+    """
+    Completed trade with entry and exit information.
+    Extends Signal with exit data.
+    """
+    # Entry info (from Signal)
+    symbol: str
+    trade_type: str           # 'LONG' or 'SHORT'
+    entry_time: datetime
+    entry_price: float
+    stop_loss: float
+    take_profit: float
+    
+    # Exit info (calculated by TradeSimulator)
+    exit_time: Optional[datetime] = None
+    exit_price: Optional[float] = None
+    result: str = 'OPEN'      # 'WIN', 'LOSS', 'OPEN'
+    pnl: float = 0.0
+    risk_reward: float = 0.0
+
+
+# ==================== TRADE SIMULATOR ====================
+class TradeSimulator:
+    """
+    Simulates trade exits based on signals and price data.
+    Calculates: exit_time, exit_price, result, pnl
+    """
+    def __init__(self, config: Config):
+        self.config = config
+    
+    def _check_exit(self, signal: Signal, row: pd.Series) -> Tuple[bool, Optional[str], Optional[float]]:
+        """Check if trade should be closed based on SL/TP"""
+        high = row['High']
+        low = row['Low']
+        
+        if signal.trade_type == 'LONG':
+            # Check SL first (worst case)
+            if low <= signal.stop_loss:
+                return True, 'LOSS', signal.stop_loss
+            # Check TP
+            if high >= signal.take_profit:
+                return True, 'WIN', signal.take_profit
+        else:  # SHORT
+            # Check SL first (worst case)
+            if high >= signal.stop_loss:
+                return True, 'LOSS', signal.stop_loss
+            # Check TP
+            if low <= signal.take_profit:
+                return True, 'WIN', signal.take_profit
+        
+        return False, None, None
+    
+    def simulate(self, signals: List[Signal], df: pd.DataFrame) -> List[Trade]:
+        """
+        Simulate trade exits for given signals.
+        
+        Args:
+            signals: List of trade signals from Strategy
+            df: Price data DataFrame with Time, High, Low, Close columns
+            
+        Returns:
+            List of Trade objects with exit information
+        """
+        if not signals:
+            return []
+        
+        trades = []
+        
+        for signal in signals:
+            # Find the index where this signal's entry_time occurs
+            entry_idx = -1
+            for idx in range(len(df)):
+                row = df.iloc[idx]
+                row_time = row['Time'] if isinstance(row['Time'], datetime) else pd.to_datetime(row['Time'])
+                if row_time >= signal.entry_time:
+                    entry_idx = idx
+                    break
+            
+            if entry_idx < 0:
+                continue
+            
+            # Create Trade from Signal
+            trade = Trade(
+                symbol=signal.symbol,
+                trade_type=signal.trade_type,
+                entry_time=signal.entry_time,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                take_profit=signal.take_profit
+            )
+            
+            # Look for exit in subsequent candles
+            found_exit = False
+            for i in range(entry_idx + 1, len(df)):
+                row = df.iloc[i]
+                row_time = row['Time'] if isinstance(row['Time'], datetime) else pd.to_datetime(row['Time'])
+                
+                should_close, result, exit_price = self._check_exit(signal, row)
+                
+                if should_close and result is not None:
+                    trade.exit_time = row_time
+                    trade.exit_price = exit_price
+                    trade.result = result
+                    
+                    # Calculate PnL
+                    if result == 'WIN':
+                        trade.pnl = self.config.risk_per_trade * self.config.risk_reward_ratio
+                        trade.risk_reward = self.config.risk_reward_ratio
+                    else:
+                        trade.pnl = -self.config.risk_per_trade
+                        trade.risk_reward = -1.0
+                    
+                    found_exit = True
+                    break
+            
+            # If no exit found, mark as OPEN with last price
+            if not found_exit:
+                last_row = df.iloc[-1]
+                trade.exit_time = last_row['Time'] if isinstance(last_row['Time'], datetime) else pd.to_datetime(last_row['Time'])
+                trade.exit_price = float(last_row['Close'])
+                trade.result = 'OPEN'
+                trade.pnl = 0.0
+                trade.risk_reward = 0.0
+            
+            trades.append(trade)
+        
+        return trades
+
+
+# ==================== REPORT FUNCTIONS ====================
 def generate_trade_report(trades: List[Trade], output_dir: str, symbol: str) -> pd.DataFrame:
     """Generate CSV report of trades for a single symbol"""
     if not trades:
@@ -25,21 +156,26 @@ def generate_trade_report(trades: List[Trade], output_dir: str, symbol: str) -> 
     
     data = []
     for t in trades:
+        # Determine result
+        if t.result == 'OPEN':
+            result = 'Open'
+        elif t.result == 'WIN':
+            result = 'Win'
+        elif t.result == 'LOSS':
+            result = 'Loss'
+        else:
+            result = t.result
+        
         data.append({
-            'Trade_ID': t.trade_id,
             'Symbol': t.symbol,
             'Type': t.trade_type,
             'Entry_Time': t.entry_time,
             'Entry_Price': round(t.entry_price, 2),
             'Stop_Loss': round(t.stop_loss, 2),
             'Take_Profit': round(t.take_profit, 2),
-            'Entry_Reason': t.entry_reason,
             'Exit_Time': t.exit_time,
             'Exit_Price': round(t.exit_price, 2) if t.exit_price else None,
-            'Result': t.result,
-            'PnL': round(t.pnl, 2),
-            'Risk_Reward': round(t.risk_reward, 2),
-            'Status': t.status
+            'Result': result
         })
     
     df = pd.DataFrame(data)
@@ -50,162 +186,97 @@ def generate_trade_report(trades: List[Trade], output_dir: str, symbol: str) -> 
 
 
 def generate_summary_report(trades: List[Trade], symbol: str, config: Config) -> Dict:
-    """Generate summary statistics for trades"""
+    """Generate simplified summary statistics for trades"""
     if not trades:
         return {
             'symbol': symbol,
             'total_trades': 0,
             'wins': 0,
             'losses': 0,
-            'win_rate': 0.0,
-            'net_profit': 0.0,
-            'profit_factor': 0.0,
-            'max_drawdown': 0.0,
-            'risk_reward': config.risk_reward_ratio,
-            'max_win_streak': 0,
-            'max_loss_streak': 0,
-            'long_trades': 0,
-            'short_trades': 0
+            'open_trades': 0,
+            'win_rate': 0.0
         }
     
     wins = [t for t in trades if t.result == 'WIN']
     losses = [t for t in trades if t.result == 'LOSS']
-    long_trades = [t for t in trades if t.trade_type == 'LONG']
-    short_trades = [t for t in trades if t.trade_type == 'SHORT']
+    open_trades = [t for t in trades if t.result == 'OPEN']
     
     total_trades = len(trades)
     win_count = len(wins)
     loss_count = len(losses)
-    win_rate = (win_count / total_trades * 100) if total_trades > 0 else 0
+    open_count = len(open_trades)
+    closed_trades = total_trades - open_count
     
-    total_win = sum(t.pnl for t in wins)
-    total_loss = abs(sum(t.pnl for t in losses))
-    net_profit = sum(t.pnl for t in trades)
-    
-    profit_factor = total_win / total_loss if total_loss > 0 else float('inf')
-    
-    # Calculate max drawdown
-    cumulative_pnl = []
-    running_total = 0
-    for t in trades:
-        running_total += t.pnl
-        cumulative_pnl.append(running_total)
-    
-    peak = cumulative_pnl[0] if cumulative_pnl else 0
-    max_dd = 0
-    for pnl in cumulative_pnl:
-        if pnl > peak:
-            peak = pnl
-        dd = peak - pnl
-        if dd > max_dd:
-            max_dd = dd
-    
-    # Calculate max win/loss streaks
-    max_win_streak = 0
-    max_loss_streak = 0
-    current_win_streak = 0
-    current_loss_streak = 0
-    
-    for t in trades:
-        if t.result == 'WIN':
-            current_win_streak += 1
-            current_loss_streak = 0
-            if current_win_streak > max_win_streak:
-                max_win_streak = current_win_streak
-        else:
-            current_loss_streak += 1
-            current_win_streak = 0
-            if current_loss_streak > max_loss_streak:
-                max_loss_streak = current_loss_streak
+    win_rate = (win_count / closed_trades * 100) if closed_trades > 0 else 0
     
     return {
         'symbol': symbol,
         'total_trades': total_trades,
         'wins': win_count,
         'losses': loss_count,
-        'win_rate': round(win_rate, 2),
-        'net_profit': round(net_profit, 2),
-        'profit_factor': round(profit_factor, 2),
-        'max_drawdown': round(max_dd, 2),
-        'risk_reward': config.risk_reward_ratio,
-        'max_win_streak': max_win_streak,
-        'max_loss_streak': max_loss_streak,
-        'long_trades': len(long_trades),
-        'short_trades': len(short_trades)
+        'open_trades': open_count,
+        'win_rate': round(win_rate, 2)
     }
 
 
-def generate_markdown_report(all_summaries: List[Dict], config: Config, output_path: str):
+def generate_text_report(all_summaries: List[Dict], config: Config, output_path: str):
     """
-    Generate markdown report with all results.
+    Generate report with all results.
+    Uses markdown table format that looks good both raw and rendered.
     Appends new results to existing file with timestamp.
     """
-    from datetime import datetime
-    
     # Get current timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Get strategy info from config
-    strategy_info = config.get_strategy_info()
-    
-    # Build new report section
-    lines = [
-        "",
-        f"# Backtest Results - {timestamp}",
-        f"## Strategy: {strategy_info.get('name', 'Unknown')}",
-        "### Configuration",
-    ]
-    
-    # Add all strategy settings dynamically
-    for key, value in strategy_info.items():
-        if key != 'name':
-            # Format key: snake_case -> Title Case
-            formatted_key = key.replace('_', ' ').title()
-            if isinstance(value, float) and 'threshold' in key:
-                lines.append(f"- {formatted_key}: {value*100}%")
-            elif isinstance(value, float) and 'ratio' in key:
-                lines.append(f"- {formatted_key}: 1:{value}")
-            elif 'risk_per_trade' in key:
-                lines.append(f"- {formatted_key}: ${value}")
-            else:
-                lines.append(f"- {formatted_key}: {value}")
     
     # Calculate overall stats
     total_trades = sum(s['total_trades'] for s in all_summaries)
     total_wins = sum(s['wins'] for s in all_summaries)
-    total_profit = sum(s['net_profit'] for s in all_summaries)
-    overall_win_rate = (total_wins / total_trades * 100) if total_trades > 0 else 0
+    total_losses = sum(s['losses'] for s in all_summaries)
+    total_open = sum(s['open_trades'] for s in all_summaries)
+    total_closed = total_wins + total_losses
+    overall_win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0
     
-    lines.extend([
-        "## Overall Summary",
-        f"| Metric | Value |",
-        f"|--------|-------|",
-        f"| Total Trades | {total_trades} |",
-        f"| Total Wins | {total_wins} |",
-        f"| Overall Win Rate | {round(overall_win_rate, 2)}% |",
-        f"| Total Net Profit | ${round(total_profit, 2)} |",
-    ])
+    # Get RR ratio from config
+    rr_ratio = config.risk_reward_ratio
+    
+    # Build report with aligned markdown table
+    lines = [
+        "",
+        f"##  TRADE RESULTS - {STRATEGY_NAME} - {timestamp}",
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} |".format(
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "ROE"
+        ),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->8}|{:->12}|{:->10}|".format("", "", "", "", "", "", ""),
+    ]
     
     # Add individual symbol results
     for summary in all_summaries:
-        lines.extend([
-            f"### {summary['symbol']}",
-            f"| Metric | Value |",
-            f"|--------|-------|",
-            f"| Total Trades | {summary['total_trades']} |",
-            f"| Long Trades | {summary['long_trades']} |",
-            f"| Short Trades | {summary['short_trades']} |",
-            f"| Wins | {summary['wins']} |",
-            f"| Losses | {summary['losses']} |",
-            f"| Win Rate | **{summary['win_rate']}%**|",
-            f"| Net Profit | ${summary['net_profit']} |",
-            f"| Profit Factor | {summary['profit_factor']} |",
-            f"| Max Drawdown | ${summary['max_drawdown']} |",
-            f"| Risk/Reward | {summary['risk_reward']} |",
-            f"| Max Win Streak | {summary['max_win_streak']} |",
-            f"| Max Loss Streak | {summary['max_loss_streak']} |",
-            ""
-        ])
+        # ROE = (Win Rate / 100) * RR Ratio
+        roe = (summary['win_rate'] / 100) * rr_ratio
+        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} |".format(
+            summary['symbol'],
+            summary['total_trades'],
+            summary['wins'],
+            summary['losses'],
+            summary['open_trades'],
+            f"**{summary['win_rate']}%**",
+            f"{round(roe, 2)*100}%"
+        )
+        lines.append(row)
+    
+    # Add overall summary
+    overall_roe = (overall_win_rate / 100) * rr_ratio
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} |".format(
+        "TOTAL",
+        total_trades,
+        total_wins,
+        total_losses,
+        total_open,
+        f"**{round(overall_win_rate, 2)}%**",
+        f"{round(overall_roe, 2)*100}%"
+    )
+    lines.append(total_row)
+    lines.append("")
     
     # Ensure output directory exists
     output_dir = os.path.dirname(output_path)
@@ -220,10 +291,7 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     
     # Write header if file is new/empty
     if not existing_content.strip():
-        header = [
-            "# SMC Strategy Backtest History",
-        ]
-        existing_content = '\n'.join(header)
+        existing_content = "# TRADE HISTORY\n"
     
     # Append new results to existing content
     new_content = existing_content + '\n'.join(lines)
@@ -236,22 +304,24 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
 
 def print_quick_stats(summary: Dict) -> None:
     """Print quick statistics to console"""
+    print(f"  - Total Trades: {summary['total_trades']}")
+    print(f"  - Wins: {summary['wins']}, Losses: {summary['losses']}, Open: {summary['open_trades']}")
     print(f"  - Win Rate: {summary['win_rate']}%")
-    print(f"  - Net Profit: ${summary['net_profit']}")
-    print(f"  - Profit Factor: {summary['profit_factor']}")
-    print(f"  - Long/Short: {summary['long_trades']}/{summary['short_trades']}")
 
 
-def print_final_summary(all_trades: List[Trade], total_profit: float) -> None:
+def print_final_summary(all_trades: List[Trade]) -> None:
     """Print final summary after backtest completion"""
     print("\n" + "=" * 60)
-    print("Backtest completed!")
+    print("Analysis completed!")
     print(f"Total trades: {len(all_trades)}")
-    print(f"Total profit: ${round(total_profit, 2)}")
     
     if all_trades:
-        overall_wins = len([t for t in all_trades if t.result == 'WIN'])
-        overall_wr = (overall_wins / len(all_trades)) * 100
+        wins = len([t for t in all_trades if t.result == 'WIN'])
+        losses = len([t for t in all_trades if t.result == 'LOSS'])
+        open_trades = len([t for t in all_trades if t.result == 'OPEN'])
+        closed_trades = wins + losses
+        overall_wr = (wins / closed_trades * 100) if closed_trades > 0 else 0
+        print(f"Wins: {wins}, Losses: {losses}, Open: {open_trades}")
         print(f"Overall win rate: {round(overall_wr, 2)}%")
     
     print("=" * 60)

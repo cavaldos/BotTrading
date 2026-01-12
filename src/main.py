@@ -3,14 +3,14 @@ Trading Strategy Backtester
 ===========================
 Main entry point for running the backtesting system.
 
-Modules:
-- strategy.py: Trading strategy logic (swap this file to change strategy)
-- statistics.py: Report generation and statistics
+Architecture:
+- strategy.py: Strategy generates Signals (entry info only)
+- statistics.py: TradeSimulator calculates exits, then generates reports
 
 To change strategy:
 1. Replace strategy.py with new strategy file
-2. Ensure new strategy exports: Config, Backtester, Trade
-3. Backtester must have run(df, symbol) -> List[Trade] method
+2. Ensure new strategy exports: Config, Strategy, Signal
+3. Strategy must have generate_signals(df, symbol) -> List[Signal] method
 """
 
 import sys
@@ -22,13 +22,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 import pandas as pd
 
 # Import strategy components (interface contract)
-from strategy import Config, Backtester, Trade, STRATEGY_NAME
+from strategy import Config, Strategy, Signal, STRATEGY_NAME
 
 # Import statistics/reporting functions
 from statistics import (
+    Trade,
+    TradeSimulator,
     generate_trade_report,
     generate_summary_report,
-    generate_markdown_report,
+    generate_text_report,
     print_quick_stats,
     print_final_summary
 )
@@ -109,8 +111,10 @@ def main():
     print(f"\nFound {len(csv_files)} data file(s)")
     print("-" * 60)
     
-    # Initialize backtester
-    backtester = Backtester(config)
+    # Initialize strategy and simulator
+    strategy = Strategy(config)
+    simulator = TradeSimulator(config)
+    
     all_summaries = []
     all_trades = []
     
@@ -123,10 +127,14 @@ def main():
         print(f"  - Loaded {len(df)} candles")
         print(f"  - Date range: {df['Time'].min()} to {df['Time'].max()}")
         
-        # Run backtest
-        trades = backtester.run(df, symbol)
+        # Step 1: Generate signals (entry info only)
+        signals = strategy.generate_signals(df, symbol)
+        print(f"  - Generated {len(signals)} signals")
+        
+        # Step 2: Simulate trades (calculate exits)
+        trades = simulator.simulate(signals, df)
         all_trades.extend(trades)
-        print(f"  - Generated {len(trades)} trades")
+        print(f"  - Simulated {len(trades)} trades")
         
         # Generate summary
         summary = generate_summary_report(trades, symbol, config)
@@ -145,13 +153,12 @@ def main():
     report_dir = Path(REPORT_FOLDER)
     report_dir.mkdir(parents=True, exist_ok=True)
     
-    # Generate markdown summary
-    summary_md_path = str(report_dir / "backtest_results.md")
-    generate_markdown_report(all_summaries, config, summary_md_path)
+    # Generate text summary
+    summary_path = str(report_dir / "backtest_results.md")
+    generate_text_report(all_summaries, config, summary_path)
     
     # Print final summary
-    total_profit = sum(t.pnl for t in all_trades)
-    print_final_summary(all_trades, total_profit)
+    print_final_summary(all_trades)
 
 
 if __name__ == "__main__":
