@@ -150,10 +150,9 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     
     # Build new report section
     lines = [
+        "",
         f"# Backtest Results - {timestamp}",
-        "",
         f"## Strategy: {strategy_info.get('name', 'Unknown')}",
-        "",
         "### Configuration",
     ]
     
@@ -190,7 +189,6 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     # Add individual symbol results
     for summary in all_summaries:
         lines.extend([
-            "",
             f"### {summary['symbol']}",
             f"| Metric | Value |",
             f"|--------|-------|",
