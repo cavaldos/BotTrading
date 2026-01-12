@@ -1,11 +1,16 @@
 """
-Smart Money Concepts (SMC) Trading Strategy Backtester
-=======================================================
+Trading Strategy Backtester
+===========================
 Main entry point for running the backtesting system.
 
 Modules:
-- strategy.py: SMC strategy logic (swing points, OB, FVG, signals, backtester)
+- strategy.py: Trading strategy logic (swap this file to change strategy)
 - statistics.py: Report generation and statistics
+
+To change strategy:
+1. Replace strategy.py with new strategy file
+2. Ensure new strategy exports: Config, Backtester, Trade
+3. Backtester must have run(df, symbol) -> List[Trade] method
 """
 
 import sys
@@ -16,8 +21,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
 
-# Import strategy components
-from strategy import Config, Backtester, Trade
+# Import strategy components (interface contract)
+from strategy import Config, Backtester, Trade, STRATEGY_NAME
 
 # Import statistics/reporting functions
 from statistics import (
@@ -38,44 +43,8 @@ REPORT_FOLDER = "./src/res"           # Folder for markdown summary report
 
 
 # ==============================================================================
-# STRATEGY CONFIG (Trading strategy parameters - adjust as needed)
+# HELPER FUNCTIONS
 # ==============================================================================
-
-# --- Risk Management ---
-RISK_REWARD_RATIO = 2.0               # Take Profit = Stop Loss * RR (e.g., 2.0 = 1:2)
-RISK_PER_TRADE = 10.0                 # Risk amount in USD per trade
-
-# --- Market Structure ---
-SWING_LENGTH = 15                     # Bars required for swing point detection
-INTERNAL_LENGTH = 5                   # Bars for internal structure
-
-# --- Order Block (OB) ---
-OB_FILTER = "ATR"                     # "ATR" or "CMR" (Cumulative Mean Range)
-OB_MITIGATION = "HighLow"             # "Close" or "HighLow"
-MAX_ORDER_BLOCKS = 20                 # Maximum OBs to track
-CHOCH_ONLY = True                     # Only trade OBs from CHoCH signals (better win rate)
-
-# --- Fair Value Gap (FVG) ---
-FVG_AUTO_THRESHOLD = True             # Auto calculate FVG threshold
-FVG_THRESHOLD_MULTIPLIER = 2.0        # Threshold = avg_delta * multiplier
-
-# --- Equal Highs/Lows ---
-EQHL_LENGTH = 3                       # Confirmation bars
-EQHL_THRESHOLD = 0.1                  # Threshold as % of ATR (0.1 = 10%)
-
-# --- Premium/Discount Zone ---
-PREMIUM_THRESHOLD = 0.7               # Above 70% = Premium zone
-DISCOUNT_THRESHOLD = 0.3              # Below 30% = Discount zone
-
-# --- ATR Settings ---
-ATR_PERIOD = 14                       # ATR calculation period
-ATR_MULTIPLIER_SL = 1.5               # Stop Loss = ATR * multiplier
-
-# --- Entry Conditions ---
-MIN_ENTRY_CONDITIONS = 3              # Minimum conditions required to enter trade
-
-# ==============================================================================
-
 
 def load_data(file_path: str) -> pd.DataFrame:
     """Load CSV data"""
@@ -93,53 +62,35 @@ def get_symbol_from_filename(filename: str) -> str:
 
 
 def create_config() -> Config:
-    """Create Config from user settings"""
+    """
+    Create Config with system paths.
+    Strategy-specific settings use defaults from strategy.py.
+    """
     return Config(
-        # Folders
         data_folder=DATA_FOLDER,
         output_folder=OUTPUT_FOLDER,
-        # Risk/Reward
-        risk_reward_ratio=RISK_REWARD_RATIO,
-        risk_per_trade=RISK_PER_TRADE,
-        # Market Structure
-        swing_length=SWING_LENGTH,
-        internal_length=INTERNAL_LENGTH,
-        # Order Block
-        ob_filter=OB_FILTER,
-        ob_mitigation=OB_MITIGATION,
-        max_order_blocks=MAX_ORDER_BLOCKS,
-        choch_only=CHOCH_ONLY,
-        # FVG
-        fvg_auto_threshold=FVG_AUTO_THRESHOLD,
-        fvg_threshold_multiplier=FVG_THRESHOLD_MULTIPLIER,
-        # Equal Highs/Lows
-        eqhl_length=EQHL_LENGTH,
-        eqhl_threshold=EQHL_THRESHOLD,
-        # Premium/Discount
-        premium_threshold=PREMIUM_THRESHOLD,
-        discount_threshold=DISCOUNT_THRESHOLD,
-        # ATR
-        atr_period=ATR_PERIOD,
-        atr_multiplier_sl=ATR_MULTIPLIER_SL,
-        # Entry
-        min_entry_conditions=MIN_ENTRY_CONDITIONS,
     )
 
+
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
 
 def main():
     """Main execution function"""
     print("=" * 60)
-    print("Smart Money Concepts (SMC) Strategy Backtester")
+    print(f"Strategy Backtester - {STRATEGY_NAME}")
     print("=" * 60)
     
-    # Initialize configuration from user settings
+    # Initialize configuration (system paths + strategy defaults)
     config = create_config()
     
     # Print current configuration
-    print(f"\nConfiguration:")
+    strategy_info = config.get_strategy_info()
+    print(f"\nStrategy: {strategy_info['name']}")
+    print(f"Configuration:")
     print(f"  - Risk/Reward Ratio: 1:{config.risk_reward_ratio}")
     print(f"  - Risk per Trade: ${config.risk_per_trade}")
-    print(f"  - CHoCH Only: {config.choch_only}")
     print(f"  - Data Folder: {config.data_folder}")
     print(f"  - Output Folder: {config.output_folder}")
     

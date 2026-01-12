@@ -12,6 +12,11 @@ Strategy based on institutional trading concepts:
 Entry Conditions:
 - LONG: Bullish trend/CHoCH + Discount Zone + Near Bullish OB/FVG
 - SHORT: Bearish trend/CHoCH + Premium Zone + Near Bearish OB/FVG
+
+INTERFACE CONTRACT (must export for main.py and statistics.py):
+- Config: dataclass with strategy configuration
+- Trade: dataclass representing a single trade
+- Backtester: class with run(df, symbol) -> List[Trade] method
 """
 
 import pandas as pd
@@ -20,6 +25,10 @@ from datetime import datetime
 from typing import Tuple, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+
+
+# ==================== STRATEGY NAME ====================
+STRATEGY_NAME = "Smart Money Concepts (SMC)"
 
 
 # ==================== ENUMS ====================
@@ -38,8 +47,23 @@ class SignalType(Enum):
 # ==================== CONFIGURATION ====================
 @dataclass
 class Config:
-    """SMC Trading strategy configuration"""
-    # Market Structure settings
+    """
+    SMC Trading strategy configuration.
+    
+    This Config contains both strategy-specific settings and system paths.
+    Strategy settings have sensible defaults and can be customized.
+    System paths (data_folder, output_folder) should be set by main.py.
+    """
+    # === SYSTEM SETTINGS (set by main.py) ===
+    data_folder: str = "data"
+    output_folder: str = "output"
+    
+    # === STRATEGY SETTINGS (with defaults) ===
+    # Risk/Reward
+    risk_reward_ratio: float = 2.0   # TP = SL * RR (e.g., 2.0 = 1:2)
+    risk_per_trade: float = 10.0     # Risk amount in USD per trade
+    
+    # Market Structure
     swing_length: int = 15           # Bars for swing point detection
     internal_length: int = 5         # Bars for internal structure
     
@@ -65,16 +89,27 @@ class Config:
     atr_period: int = 14
     atr_multiplier_sl: float = 1.5   # SL = ATR * multiplier
     
-    # Risk/Reward settings
-    risk_reward_ratio: float = 2.0   # TP = SL * RR
-    risk_per_trade: float = 10.0     # USD per trade
-    
-    # Entry settings - minimum conditions required
+    # Entry settings
     min_entry_conditions: int = 3    # Minimum conditions to enter trade
     
-    # Data settings
-    data_folder: str = "src/data"
-    output_folder: str = "output"
+    def get_strategy_info(self) -> dict:
+        """Return strategy configuration for reporting"""
+        return {
+            "name": STRATEGY_NAME,
+            "swing_length": self.swing_length,
+            "internal_length": self.internal_length,
+            "ob_filter": self.ob_filter,
+            "ob_mitigation": self.ob_mitigation,
+            "choch_only": self.choch_only,
+            "fvg_auto_threshold": self.fvg_auto_threshold,
+            "premium_threshold": self.premium_threshold,
+            "discount_threshold": self.discount_threshold,
+            "min_entry_conditions": self.min_entry_conditions,
+            "atr_period": self.atr_period,
+            "atr_multiplier_sl": self.atr_multiplier_sl,
+            "risk_reward_ratio": self.risk_reward_ratio,
+            "risk_per_trade": self.risk_per_trade,
+        }
 
 
 # ==================== DATA CLASSES ====================

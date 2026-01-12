@@ -145,31 +145,31 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     # Get current timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
+    # Get strategy info from config
+    strategy_info = config.get_strategy_info()
+    
     # Build new report section
     lines = [
-        "",
-        "=" * 80,
-        "",
         f"# Backtest Results - {timestamp}",
         "",
-        "## Strategy Configuration",
-        f"- Swing Length: {config.swing_length}",
-        f"- Internal Length: {config.internal_length}",
-        f"- OB Filter: {config.ob_filter}",
-        f"- OB Mitigation: {config.ob_mitigation}",
-        f"- CHoCH Only: {config.choch_only}",
-        f"- FVG Auto Threshold: {config.fvg_auto_threshold}",
-        f"- Premium Zone: >{config.premium_threshold*100}%",
-        f"- Discount Zone: <{config.discount_threshold*100}%",
-        f"- Min Entry Conditions: {config.min_entry_conditions}",
-        f"- ATR Period: {config.atr_period}",
-        f"- ATR Multiplier (SL): {config.atr_multiplier_sl}",
-        f"- Risk/Reward: {config.risk_reward_ratio}",
-        f"- Risk per Trade: ${config.risk_per_trade}",
+        f"## Strategy: {strategy_info.get('name', 'Unknown')}",
         "",
-        "---",
-        ""
+        "### Configuration",
     ]
+    
+    # Add all strategy settings dynamically
+    for key, value in strategy_info.items():
+        if key != 'name':
+            # Format key: snake_case -> Title Case
+            formatted_key = key.replace('_', ' ').title()
+            if isinstance(value, float) and 'threshold' in key:
+                lines.append(f"- {formatted_key}: {value*100}%")
+            elif isinstance(value, float) and 'ratio' in key:
+                lines.append(f"- {formatted_key}: 1:{value}")
+            elif 'risk_per_trade' in key:
+                lines.append(f"- {formatted_key}: ${value}")
+            else:
+                lines.append(f"- {formatted_key}: {value}")
     
     # Calculate overall stats
     total_trades = sum(s['total_trades'] for s in all_summaries)
@@ -179,23 +179,19 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     
     lines.extend([
         "## Overall Summary",
-        "",
         f"| Metric | Value |",
         f"|--------|-------|",
         f"| Total Trades | {total_trades} |",
         f"| Total Wins | {total_wins} |",
         f"| Overall Win Rate | {round(overall_win_rate, 2)}% |",
         f"| Total Net Profit | ${round(total_profit, 2)} |",
-        "",
-        "---",
-        ""
     ])
     
     # Add individual symbol results
     for summary in all_summaries:
         lines.extend([
-            f"### {summary['symbol']}",
             "",
+            f"### {summary['symbol']}",
             f"| Metric | Value |",
             f"|--------|-------|",
             f"| Total Trades | {summary['total_trades']} |",
@@ -228,9 +224,6 @@ def generate_markdown_report(all_summaries: List[Dict], config: Config, output_p
     if not existing_content.strip():
         header = [
             "# SMC Strategy Backtest History",
-            "",
-            "This file contains accumulated backtest results.",
-            ""
         ]
         existing_content = '\n'.join(header)
     
