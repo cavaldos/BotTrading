@@ -258,8 +258,8 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     
     # Add individual symbol results
     for summary in all_summaries:
-        # ROE = (Win Rate / 100) * RR Ratio
-        roe = (summary['win_rate'] / 100) * rr_ratio
+        # ROE = (Wins * RR Ratio) - Losses
+        roe = (summary['wins'] * rr_ratio) - summary['losses']
         row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>8} | {:>8} |".format(
             summary['symbol'],
             summary['total_trades'],
@@ -267,14 +267,15 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
             summary['losses'],
             summary['open_trades'],
             f"**{summary['win_rate']}%**",
-            f"{round(roe, 2)*100}%",
+            f"{round(roe, 2)}",
             summary['longest_win_streak'],
             summary['longest_loss_streak']
         )
         lines.append(row)
     
     # Add overall summary
-    overall_roe = (overall_win_rate / 100) * rr_ratio
+    # ROE = (Total Wins * RR Ratio) - Total Losses
+    overall_roe = (total_wins * rr_ratio) - total_losses
     
     # Calculate overall streaks
     overall_longest_win_streak = 0
@@ -290,7 +291,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         total_losses,
         total_open,
         f"**{round(overall_win_rate, 2)}%**",
-        f"{round(overall_roe, 2)*100}%",
+        f"{round(overall_roe, 2)}",
         overall_longest_win_streak,
         overall_longest_loss_streak
     )
