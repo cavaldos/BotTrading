@@ -12,19 +12,21 @@ For each trade:
 If signal doesn't appear or appears at wrong time -> FAIL (look-ahead bias detected)
 
 Usage:
-    python verify_trades.py
-    # Uses default folders from main.py: data_folder="data", output_folder="src/output"
+    python src/util/verify_look_bias.py
+    # Uses folder config from main.py
 """
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+# Add src directory to path for imports
+src_dir = Path(__file__).parent.parent
+sys.path.insert(0, str(src_dir))
 
 import pandas as pd
 from strategy import Config, Strategy
 from glob import glob
 
 # Import folder settings from main.py
-sys.path.insert(0, str(Path(__file__).parent / "src"))
 try:
     from main import DATA_FOLDER, OUTPUT_FOLDER
 except ImportError:
@@ -51,20 +53,39 @@ def load_latest_trade_file(output_folder: str):
     return df_trades, latest_file
 
 
-def load_market_data(data_folder: str):
-    """Load market data CSV"""
+def load_market_data(data_folder: str, symbol: str):
+    """
+    Load market data CSV that matches the symbol.
+    
+    Args:
+        data_folder: Path to data folder
+        symbol: Symbol name (e.g., "BTCUSDT_15m")
+    
+    Returns:
+        DataFrame or None if not found
+    """
+    # Try to find exact match first
+    data_file = Path(data_folder) / f"{symbol}.csv"
+    
+    if data_file.exists():
+        df = pd.read_csv(data_file)
+        df['Time'] = pd.to_datetime(df['Time'])
+        df.columns = df.columns.str.strip()
+        return df
+    
+    # If not found, list available files
     csv_files = list(Path(data_folder).glob("*.csv"))
     
     if not csv_files:
         print(f"No data files found in {data_folder}/")
         return None
     
-    # Use first CSV file
-    df = pd.read_csv(csv_files[0])
-    df['Time'] = pd.to_datetime(df['Time'])
-    df.columns = df.columns.str.strip()
+    print(f"Warning: Data file for symbol '{symbol}' not found: {data_file}")
+    print(f"Available data files:")
+    for f in csv_files:
+        print(f"  - {f.name}")
     
-    return df
+    return None
 
 
 def verify_trade(trade_row, df_market, strategy, symbol):
@@ -144,11 +165,15 @@ def main():
     
     print(f"Loaded: {trade_file}")
     print(f"Total trades: {len(df_trades)}")
+    
+    # Extract symbol from trade file name
+    symbol = Path(trade_file).stem.replace("_trades", "")
+    print(f"Symbol: {symbol}")
     print()
     
-    # Load market data
+    # Load market data for this symbol
     print("Loading market data...")
-    df_market = load_market_data(DATA_FOLDER)
+    df_market = load_market_data(DATA_FOLDER, symbol)
     
     if df_market is None:
         return
@@ -161,9 +186,6 @@ def main():
     config = Config()
     strategy = Strategy(config)
     
-    # Extract symbol from trade file name
-    symbol = Path(trade_file).stem.replace("_trades", "")
-    
     # Verify each trade
     print("Verifying trades...")
     print("-" * 80)
@@ -172,7 +194,11 @@ def main():
     failed = 0
     failed_trades = []
     
+    total_trades = len(df_trades)
     for idx, trade in df_trades.iterrows():
+        # Show progress
+        print(f"  Verifying trade {int(idx) + 1}/{total_trades}...", end='\r')
+        
         is_valid, message = verify_trade(trade, df_market, strategy, symbol)
         
         if is_valid:
@@ -186,6 +212,8 @@ def main():
                 'entry_price': trade['Entry_Price'],
                 'reason': message
             })
+    
+    print()  # Clear progress line
     
     # Print results
     print()
