@@ -31,8 +31,8 @@ class Config:
     RSI Trading strategy configuration.
     """
     # === SYSTEM SETTINGS (set by main.py) ===
-    data_folder: str = "data"
-    output_folder: str = "output"
+    data_folder: str = "src/data"
+    output_folder: str = "src/output"
     
     # === STRATEGY SETTINGS ===
     # RSI settings

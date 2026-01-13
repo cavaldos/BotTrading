@@ -39,9 +39,9 @@ from statistics import (
 # ==============================================================================
 # SYSTEM CONFIG (Fixed settings - paths and folders)
 # ==============================================================================
-DATA_FOLDER = "data"                  # Input folder containing CSV data files
+DATA_FOLDER = "src/data"                  # Input folder containing CSV data files
 OUTPUT_FOLDER = "src/output"          # Output folder for trade reports
-REPORT_FOLDER = "./src/res"           # Folder for markdown summary report
+REPORT_FOLDER = "src/report"           # Folder for markdown summary report
 
 
 # ==============================================================================

@@ -2,6 +2,7 @@
 /venv
 src/data/*
 src/res/*
+src/report/*
 src/data2/*
 src/output/*
 src/results/*
@@ -10,3 +11,7 @@ sum/result.md
 results.md
 .trash
 data
+.vscode
+/.idea
+/.vscode
+.DS_Store

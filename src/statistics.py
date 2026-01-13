@@ -36,8 +36,6 @@ class Trade:
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
     result: str = 'OPEN'      # 'WIN', 'LOSS', 'OPEN'
-    pnl: float = 0.0
-    risk_reward: float = 0.0
 
 
 # ==================== TRADE SIMULATOR ====================
@@ -122,15 +120,6 @@ class TradeSimulator:
                     trade.exit_time = row_time
                     trade.exit_price = exit_price
                     trade.result = result
-                    
-                    # Calculate PnL
-                    if result == 'WIN':
-                        trade.pnl = self.config.risk_per_trade * self.config.risk_reward_ratio
-                        trade.risk_reward = self.config.risk_reward_ratio
-                    else:
-                        trade.pnl = -self.config.risk_per_trade
-                        trade.risk_reward = -1.0
-                    
                     found_exit = True
                     break
             
@@ -140,8 +129,6 @@ class TradeSimulator:
                 trade.exit_time = last_row['Time'] if isinstance(last_row['Time'], datetime) else pd.to_datetime(last_row['Time'])
                 trade.exit_price = float(last_row['Close'])
                 trade.result = 'OPEN'
-                trade.pnl = 0.0
-                trade.risk_reward = 0.0
             
             trades.append(trade)
         

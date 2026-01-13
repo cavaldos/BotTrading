@@ -231,7 +231,7 @@ def getdata():
     # Cấu hình dễ dàng thay đổi
     currencies = ['BTCUSDT']
     timeframes = ['5m','15m']
-    folder_path = 'data'  # Remove 'src/' prefix
+    folder_path = 'src/data'  # Remove 'src/' prefix
     candles_limit = 20000  # Số lượng cây nến muốn lấy
     update_interval = 60    # Thời gian cập nhật (giây)
     
