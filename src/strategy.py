@@ -559,98 +559,362 @@ class Strategy:
         """
         Generate trade signals based on SMC concepts.
         
+        CRITICAL FIX: Detect patterns incrementally to avoid look-ahead bias.
+        A swing point at bar i is only confirmed after we have swing_length bars after it.
+        This means signals use only information available at the current bar.
+        
         Flow:
-        1. Calculate ATR
-        2. Detect swing points (for structure)
-        3. Detect internal swing points (for EQH/EQL - faster detection)
-        4. Detect structures (BOS/CHoCH)
-        5. Detect order blocks (focus on CHoCH OBs)
-        6. Detect FVGs
-        7. Detect EQH/EQL from internal swings
-        8. For each bar, check entry conditions
+        1. Calculate ATR (uses past data only)
+        2. For each bar, detect NEW swing points that just got confirmed
+        3. Detect NEW structures from confirmed swings
+        4. Detect NEW order blocks from structures
+        5. Detect NEW FVGs at current bar
+        6. Detect NEW EQH/EQL from confirmed internal swings
+        7. Check entry conditions at current bar
         """
         df = df.copy()
         signals = []
         
-        # 1. Calculate ATR
+        # Calculate ATR for entire dataset (uses past data only - no look-ahead)
         atr = calculate_atr(df, period=14)
         
-        # 2. Detect swing points for structure
-        swing_points = detect_swing_points(df, self.config.swing_length)
-        
-        if len(swing_points) < 4:
-            return signals
-        
-        # 3. Detect internal swing points for EQH/EQL (faster detection)
-        internal_swings = detect_swing_points(df, self.config.eqhl_length)
-        
-        # 4. Detect structures (BOS/CHoCH)
-        structures = detect_structure(df, swing_points)
-        
-        # 5. Detect order blocks
-        order_blocks = detect_order_blocks(df, structures)
-        
-        # 6. Detect FVGs
-        fvgs = detect_fvg(df, atr, self.config.fvg_atr_filter)
-        
-        # 7. Detect EQH/EQL from internal swings (more sensitive)
-        equal_hls = detect_equal_hl(df, internal_swings, self.config.eqhl_threshold, atr)
-        
-        # Filter only CHoCH order blocks
-        choch_obs = [ob for ob in order_blocks if ob.is_choch_ob]
-        
-        # 8. Process each bar for entry conditions
+        # Arrays for efficient access
         times = df['Time'].values
         highs = df['High'].values
         lows = df['Low'].values
         closes = df['Close'].values
+        opens = df['Open'].values
         
-        # Track active OBs (not yet mitigated and entry not triggered)
+        # Track swing points and patterns as they get confirmed
+        confirmed_swing_highs = []  # List of SwingPoint
+        confirmed_swing_lows = []   # List of SwingPoint
+        confirmed_internal_highs = []
+        confirmed_internal_lows = []
+        
+        last_swing_high = None
+        last_swing_low = None
+        
+        # Track structures and patterns
+        all_structures = []
+        all_fvgs = []
+        all_equal_hls = []
+        
+        # Track active OBs
         active_obs = []
         
-        for i in range(len(df)):
-            current_time = pd.to_datetime(times[i])
+        # Current trend
+        current_trend = None
+        last_broken_high_index = -1
+        last_broken_low_index = -1
+        
+        # Process each bar incrementally
+        for current_idx in range(len(df)):
+            current_time = pd.to_datetime(times[current_idx])
             
-            # Add new CHoCH OBs that start at or before this bar
-            for ob in choch_obs:
-                if ob.structure is not None and ob.structure.break_index == i and ob not in active_obs:
-                    # Check if FVG appeared at or after OB creation
-                    ob.has_fvg = self._check_fvg_for_ob(ob, fvgs)
-                    active_obs.append(ob)
+            # 1. Check if a swing HIGH gets confirmed at this bar
+            # A swing high at index i is confirmed when we reach index i + swing_length
+            swing_high_idx = current_idx - self.config.swing_length
+            if swing_high_idx >= self.config.swing_length:
+                # Check if bar at swing_high_idx is a swing high
+                is_swing_high = True
+                for j in range(swing_high_idx - self.config.swing_length, swing_high_idx + self.config.swing_length + 1):
+                    if j != swing_high_idx and j >= 0 and j < len(highs) and highs[j] >= highs[swing_high_idx]:
+                        is_swing_high = False
+                        break
+                
+                if is_swing_high:
+                    # Determine type (HH or LH)
+                    if last_swing_high is None:
+                        swing_type = 'HH'
+                    elif highs[swing_high_idx] > last_swing_high.price:
+                        swing_type = 'HH'
+                    else:
+                        swing_type = 'LH'
+                    
+                    swing = SwingPoint(
+                        price=highs[swing_high_idx],
+                        time=pd.to_datetime(times[swing_high_idx]),
+                        index=swing_high_idx,
+                        type=swing_type,
+                        is_high=True
+                    )
+                    confirmed_swing_highs.append(swing)
+                    last_swing_high = swing
             
-            # Update OB liquidity status (check for EQH/EQL after OB creation)
+            # 2. Check if a swing LOW gets confirmed at this bar
+            swing_low_idx = current_idx - self.config.swing_length
+            if swing_low_idx >= self.config.swing_length:
+                # Check if bar at swing_low_idx is a swing low
+                is_swing_low = True
+                for j in range(swing_low_idx - self.config.swing_length, swing_low_idx + self.config.swing_length + 1):
+                    if j != swing_low_idx and j >= 0 and j < len(lows) and lows[j] <= lows[swing_low_idx]:
+                        is_swing_low = False
+                        break
+                
+                if is_swing_low:
+                    # Determine type (LL or HL)
+                    if last_swing_low is None:
+                        swing_type = 'LL'
+                    elif lows[swing_low_idx] < last_swing_low.price:
+                        swing_type = 'LL'
+                    else:
+                        swing_type = 'HL'
+                    
+                    swing = SwingPoint(
+                        price=lows[swing_low_idx],
+                        time=pd.to_datetime(times[swing_low_idx]),
+                        index=swing_low_idx,
+                        type=swing_type,
+                        is_high=False
+                    )
+                    confirmed_swing_lows.append(swing)
+                    last_swing_low = swing
+            
+            # 3. Detect structure breaks at CURRENT bar
+            # Initialize trend if we have both swing high and low
+            if current_trend is None and confirmed_swing_highs and confirmed_swing_lows:
+                if confirmed_swing_highs[0].index > confirmed_swing_lows[0].index:
+                    current_trend = 'BULLISH'
+                else:
+                    current_trend = 'BEARISH'
+            
+            # Check for structure breaks
+            if current_trend is not None and confirmed_swing_highs and confirmed_swing_lows:
+                # Get most recent unbroken swing high and low
+                current_swing_high = None
+                for sh in reversed(confirmed_swing_highs):
+                    if sh.index > last_broken_high_index:
+                        current_swing_high = sh
+                        break
+                
+                current_swing_low = None
+                for sl in reversed(confirmed_swing_lows):
+                    if sl.index > last_broken_low_index:
+                        current_swing_low = sl
+                        break
+                
+                # Check for break of swing high
+                if current_swing_high and closes[current_idx] > current_swing_high.price:
+                    if current_trend == 'BULLISH':
+                        structure_type = 'BOS'
+                    else:
+                        structure_type = 'CHoCH'
+                    
+                    structure = Structure(
+                        type=structure_type,
+                        bias='BULLISH',
+                        level=current_swing_high.price,
+                        break_time=current_time,
+                        break_index=current_idx,
+                        pivot_time=current_swing_high.time,
+                        pivot_index=current_swing_high.index
+                    )
+                    all_structures.append(structure)
+                    current_trend = 'BULLISH'
+                    last_broken_high_index = current_swing_high.index
+                    
+                    # Create order block for CHoCH
+                    if structure_type == 'CHoCH':
+                        # Find last bearish candle before break
+                        for i in range(current_idx - 1, structure.pivot_index - 1, -1):
+                            if i >= 0 and closes[i] < opens[i]:
+                                ob = OrderBlock(
+                                    high=highs[i],
+                                    low=lows[i],
+                                    time=pd.to_datetime(times[i]),
+                                    index=i,
+                                    bias='BULLISH',
+                                    is_choch_ob=True,
+                                    structure=structure
+                                )
+                                # Check FVG
+                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                                active_obs.append(ob)
+                                break
+                
+                # Check for break of swing low
+                if current_swing_low and closes[current_idx] < current_swing_low.price:
+                    if current_trend == 'BEARISH':
+                        structure_type = 'BOS'
+                    else:
+                        structure_type = 'CHoCH'
+                    
+                    structure = Structure(
+                        type=structure_type,
+                        bias='BEARISH',
+                        level=current_swing_low.price,
+                        break_time=current_time,
+                        break_index=current_idx,
+                        pivot_time=current_swing_low.time,
+                        pivot_index=current_swing_low.index
+                    )
+                    all_structures.append(structure)
+                    current_trend = 'BEARISH'
+                    last_broken_low_index = current_swing_low.index
+                    
+                    # Create order block for CHoCH
+                    if structure_type == 'CHoCH':
+                        # Find last bullish candle before break
+                        for i in range(current_idx - 1, structure.pivot_index - 1, -1):
+                            if i >= 0 and closes[i] > opens[i]:
+                                ob = OrderBlock(
+                                    high=highs[i],
+                                    low=lows[i],
+                                    time=pd.to_datetime(times[i]),
+                                    index=i,
+                                    bias='BEARISH',
+                                    is_choch_ob=True,
+                                    structure=structure
+                                )
+                                # Check FVG
+                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                                active_obs.append(ob)
+                                break
+            
+            # 4. Detect FVG at current bar (needs 3 bars: i-2, i-1, i)
+            if current_idx >= 2:
+                # Bullish FVG
+                if lows[current_idx] > highs[current_idx - 2]:
+                    gap_size = lows[current_idx] - highs[current_idx - 2]
+                    atr_value = atr.iloc[current_idx]
+                    
+                    if not self.config.fvg_atr_filter or gap_size >= 0.1 * atr_value:
+                        fvg = FairValueGap(
+                            top=lows[current_idx],
+                            bottom=highs[current_idx - 2],
+                            bias='BULLISH',
+                            time=current_time,
+                            index=current_idx
+                        )
+                        all_fvgs.append(fvg)
+                        
+                        # Update has_fvg for active OBs
+                        for ob in active_obs:
+                            if not ob.has_fvg and ob.bias == 'BULLISH':
+                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                
+                # Bearish FVG
+                if highs[current_idx] < lows[current_idx - 2]:
+                    gap_size = lows[current_idx - 2] - highs[current_idx]
+                    atr_value = atr.iloc[current_idx]
+                    
+                    if not self.config.fvg_atr_filter or gap_size >= 0.1 * atr_value:
+                        fvg = FairValueGap(
+                            top=lows[current_idx - 2],
+                            bottom=highs[current_idx],
+                            bias='BEARISH',
+                            time=current_time,
+                            index=current_idx
+                        )
+                        all_fvgs.append(fvg)
+                        
+                        # Update has_fvg for active OBs
+                        for ob in active_obs:
+                            if not ob.has_fvg and ob.bias == 'BEARISH':
+                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+            
+            # 5. Detect internal swings for EQH/EQL (confirmed after eqhl_length bars)
+            internal_high_idx = current_idx - self.config.eqhl_length
+            if internal_high_idx >= self.config.eqhl_length:
+                is_internal_high = True
+                for j in range(internal_high_idx - self.config.eqhl_length, internal_high_idx + self.config.eqhl_length + 1):
+                    if j != internal_high_idx and j >= 0 and j < len(highs) and highs[j] >= highs[internal_high_idx]:
+                        is_internal_high = False
+                        break
+                
+                if is_internal_high:
+                    # Check for EQH with previous internal highs
+                    for prev_ih in confirmed_internal_highs:
+                        if abs(highs[internal_high_idx] - prev_ih.price) < self.config.eqhl_threshold * atr.iloc[internal_high_idx]:
+                            eqh = EqualHL(
+                                type='EQH',
+                                level=(highs[internal_high_idx] + prev_ih.price) / 2,
+                                time=pd.to_datetime(times[internal_high_idx]),
+                                index=internal_high_idx,
+                                first_pivot_index=prev_ih.index,
+                                second_pivot_index=internal_high_idx
+                            )
+                            all_equal_hls.append(eqh)
+                            break
+                    
+                    # Add to confirmed internal highs
+                    confirmed_internal_highs.append(SwingPoint(
+                        price=highs[internal_high_idx],
+                        time=pd.to_datetime(times[internal_high_idx]),
+                        index=internal_high_idx,
+                        type='H',
+                        is_high=True
+                    ))
+            
+            internal_low_idx = current_idx - self.config.eqhl_length
+            if internal_low_idx >= self.config.eqhl_length:
+                is_internal_low = True
+                for j in range(internal_low_idx - self.config.eqhl_length, internal_low_idx + self.config.eqhl_length + 1):
+                    if j != internal_low_idx and j >= 0 and j < len(lows) and lows[j] <= lows[internal_low_idx]:
+                        is_internal_low = False
+                        break
+                
+                if is_internal_low:
+                    # Check for EQL with previous internal lows
+                    for prev_il in confirmed_internal_lows:
+                        if abs(lows[internal_low_idx] - prev_il.price) < self.config.eqhl_threshold * atr.iloc[internal_low_idx]:
+                            eql = EqualHL(
+                                type='EQL',
+                                level=(lows[internal_low_idx] + prev_il.price) / 2,
+                                time=pd.to_datetime(times[internal_low_idx]),
+                                index=internal_low_idx,
+                                first_pivot_index=prev_il.index,
+                                second_pivot_index=internal_low_idx
+                            )
+                            all_equal_hls.append(eql)
+                            break
+                    
+                    # Add to confirmed internal lows
+                    confirmed_internal_lows.append(SwingPoint(
+                        price=lows[internal_low_idx],
+                        time=pd.to_datetime(times[internal_low_idx]),
+                        index=internal_low_idx,
+                        type='L',
+                        is_high=False
+                    ))
+            
+            # 6. Update OB liquidity status
             for ob in active_obs:
                 if not ob.has_liquidity:
-                    ob.has_liquidity = self._check_liquidity_for_ob(ob, equal_hls, i)
+                    ob.has_liquidity = self._check_liquidity_for_ob(ob, all_equal_hls, current_idx)
             
-            # Check for mitigation and entry
+            # 7. Check for entry at CURRENT bar
             obs_to_remove = []
             
             for ob in active_obs:
                 # Skip if entry already triggered
                 if ob.entry_triggered:
+                    # Still check mitigation
+                    if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
+                        ob.is_mitigated = True
+                        obs_to_remove.append(ob)
                     continue
                 
-                # Check if price touches OB zone (entry condition)
-                if self._price_touches_ob(ob, highs[i], lows[i]):
-                    # Check all conditions for entry
+                # Check if price touches OB zone at CURRENT bar
+                if self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
+                    # Check all conditions for entry AT CURRENT BAR
                     if ob.has_fvg and ob.has_liquidity:
-                        # Generate signal
+                        # Generate signal with CURRENT bar's time and price
                         signal = self._create_signal(
                             symbol=symbol,
                             ob=ob,
                             entry_time=current_time,
-                            entry_price=closes[i],
-                            current_high=highs[i],
-                            current_low=lows[i]
+                            entry_price=closes[current_idx],
+                            current_high=highs[current_idx],
+                            current_low=lows[current_idx]
                         )
                         
                         if signal:
                             signals.append(signal)
                             ob.entry_triggered = True
                 
-                # Check if OB is fully mitigated (price went through completely)
-                if self._ob_is_mitigated(ob, highs[i], lows[i], closes[i]):
+                # Check if OB is fully mitigated
+                if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
                     ob.is_mitigated = True
                     obs_to_remove.append(ob)
             
