@@ -159,6 +159,6 @@ if __name__ == "__main__":
     # Default paths
     BASE_DIR = Path(__file__).parent.parent
     CANDLES_PATH = BASE_DIR / "data/BTCUSDT_5m.csv"
-    TRADES_PATH = BASE_DIR / "src/output/BTCUSDT_5m_trades.csv"
+    TRADES_PATH = BASE_DIR / "output/BTCUSDT_5m_trades.csv"
     
     verify_trades(str(CANDLES_PATH), str(TRADES_PATH))
