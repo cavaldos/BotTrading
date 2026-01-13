@@ -117,6 +117,12 @@ class TradeAnalyzer:
         long_wr = (long_wins / long_closed * 100) if long_closed > 0 else 0
         short_wr = (short_wins / short_closed * 100) if short_closed > 0 else 0
         
+        # Thống kê số lệnh theo ngày
+        trades_per_day = df.groupby('Date').size()
+        max_trades_per_day = int(trades_per_day.max()) if len(trades_per_day) > 0 else 0
+        avg_trades_per_day = float(trades_per_day.mean()) if len(trades_per_day) > 0 else 0
+        total_trading_days = len(trades_per_day)
+        
         return {
             'total_trades': total_trades,
             'wins': wins,
@@ -133,7 +139,10 @@ class TradeAnalyzer:
             'long_trades': long_trades,
             'short_trades': short_trades,
             'long_win_rate': long_wr,
-            'short_win_rate': short_wr
+            'short_win_rate': short_wr,
+            'max_trades_per_day': max_trades_per_day,
+            'avg_trades_per_day': avg_trades_per_day,
+            'total_trading_days': total_trading_days
         }
     
     def _calculate_max_streak(self, df, result_type):
@@ -274,6 +283,29 @@ class TradeAnalyzer:
         df['Cumulative_PnL'] = df['PnL'].cumsum()
         return df[['Entry_Time', 'Symbol', 'Type', 'Result', 'PnL', 'Cumulative_PnL']]
     
+    def get_trades_per_day_stats(self):
+        """Phân tích chi tiết số lệnh theo ngày"""
+        df = self.trades_df
+        
+        # Đếm số lệnh mỗi ngày
+        trades_per_day = df.groupby('Date').agg({
+            'Symbol': 'count',
+            'Result': lambda x: (x == 'Win').sum()
+        }).rename(columns={'Symbol': 'Total_Trades', 'Result': 'Wins'})
+        
+        trades_per_day['Date'] = trades_per_day.index
+        trades_per_day = trades_per_day.reset_index(drop=True)
+        
+        # Tính win rate
+        trades_per_day['Win_Rate'] = (
+            trades_per_day['Wins'] / trades_per_day['Total_Trades'] * 100
+        ).fillna(0)
+        
+        # Sort by date
+        trades_per_day = trades_per_day.sort_values('Date')
+        
+        return trades_per_day
+    
     def generate_html_report(self, output_file='trade_analysis_report.html'):
         """Tạo báo cáo HTML với biểu đồ Plotly"""
         print("\n" + "="*60)
@@ -287,6 +319,7 @@ class TradeAnalyzer:
         day_stats = self.get_stats_by_day_of_week()
         month_stats = self.get_stats_by_month()
         cumulative_df = self.get_cumulative_pnl()
+        trades_per_day_df = self.get_trades_per_day_stats()
         
         # Tạo HTML
         html_content = self._create_html_template()
@@ -301,6 +334,7 @@ class TradeAnalyzer:
         fig_month = self._create_month_chart(month_stats)
         fig_cumulative = self._create_cumulative_pnl_chart(cumulative_df)
         fig_distribution = self._create_win_loss_distribution()
+        fig_trades_per_day = self._create_trades_per_day_chart(trades_per_day_df)
         
         # Chèn biểu đồ vào HTML
         html_content += '<div class="chart-container">'
@@ -333,8 +367,13 @@ class TradeAnalyzer:
         html_content += fig_distribution.to_html(full_html=False, include_plotlyjs=False)
         html_content += '</div>'
         
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>📈 Số Lệnh Theo Từng Ngày</h2>'
+        html_content += fig_trades_per_day.to_html(full_html=False, include_plotlyjs=False)
+        html_content += '</div>'
+        
         # Thêm bảng chi tiết
-        html_content += self._create_detailed_tables(symbol_stats, hour_stats, day_stats, month_stats)
+        html_content += self._create_detailed_tables(symbol_stats, hour_stats, day_stats, month_stats, trades_per_day_df)
         
         # Kết thúc HTML
         html_content += '</div></body></html>'
@@ -538,6 +577,18 @@ class TradeAnalyzer:
             <div class="stat-card">
                 <div class="stat-label">SHORT Trades</div>
                 <div class="stat-value">{stats['short_trades']} ({stats['short_win_rate']:.1f}%)</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Số Ngày Giao Dịch</div>
+                <div class="stat-value">{stats['total_trading_days']}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Lệnh/Ngày TB</div>
+                <div class="stat-value">{stats['avg_trades_per_day']:.2f}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Max Lệnh/Ngày</div>
+                <div class="stat-value">{stats['max_trades_per_day']}</div>
             </div>
         </div>
 """
@@ -778,7 +829,56 @@ class TradeAnalyzer:
         
         return fig
     
-    def _create_detailed_tables(self, symbol_stats, hour_stats, day_stats, month_stats):
+    def _create_trades_per_day_chart(self, df):
+        """Biểu đồ số lệnh theo từng ngày"""
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('Số Lệnh Theo Từng Ngày', 'Win Rate Theo Từng Ngày'),
+            specs=[[{'type': 'bar'}], [{'type': 'scatter'}]],
+            vertical_spacing=0.15
+        )
+        
+        # Trades per day bars
+        fig.add_trace(
+            go.Bar(
+                x=df['Date'],
+                y=df['Total_Trades'],
+                name='Total Trades',
+                marker_color='rgb(26, 118, 255)',
+                text=df['Total_Trades'],
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Trades: %{y}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Win rate line
+        fig.add_trace(
+            go.Scatter(
+                x=df['Date'],
+                y=df['Win_Rate'],
+                mode='lines+markers',
+                name='Win Rate',
+                line=dict(color='rgb(46, 204, 113)', width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>%{x}</b><br>Win Rate: %{y:.1f}%<extra></extra>'
+            ),
+            row=2, col=1
+        )
+        
+        fig.update_xaxes(title_text="Ngày", row=2, col=1)
+        fig.update_yaxes(title_text="Số lệnh", row=1, col=1)
+        fig.update_yaxes(title_text="Win Rate (%)", row=2, col=1)
+        
+        fig.update_layout(
+            height=700,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_detailed_tables(self, symbol_stats, hour_stats, day_stats, month_stats, trades_per_day_df=None):
         """Tạo bảng chi tiết"""
         html = '<div style="padding: 30px;">'
         html += '<h2>📋 Chi Tiết Thống Kê</h2>'
@@ -798,6 +898,12 @@ class TradeAnalyzer:
         # Month table
         html += '<h3 style="margin-top: 30px; color: #374151;">Theo Tháng</h3>'
         html += month_stats.to_html(index=False, classes='table', border=0)
+        
+        # Trades per day table (nếu có)
+        if trades_per_day_df is not None and len(trades_per_day_df) > 0:
+            html += '<h3 style="margin-top: 30px; color: #374151;">Số Lệnh Theo Từng Ngày (Top 20 ngày có nhiều lệnh nhất)</h3>'
+            top_days = trades_per_day_df.nlargest(20, 'Total_Trades')
+            html += top_days.to_html(index=False, classes='table', border=0)
         
         html += '</div>'
         
@@ -840,6 +946,11 @@ def main():
     print(f"  Thời gian TB:           {stats['avg_duration_minutes']:.0f} phút")
     print(f"  LONG Trades:            {stats['long_trades']} (WR: {stats['long_win_rate']:.1f}%)")
     print(f"  SHORT Trades:           {stats['short_trades']} (WR: {stats['short_win_rate']:.1f}%)")
+    print(f"\n📊 THỐNG KÊ THEO NGÀY:")
+    print("-" * 60)
+    print(f"  Tổng số ngày giao dịch: {stats['total_trading_days']}")
+    print(f"  Số lệnh/ngày TB:        {stats['avg_trades_per_day']:.2f}")
+    print(f"  Max lệnh trong 1 ngày:  {stats['max_trades_per_day']}")
     
     # Tạo báo cáo HTML
     output_file = analyzer.generate_html_report('src/report/trade_analysis_report.html')
