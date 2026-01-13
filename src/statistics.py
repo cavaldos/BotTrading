@@ -250,17 +250,17 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     lines = [
         "",
         f"##  TRADE RESULTS - {STRATEGY_NAME} - {timestamp}",
-        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>12} | {:>14} |".format(
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>8} | {:>8} |".format(
             "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "ROE", "W-Streak", "L-Streak"
         ),
-        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->8}|{:->12}|{:->10}|{:->14}|{:->16}|".format("", "", "", "", "", "", "", "", ""),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->8}|{:->12}|{:->10}|{:->10}|{:->10}|".format("", "", "", "", "", "", "", "", ""),
     ]
     
     # Add individual symbol results
     for summary in all_summaries:
         # ROE = (Win Rate / 100) * RR Ratio
         roe = (summary['win_rate'] / 100) * rr_ratio
-        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>12} | {:>14} |".format(
+        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>8} | {:>8} |".format(
             summary['symbol'],
             summary['total_trades'],
             summary['wins'],
@@ -283,7 +283,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         overall_longest_win_streak = max(overall_longest_win_streak, summary['longest_win_streak'])
         overall_longest_loss_streak = max(overall_longest_loss_streak, summary['longest_loss_streak'])
     
-    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>12} | {:>14} |".format(
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>8} | {:>8} | {:>8} |".format(
         "TOTAL",
         total_trades,
         total_wins,
