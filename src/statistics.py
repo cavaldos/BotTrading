@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
+from tqdm import tqdm
 
 from strategy import STRATEGY_NAME, Signal, Config
 
@@ -85,7 +86,8 @@ class TradeSimulator:
         
         trades = []
         
-        for signal in signals:
+        # Progress bar for simulating trades
+        for signal in tqdm(signals, desc="  Simulating trades", unit="trade", leave=False):
             # Find the index where this signal's entry_time occurs
             entry_idx = -1
             for idx in range(len(df)):

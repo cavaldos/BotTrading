@@ -20,6 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
+from tqdm import tqdm
 
 # Import strategy components (interface contract)
 from strategy import Config, Strategy, Signal, STRATEGY_NAME
@@ -118,23 +119,24 @@ def main():
     all_summaries = []
     all_trades = []
     
-    for csv_file in csv_files:
+    # Progress bar for processing files
+    for csv_file in tqdm(csv_files, desc="Processing files", unit="file"):
         symbol = get_symbol_from_filename(csv_file.name)
-        print(f"\nProcessing: {symbol}")
+        tqdm.write(f"\nProcessing: {symbol}")
         
         # Load data
         df = load_data(str(csv_file))
-        print(f"  - Loaded {len(df)} candles")
-        print(f"  - Date range: {df['Time'].min()} to {df['Time'].max()}")
+        tqdm.write(f"  - Loaded {len(df)} candles")
+        tqdm.write(f"  - Date range: {df['Time'].min()} to {df['Time'].max()}")
         
         # Step 1: Generate signals (entry info only)
         signals = strategy.generate_signals(df, symbol)
-        print(f"  - Generated {len(signals)} signals")
+        tqdm.write(f"  - Generated {len(signals)} signals")
         
         # Step 2: Simulate trades (calculate exits)
         trades = simulator.simulate(signals, df)
         all_trades.extend(trades)
-        print(f"  - Simulated {len(trades)} trades")
+        tqdm.write(f"  - Simulated {len(trades)} trades")
         
         # Generate summary
         summary = generate_summary_report(trades, symbol, config)
