@@ -138,12 +138,6 @@ def save_to_csv(candles, filename):
             close_price = float(candle[4])
             volume = float(candle[5])
 
-            # Làm tròn các giá trị, loại bỏ các số 0 không cần thiết
-            open_price = round(open_price, 2)
-            high_price = round(high_price, 2)
-            low_price = round(low_price, 2)
-            close_price = round(close_price, 2)
-
             # Ghi dữ liệu vào file theo định dạng yêu cầu
             file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
 
