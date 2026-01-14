@@ -31,7 +31,7 @@ try:
     from main import DATA_FOLDER, OUTPUT_FOLDER
 except ImportError:
     # Fallback to defaults if main.py not found
-    DATA_FOLDER = "data"
+    DATA_FOLDER = "src/data"
     OUTPUT_FOLDER = "src/output"
 
 
