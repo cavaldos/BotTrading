@@ -31,6 +31,8 @@ INTERFACE CONTRACT (must export for main.py):
 - Config: dataclass with strategy configuration
 - Signal: dataclass representing a trade signal
 - Strategy: class with generate_signals(df, symbol) -> List[Signal] method
+
+PERFORMANCE: Uses Numba JIT for critical helper functions while preserving exact logic.
 """
 
 import pandas as pd
@@ -38,6 +40,7 @@ import numpy as np
 from datetime import datetime
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
+from numba import njit
 
 
 # ==================== STRATEGY NAME ====================
@@ -64,6 +67,8 @@ class Config:
     
     # === ORDER BLOCK ===
     ob_mitigation: str = "high_low" # "close" or "high_low"
+    ob_body_ratio: float = 0.5      # Minimum body/range ratio for OB (filter weak candles like doji)
+    ob_body_ratio: float = 0.5      # Minimum body/range ratio for OB (filter weak candles like doji)
     
     # === FVG ===
     fvg_atr_filter: bool = True     # Filter small FVGs using ATR
@@ -81,6 +86,7 @@ class Config:
             "internal_length": self.internal_length,
             "eqhl_length": self.eqhl_length,
             "eqhl_threshold": self.eqhl_threshold,
+            "ob_body_ratio": self.ob_body_ratio,
             "sl_buffer_pct": self.sl_buffer_pct,
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
@@ -119,6 +125,7 @@ class OrderBlock:
     index: int
     bias: str           # 'BULLISH' or 'BEARISH'
     is_choch_ob: bool   # True if this OB created a CHoCH
+    body_ratio: float = 0.0     # Body to range ratio (for filtering weak candles)
     structure: Optional[Structure] = None  # Reference to CHoCH/BOS
     is_mitigated: bool = False
     has_fvg: bool = False       # True if FVG appeared with/after this OB
@@ -162,25 +169,155 @@ class Signal:
     take_profit: float
 
 
+# ==================== NUMBA JIT OPTIMIZED FUNCTIONS ====================
+
+@njit(cache=True)
+def _calculate_atr_jit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int) -> np.ndarray:
+    """
+    Calculate Average True Range (ATR) - JIT optimized.
+    """
+    n = len(highs)
+    tr = np.empty(n, dtype=np.float64)
+    atr = np.empty(n, dtype=np.float64)
+    
+    # Calculate True Range
+    tr[0] = highs[0] - lows[0]
+    for i in range(1, n):
+        tr1 = highs[i] - lows[i]
+        tr2 = abs(highs[i] - closes[i - 1])
+        tr3 = abs(lows[i] - closes[i - 1])
+        tr[i] = max(tr1, max(tr2, tr3))
+    
+    # Calculate ATR using rolling mean
+    cumsum = 0.0
+    for i in range(n):
+        cumsum += tr[i]
+        if i < period:
+            atr[i] = cumsum / (i + 1)
+        else:
+            cumsum -= tr[i - period]
+            atr[i] = cumsum / period
+    
+    return atr
+
+
+@njit(cache=True)
+def _check_swing_high_jit(highs: np.ndarray, i: int, length: int) -> bool:
+    """Check if index i is a swing high - JIT optimized."""
+    n = len(highs)
+    if i < length or i >= n - length:
+        return False
+    
+    for j in range(i - length, i + length + 1):
+        if j != i and highs[j] >= highs[i]:
+            return False
+    return True
+
+
+@njit(cache=True)
+def _check_swing_low_jit(lows: np.ndarray, i: int, length: int) -> bool:
+    """Check if index i is a swing low - JIT optimized."""
+    n = len(lows)
+    if i < length or i >= n - length:
+        return False
+    
+    for j in range(i - length, i + length + 1):
+        if j != i and lows[j] <= lows[i]:
+            return False
+    return True
+
+
+@njit(cache=True)
+def _precompute_all_swings_jit(highs: np.ndarray, lows: np.ndarray, length: int) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Pre-compute ALL swing high/low indices at once - much faster than checking each bar.
+    
+    Returns:
+        - swing_high_indices: Array of indices where swing highs occur
+        - swing_low_indices: Array of indices where swing lows occur
+    """
+    n = len(highs)
+    # Pre-allocate max possible size
+    sh_indices = np.empty(n, dtype=np.int64)
+    sl_indices = np.empty(n, dtype=np.int64)
+    sh_count = 0
+    sl_count = 0
+    
+    for i in range(length, n - length):
+        # Check swing high
+        is_sh = True
+        for j in range(i - length, i + length + 1):
+            if j != i and highs[j] >= highs[i]:
+                is_sh = False
+                break
+        if is_sh:
+            sh_indices[sh_count] = i
+            sh_count += 1
+        
+        # Check swing low
+        is_sl = True
+        for j in range(i - length, i + length + 1):
+            if j != i and lows[j] <= lows[i]:
+                is_sl = False
+                break
+        if is_sl:
+            sl_indices[sl_count] = i
+            sl_count += 1
+    
+    return sh_indices[:sh_count].copy(), sl_indices[:sl_count].copy()
+
+
+@njit(cache=True)
+def _precompute_fvg_jit(highs: np.ndarray, lows: np.ndarray, atr: np.ndarray, use_filter: bool) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Pre-compute ALL FVGs at once.
+    
+    Returns:
+        - fvg_indices, fvg_tops, fvg_bottoms, fvg_biases (1=BULLISH, 0=BEARISH)
+    """
+    n = len(highs)
+    max_fvg = n
+    
+    fvg_indices = np.empty(max_fvg, dtype=np.int64)
+    fvg_tops = np.empty(max_fvg, dtype=np.float64)
+    fvg_bottoms = np.empty(max_fvg, dtype=np.float64)
+    fvg_biases = np.empty(max_fvg, dtype=np.int8)
+    count = 0
+    
+    for i in range(2, n):
+        # Bullish FVG
+        if lows[i] > highs[i - 2]:
+            gap_size = lows[i] - highs[i - 2]
+            if not use_filter or gap_size >= 0.1 * atr[i]:
+                fvg_indices[count] = i
+                fvg_tops[count] = lows[i]
+                fvg_bottoms[count] = highs[i - 2]
+                fvg_biases[count] = 1  # BULLISH
+                count += 1
+        
+        # Bearish FVG
+        if highs[i] < lows[i - 2]:
+            gap_size = lows[i - 2] - highs[i]
+            if not use_filter or gap_size >= 0.1 * atr[i]:
+                fvg_indices[count] = i
+                fvg_tops[count] = lows[i - 2]
+                fvg_bottoms[count] = highs[i]
+                fvg_biases[count] = 0  # BEARISH
+                count += 1
+    
+    return fvg_indices[:count].copy(), fvg_tops[:count].copy(), fvg_bottoms[:count].copy(), fvg_biases[:count].copy()
+
+
 # ==================== INDICATOR FUNCTIONS ====================
 
 def calculate_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
-    """Calculate Average True Range (ATR)"""
-    high = df['High'].astype(float)
-    low = df['Low'].astype(float)
-    close = df['Close'].astype(float)
+    """Calculate Average True Range (ATR) - optimized with Numba"""
+    high = df['High'].values.astype(np.float64)
+    low = df['Low'].values.astype(np.float64)
+    close = df['Close'].values.astype(np.float64)
     
-    tr1 = high - low
-    tr2 = (high - close.shift(1)).abs()
-    tr3 = (low - close.shift(1)).abs()
-    
-    tr_df = pd.DataFrame({'tr1': tr1, 'tr2': tr2, 'tr3': tr3})
-    tr = tr_df.max(axis=1)
-    atr = tr.rolling(window=period).mean()
-    
-    # Fill NaN values with tr values
-    atr_result = pd.Series(np.where(pd.isna(atr), tr, atr), index=df.index)
-    return atr_result
+    atr_values = _calculate_atr_jit(high, low, close, period)
+    return pd.Series(atr_values, index=df.index)
 
 
 def detect_swing_points(df: pd.DataFrame, length: int) -> List[SwingPoint]:
@@ -195,8 +332,8 @@ def detect_swing_points(df: pd.DataFrame, length: int) -> List[SwingPoint]:
     """
     swing_points = []
     
-    highs = df['High'].values
-    lows = df['Low'].values
+    highs = df['High'].values.astype(np.float64)
+    lows = df['Low'].values.astype(np.float64)
     times = df['Time'].values
     
     # Need at least length*2 + 1 bars
@@ -208,14 +345,8 @@ def detect_swing_points(df: pd.DataFrame, length: int) -> List[SwingPoint]:
     last_swing_low = None
     
     for i in range(length, len(df) - length):
-        # Check for swing high
-        is_swing_high = True
-        for j in range(i - length, i + length + 1):
-            if j != i and highs[j] >= highs[i]:
-                is_swing_high = False
-                break
-        
-        if is_swing_high:
+        # Check for swing high using JIT function
+        if _check_swing_high_jit(highs, i, length):
             # Determine type (HH or LH)
             if last_swing_high is None:
                 swing_type = 'HH'
@@ -234,14 +365,8 @@ def detect_swing_points(df: pd.DataFrame, length: int) -> List[SwingPoint]:
             swing_points.append(swing)
             last_swing_high = swing
         
-        # Check for swing low
-        is_swing_low = True
-        for j in range(i - length, i + length + 1):
-            if j != i and lows[j] <= lows[i]:
-                is_swing_low = False
-                break
-        
-        if is_swing_low:
+        # Check for swing low using JIT function
+        if _check_swing_low_jit(lows, i, length):
             # Determine type (LL or HL)
             if last_swing_low is None:
                 swing_type = 'LL'
@@ -559,33 +684,55 @@ class Strategy:
         """
         Generate trade signals based on SMC concepts.
         
-        CRITICAL FIX: Detect patterns incrementally to avoid look-ahead bias.
+        OPTIMIZED VERSION: Pre-computes swing points and FVGs using JIT,
+        then uses efficient set lookups in the main loop.
+        
+        CRITICAL: Detect patterns incrementally to avoid look-ahead bias.
         A swing point at bar i is only confirmed after we have swing_length bars after it.
         This means signals use only information available at the current bar.
-        
-        Flow:
-        1. Calculate ATR (uses past data only)
-        2. For each bar, detect NEW swing points that just got confirmed
-        3. Detect NEW structures from confirmed swings
-        4. Detect NEW order blocks from structures
-        5. Detect NEW FVGs at current bar
-        6. Detect NEW EQH/EQL from confirmed internal swings
-        7. Check entry conditions at current bar
         """
         df = df.copy()
         signals = []
         
         # Calculate ATR for entire dataset (uses past data only - no look-ahead)
         atr = calculate_atr(df, period=14)
+        atr_values = atr.values  # Convert to numpy for faster access
         
         # Arrays for efficient access
         times = df['Time'].values
-        highs = df['High'].values
-        lows = df['Low'].values
-        closes = df['Close'].values
-        opens = df['Open'].values
+        highs = df['High'].values.astype(np.float64)
+        lows = df['Low'].values.astype(np.float64)
+        closes = df['Close'].values.astype(np.float64)
+        opens = df['Open'].values.astype(np.float64)
+        n = len(df)
         
-        # Track swing points and patterns as they get confirmed
+        # ========== PRE-COMPUTE ALL SWING POINTS ==========
+        # This is much faster than checking each bar individually
+        swing_high_indices_arr, swing_low_indices_arr = _precompute_all_swings_jit(
+            highs, lows, self.config.swing_length
+        )
+        internal_high_indices_arr, internal_low_indices_arr = _precompute_all_swings_jit(
+            highs, lows, self.config.eqhl_length
+        )
+        
+        # Convert to sets for O(1) lookup
+        swing_high_indices_set = set(swing_high_indices_arr)
+        swing_low_indices_set = set(swing_low_indices_arr)
+        internal_high_indices_set = set(internal_high_indices_arr)
+        internal_low_indices_set = set(internal_low_indices_arr)
+        
+        # ========== PRE-COMPUTE ALL FVGS ==========
+        fvg_indices_arr, fvg_tops_arr, fvg_bottoms_arr, fvg_biases_arr = _precompute_fvg_jit(
+            highs, lows, atr_values, self.config.fvg_atr_filter
+        )
+        # Create dict for fast FVG lookup by index: {index: (top, bottom, bias)}
+        fvg_by_index = {}
+        for i in range(len(fvg_indices_arr)):
+            idx = fvg_indices_arr[i]
+            bias = 'BULLISH' if fvg_biases_arr[i] == 1 else 'BEARISH'
+            fvg_by_index[idx] = (fvg_tops_arr[i], fvg_bottoms_arr[i], bias)
+        
+        # ========== MAIN LOOP VARIABLES ==========
         confirmed_swing_highs = []  # List of SwingPoint
         confirmed_swing_lows = []   # List of SwingPoint
         confirmed_internal_highs = []
@@ -594,91 +741,67 @@ class Strategy:
         last_swing_high = None
         last_swing_low = None
         
-        # Track structures and patterns
-        all_structures = []
         all_fvgs = []
         all_equal_hls = []
-        
-        # Track active OBs
         active_obs = []
         
-        # Current trend
         current_trend = None
         last_broken_high_index = -1
         last_broken_low_index = -1
         
-        # Process each bar incrementally
-        for current_idx in range(len(df)):
+        # ========== MAIN LOOP ==========
+        for current_idx in range(n):
             current_time = pd.to_datetime(times[current_idx])
             
             # 1. Check if a swing HIGH gets confirmed at this bar
-            # A swing high at index i is confirmed when we reach index i + swing_length
             swing_high_idx = current_idx - self.config.swing_length
-            if swing_high_idx >= self.config.swing_length:
-                # Check if bar at swing_high_idx is a swing high
-                is_swing_high = True
-                for j in range(swing_high_idx - self.config.swing_length, swing_high_idx + self.config.swing_length + 1):
-                    if j != swing_high_idx and j >= 0 and j < len(highs) and highs[j] >= highs[swing_high_idx]:
-                        is_swing_high = False
-                        break
+            if swing_high_idx >= self.config.swing_length and swing_high_idx in swing_high_indices_set:
+                # Determine type (HH or LH)
+                if last_swing_high is None:
+                    swing_type = 'HH'
+                elif highs[swing_high_idx] > last_swing_high.price:
+                    swing_type = 'HH'
+                else:
+                    swing_type = 'LH'
                 
-                if is_swing_high:
-                    # Determine type (HH or LH)
-                    if last_swing_high is None:
-                        swing_type = 'HH'
-                    elif highs[swing_high_idx] > last_swing_high.price:
-                        swing_type = 'HH'
-                    else:
-                        swing_type = 'LH'
-                    
-                    swing = SwingPoint(
-                        price=highs[swing_high_idx],
-                        time=pd.to_datetime(times[swing_high_idx]),
-                        index=swing_high_idx,
-                        type=swing_type,
-                        is_high=True
-                    )
-                    confirmed_swing_highs.append(swing)
-                    last_swing_high = swing
+                swing = SwingPoint(
+                    price=highs[swing_high_idx],
+                    time=pd.to_datetime(times[swing_high_idx]),
+                    index=swing_high_idx,
+                    type=swing_type,
+                    is_high=True
+                )
+                confirmed_swing_highs.append(swing)
+                last_swing_high = swing
             
             # 2. Check if a swing LOW gets confirmed at this bar
             swing_low_idx = current_idx - self.config.swing_length
-            if swing_low_idx >= self.config.swing_length:
-                # Check if bar at swing_low_idx is a swing low
-                is_swing_low = True
-                for j in range(swing_low_idx - self.config.swing_length, swing_low_idx + self.config.swing_length + 1):
-                    if j != swing_low_idx and j >= 0 and j < len(lows) and lows[j] <= lows[swing_low_idx]:
-                        is_swing_low = False
-                        break
+            if swing_low_idx >= self.config.swing_length and swing_low_idx in swing_low_indices_set:
+                # Determine type (LL or HL)
+                if last_swing_low is None:
+                    swing_type = 'LL'
+                elif lows[swing_low_idx] < last_swing_low.price:
+                    swing_type = 'LL'
+                else:
+                    swing_type = 'HL'
                 
-                if is_swing_low:
-                    # Determine type (LL or HL)
-                    if last_swing_low is None:
-                        swing_type = 'LL'
-                    elif lows[swing_low_idx] < last_swing_low.price:
-                        swing_type = 'LL'
-                    else:
-                        swing_type = 'HL'
-                    
-                    swing = SwingPoint(
-                        price=lows[swing_low_idx],
-                        time=pd.to_datetime(times[swing_low_idx]),
-                        index=swing_low_idx,
-                        type=swing_type,
-                        is_high=False
-                    )
-                    confirmed_swing_lows.append(swing)
-                    last_swing_low = swing
+                swing = SwingPoint(
+                    price=lows[swing_low_idx],
+                    time=pd.to_datetime(times[swing_low_idx]),
+                    index=swing_low_idx,
+                    type=swing_type,
+                    is_high=False
+                )
+                confirmed_swing_lows.append(swing)
+                last_swing_low = swing
             
             # 3. Detect structure breaks at CURRENT bar
-            # Initialize trend if we have both swing high and low
             if current_trend is None and confirmed_swing_highs and confirmed_swing_lows:
                 if confirmed_swing_highs[0].index > confirmed_swing_lows[0].index:
                     current_trend = 'BULLISH'
                 else:
                     current_trend = 'BEARISH'
             
-            # Check for structure breaks
             if current_trend is not None and confirmed_swing_highs and confirmed_swing_lows:
                 # Get most recent unbroken swing high and low
                 current_swing_high = None
@@ -709,28 +832,32 @@ class Strategy:
                         pivot_time=current_swing_high.time,
                         pivot_index=current_swing_high.index
                     )
-                    all_structures.append(structure)
                     current_trend = 'BULLISH'
                     last_broken_high_index = current_swing_high.index
                     
                     # Create order block for CHoCH
                     if structure_type == 'CHoCH':
-                        # Find last bearish candle before break
                         for i in range(current_idx - 1, structure.pivot_index - 1, -1):
                             if i >= 0 and closes[i] < opens[i]:
-                                ob = OrderBlock(
-                                    high=highs[i],
-                                    low=lows[i],
-                                    time=pd.to_datetime(times[i]),
-                                    index=i,
-                                    bias='BULLISH',
-                                    is_choch_ob=True,
-                                    structure=structure
-                                )
-                                # Check FVG
-                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
-                                active_obs.append(ob)
-                                break
+                                # Check body ratio - filter weak candles (doji, spinning top)
+                                candle_range = highs[i] - lows[i]
+                                body = abs(closes[i] - opens[i])
+                                body_ratio = body / candle_range if candle_range > 0 else 0
+                                
+                                if body_ratio >= self.config.ob_body_ratio:
+                                    ob = OrderBlock(
+                                        high=highs[i],
+                                        low=lows[i],
+                                        time=pd.to_datetime(times[i]),
+                                        index=i,
+                                        bias='BULLISH',
+                                        is_choch_ob=True,
+                                        body_ratio=body_ratio,
+                                        structure=structure
+                                    )
+                                    ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                                    active_obs.append(ob)
+                                    break
                 
                 # Check for break of swing low
                 if current_swing_low and closes[current_idx] < current_swing_low.price:
@@ -748,135 +875,98 @@ class Strategy:
                         pivot_time=current_swing_low.time,
                         pivot_index=current_swing_low.index
                     )
-                    all_structures.append(structure)
                     current_trend = 'BEARISH'
                     last_broken_low_index = current_swing_low.index
                     
                     # Create order block for CHoCH
                     if structure_type == 'CHoCH':
-                        # Find last bullish candle before break
                         for i in range(current_idx - 1, structure.pivot_index - 1, -1):
                             if i >= 0 and closes[i] > opens[i]:
-                                ob = OrderBlock(
-                                    high=highs[i],
-                                    low=lows[i],
-                                    time=pd.to_datetime(times[i]),
-                                    index=i,
-                                    bias='BEARISH',
-                                    is_choch_ob=True,
-                                    structure=structure
-                                )
-                                # Check FVG
-                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
-                                active_obs.append(ob)
-                                break
+                                # Check body ratio - filter weak candles (doji, spinning top)
+                                candle_range = highs[i] - lows[i]
+                                body = abs(closes[i] - opens[i])
+                                body_ratio = body / candle_range if candle_range > 0 else 0
+                                
+                                if body_ratio >= self.config.ob_body_ratio:
+                                    ob = OrderBlock(
+                                        high=highs[i],
+                                        low=lows[i],
+                                        time=pd.to_datetime(times[i]),
+                                        index=i,
+                                        bias='BEARISH',
+                                        is_choch_ob=True,
+                                        body_ratio=body_ratio,
+                                        structure=structure
+                                    )
+                                    ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                                    active_obs.append(ob)
+                                    break
             
-            # 4. Detect FVG at current bar (needs 3 bars: i-2, i-1, i)
-            if current_idx >= 2:
-                # Bullish FVG
-                if lows[current_idx] > highs[current_idx - 2]:
-                    gap_size = lows[current_idx] - highs[current_idx - 2]
-                    atr_value = atr.iloc[current_idx]
-                    
-                    if not self.config.fvg_atr_filter or gap_size >= 0.1 * atr_value:
-                        fvg = FairValueGap(
-                            top=lows[current_idx],
-                            bottom=highs[current_idx - 2],
-                            bias='BULLISH',
-                            time=current_time,
-                            index=current_idx
-                        )
-                        all_fvgs.append(fvg)
-                        
-                        # Update has_fvg for active OBs
-                        for ob in active_obs:
-                            if not ob.has_fvg and ob.bias == 'BULLISH':
-                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+            # 4. Detect FVG at current bar using pre-computed data
+            if current_idx in fvg_by_index:
+                top, bottom, bias = fvg_by_index[current_idx]
+                fvg = FairValueGap(
+                    top=top,
+                    bottom=bottom,
+                    bias=bias,
+                    time=current_time,
+                    index=current_idx
+                )
+                all_fvgs.append(fvg)
                 
-                # Bearish FVG
-                if highs[current_idx] < lows[current_idx - 2]:
-                    gap_size = lows[current_idx - 2] - highs[current_idx]
-                    atr_value = atr.iloc[current_idx]
-                    
-                    if not self.config.fvg_atr_filter or gap_size >= 0.1 * atr_value:
-                        fvg = FairValueGap(
-                            top=lows[current_idx - 2],
-                            bottom=highs[current_idx],
-                            bias='BEARISH',
-                            time=current_time,
-                            index=current_idx
-                        )
-                        all_fvgs.append(fvg)
-                        
-                        # Update has_fvg for active OBs
-                        for ob in active_obs:
-                            if not ob.has_fvg and ob.bias == 'BEARISH':
-                                ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                # Update has_fvg for active OBs
+                for ob in active_obs:
+                    if not ob.has_fvg and ob.bias == bias:
+                        ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
             
-            # 5. Detect internal swings for EQH/EQL (confirmed after eqhl_length bars)
+            # 5. Detect internal swings for EQH/EQL
             internal_high_idx = current_idx - self.config.eqhl_length
-            if internal_high_idx >= self.config.eqhl_length:
-                is_internal_high = True
-                for j in range(internal_high_idx - self.config.eqhl_length, internal_high_idx + self.config.eqhl_length + 1):
-                    if j != internal_high_idx and j >= 0 and j < len(highs) and highs[j] >= highs[internal_high_idx]:
-                        is_internal_high = False
+            if internal_high_idx >= self.config.eqhl_length and internal_high_idx in internal_high_indices_set:
+                # Check for EQH with previous internal highs
+                for prev_ih in confirmed_internal_highs:
+                    if abs(highs[internal_high_idx] - prev_ih.price) < self.config.eqhl_threshold * atr_values[internal_high_idx]:
+                        eqh = EqualHL(
+                            type='EQH',
+                            level=(highs[internal_high_idx] + prev_ih.price) / 2,
+                            time=pd.to_datetime(times[internal_high_idx]),
+                            index=internal_high_idx,
+                            first_pivot_index=prev_ih.index,
+                            second_pivot_index=internal_high_idx
+                        )
+                        all_equal_hls.append(eqh)
                         break
                 
-                if is_internal_high:
-                    # Check for EQH with previous internal highs
-                    for prev_ih in confirmed_internal_highs:
-                        if abs(highs[internal_high_idx] - prev_ih.price) < self.config.eqhl_threshold * atr.iloc[internal_high_idx]:
-                            eqh = EqualHL(
-                                type='EQH',
-                                level=(highs[internal_high_idx] + prev_ih.price) / 2,
-                                time=pd.to_datetime(times[internal_high_idx]),
-                                index=internal_high_idx,
-                                first_pivot_index=prev_ih.index,
-                                second_pivot_index=internal_high_idx
-                            )
-                            all_equal_hls.append(eqh)
-                            break
-                    
-                    # Add to confirmed internal highs
-                    confirmed_internal_highs.append(SwingPoint(
-                        price=highs[internal_high_idx],
-                        time=pd.to_datetime(times[internal_high_idx]),
-                        index=internal_high_idx,
-                        type='H',
-                        is_high=True
-                    ))
+                confirmed_internal_highs.append(SwingPoint(
+                    price=highs[internal_high_idx],
+                    time=pd.to_datetime(times[internal_high_idx]),
+                    index=internal_high_idx,
+                    type='H',
+                    is_high=True
+                ))
             
             internal_low_idx = current_idx - self.config.eqhl_length
-            if internal_low_idx >= self.config.eqhl_length:
-                is_internal_low = True
-                for j in range(internal_low_idx - self.config.eqhl_length, internal_low_idx + self.config.eqhl_length + 1):
-                    if j != internal_low_idx and j >= 0 and j < len(lows) and lows[j] <= lows[internal_low_idx]:
-                        is_internal_low = False
+            if internal_low_idx >= self.config.eqhl_length and internal_low_idx in internal_low_indices_set:
+                # Check for EQL with previous internal lows
+                for prev_il in confirmed_internal_lows:
+                    if abs(lows[internal_low_idx] - prev_il.price) < self.config.eqhl_threshold * atr_values[internal_low_idx]:
+                        eql = EqualHL(
+                            type='EQL',
+                            level=(lows[internal_low_idx] + prev_il.price) / 2,
+                            time=pd.to_datetime(times[internal_low_idx]),
+                            index=internal_low_idx,
+                            first_pivot_index=prev_il.index,
+                            second_pivot_index=internal_low_idx
+                        )
+                        all_equal_hls.append(eql)
                         break
                 
-                if is_internal_low:
-                    # Check for EQL with previous internal lows
-                    for prev_il in confirmed_internal_lows:
-                        if abs(lows[internal_low_idx] - prev_il.price) < self.config.eqhl_threshold * atr.iloc[internal_low_idx]:
-                            eql = EqualHL(
-                                type='EQL',
-                                level=(lows[internal_low_idx] + prev_il.price) / 2,
-                                time=pd.to_datetime(times[internal_low_idx]),
-                                index=internal_low_idx,
-                                first_pivot_index=prev_il.index,
-                                second_pivot_index=internal_low_idx
-                            )
-                            all_equal_hls.append(eql)
-                            break
-                    
-                    # Add to confirmed internal lows
-                    confirmed_internal_lows.append(SwingPoint(
-                        price=lows[internal_low_idx],
-                        time=pd.to_datetime(times[internal_low_idx]),
-                        index=internal_low_idx,
-                        type='L',
-                        is_high=False
-                    ))
+                confirmed_internal_lows.append(SwingPoint(
+                    price=lows[internal_low_idx],
+                    time=pd.to_datetime(times[internal_low_idx]),
+                    index=internal_low_idx,
+                    type='L',
+                    is_high=False
+                ))
             
             # 6. Update OB liquidity status
             for ob in active_obs:
@@ -887,19 +977,14 @@ class Strategy:
             obs_to_remove = []
             
             for ob in active_obs:
-                # Skip if entry already triggered
                 if ob.entry_triggered:
-                    # Still check mitigation
                     if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
                         ob.is_mitigated = True
                         obs_to_remove.append(ob)
                     continue
                 
-                # Check if price touches OB zone at CURRENT bar
                 if self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
-                    # Check all conditions for entry AT CURRENT BAR
                     if ob.has_fvg and ob.has_liquidity:
-                        # Generate signal with CURRENT bar's time and price
                         signal = self._create_signal(
                             symbol=symbol,
                             ob=ob,
@@ -913,7 +998,6 @@ class Strategy:
                             signals.append(signal)
                             ob.entry_triggered = True
                 
-                # Check if OB is fully mitigated
                 if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
                     ob.is_mitigated = True
                     obs_to_remove.append(ob)

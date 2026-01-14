@@ -5,15 +5,18 @@ Contains:
 - TradeSimulator: Simulates trade exits based on signals and price data
 - Trade: Completed trade with exit information
 - Report generation functions
+
+PERFORMANCE: Uses Numba JIT for fast trade simulation while preserving exact logic.
 """
 
 import os
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
-from tqdm import tqdm
+from numba import njit
 
 from strategy import STRATEGY_NAME, Signal, Config
 
@@ -39,36 +42,78 @@ class Trade:
     result: str = 'OPEN'      # 'WIN', 'LOSS', 'OPEN'
 
 
+# ==================== NUMBA JIT OPTIMIZED FUNCTIONS ====================
+
+@njit(cache=True)
+def _find_entry_idx_jit(data_times: np.ndarray, signal_time: np.int64) -> int:
+    """Binary search for entry index - JIT optimized."""
+    left, right = 0, len(data_times) - 1
+    result = -1
+    
+    while left <= right:
+        mid = (left + right) // 2
+        if data_times[mid] >= signal_time:
+            result = mid
+            right = mid - 1
+        else:
+            left = mid + 1
+    
+    return result
+
+
+@njit(cache=True)
+def _simulate_single_trade_jit(
+    entry_idx: int,
+    is_long: bool,
+    stop_loss: float,
+    take_profit: float,
+    data_highs: np.ndarray,
+    data_lows: np.ndarray,
+    data_closes: np.ndarray,
+    data_times: np.ndarray
+) -> Tuple[int, float, int]:
+    """
+    Simulate a single trade exit - JIT optimized.
+    
+    Returns:
+        (exit_idx, exit_price, result)
+        result: 0=LOSS, 1=WIN, 2=OPEN
+    """
+    n = len(data_highs)
+    
+    for i in range(entry_idx + 1, n):
+        high = data_highs[i]
+        low = data_lows[i]
+        
+        if is_long:
+            # Check SL first (worst case)
+            if low <= stop_loss:
+                return i, stop_loss, 0  # LOSS
+            # Check TP
+            if high >= take_profit:
+                return i, take_profit, 1  # WIN
+        else:  # SHORT
+            # Check SL first (worst case)
+            if high >= stop_loss:
+                return i, stop_loss, 0  # LOSS
+            # Check TP
+            if low <= take_profit:
+                return i, take_profit, 1  # WIN
+    
+    # No exit found - mark as OPEN
+    return n - 1, data_closes[n - 1], 2  # OPEN
+
+
 # ==================== TRADE SIMULATOR ====================
 class TradeSimulator:
     """
     Simulates trade exits based on signals and price data.
     Calculates: exit_time, exit_price, result, pnl
+    
+    PERFORMANCE: Uses Numba JIT for binary search and exit simulation.
     """
     def __init__(self, config: Config):
         self.config = config
-    
-    def _check_exit(self, signal: Signal, row: pd.Series) -> Tuple[bool, Optional[str], Optional[float]]:
-        """Check if trade should be closed based on SL/TP"""
-        high = row['High']
-        low = row['Low']
-        
-        if signal.trade_type == 'LONG':
-            # Check SL first (worst case)
-            if low <= signal.stop_loss:
-                return True, 'LOSS', signal.stop_loss
-            # Check TP
-            if high >= signal.take_profit:
-                return True, 'WIN', signal.take_profit
-        else:  # SHORT
-            # Check SL first (worst case)
-            if high >= signal.stop_loss:
-                return True, 'LOSS', signal.stop_loss
-            # Check TP
-            if low <= signal.take_profit:
-                return True, 'WIN', signal.take_profit
-        
-        return False, None, None
     
     def simulate(self, signals: List[Signal], df: pd.DataFrame) -> List[Trade]:
         """
@@ -84,54 +129,47 @@ class TradeSimulator:
         if not signals:
             return []
         
-        trades = []
+        # Prepare data arrays for JIT functions
+        data_times = pd.to_datetime(df['Time']).values.astype(np.int64)
+        data_highs = df['High'].values.astype(np.float64)
+        data_lows = df['Low'].values.astype(np.float64)
+        data_closes = df['Close'].values.astype(np.float64)
         
-        # Progress bar for simulating trades
-        for signal in tqdm(signals, desc="  Simulating trades", unit="trade", leave=False):
-            # Find the index where this signal's entry_time occurs
-            entry_idx = -1
-            for idx in range(len(df)):
-                row = df.iloc[idx]
-                row_time = row['Time'] if isinstance(row['Time'], datetime) else pd.to_datetime(row['Time'])
-                if row_time >= signal.entry_time:
-                    entry_idx = idx
-                    break
+        trades = []
+        result_map = {0: 'LOSS', 1: 'WIN', 2: 'OPEN'}
+        
+        for signal in signals:
+            # Convert signal time to int64
+            signal_time = np.int64(pd.Timestamp(signal.entry_time).value)
+            
+            # Find entry index using JIT binary search
+            entry_idx = _find_entry_idx_jit(data_times, signal_time)
             
             if entry_idx < 0:
                 continue
             
-            # Create Trade from Signal
+            # Simulate exit using JIT function
+            is_long = signal.trade_type == 'LONG'
+            exit_idx, exit_price, result_code = _simulate_single_trade_jit(
+                entry_idx, is_long, signal.stop_loss, signal.take_profit,
+                data_highs, data_lows, data_closes, data_times
+            )
+            
+            # Convert exit time back to datetime
+            exit_ts = pd.Timestamp(data_times[exit_idx], unit='ns')
+            exit_time_dt = datetime.utcfromtimestamp(exit_ts.value / 1e9)
+            
             trade = Trade(
                 symbol=signal.symbol,
                 trade_type=signal.trade_type,
                 entry_time=signal.entry_time,
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
-                take_profit=signal.take_profit
+                take_profit=signal.take_profit,
+                exit_time=exit_time_dt,
+                exit_price=exit_price,
+                result=result_map[result_code]
             )
-            
-            # Look for exit in subsequent candles
-            found_exit = False
-            for i in range(entry_idx + 1, len(df)):
-                row = df.iloc[i]
-                row_time = row['Time'] if isinstance(row['Time'], datetime) else pd.to_datetime(row['Time'])
-                
-                should_close, result, exit_price = self._check_exit(signal, row)
-                
-                if should_close and result is not None:
-                    trade.exit_time = row_time
-                    trade.exit_price = exit_price
-                    trade.result = result
-                    found_exit = True
-                    break
-            
-            # If no exit found, mark as OPEN with last price
-            if not found_exit:
-                last_row = df.iloc[-1]
-                trade.exit_time = last_row['Time'] if isinstance(last_row['Time'], datetime) else pd.to_datetime(last_row['Time'])
-                trade.exit_price = float(last_row['Close'])
-                trade.result = 'OPEN'
-            
             trades.append(trade)
         
         return trades
