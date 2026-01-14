@@ -71,11 +71,24 @@ class TradeAnalyzer:
         return True
     
     def _calculate_pnl(self, row):
-        """Tính PnL đơn giản (giả sử mỗi lệnh risk $10, RR=2)"""
+        """
+        Tính PnL (giả sử mỗi lệnh risk $10, RR=2)
+        Đã bao gồm phí giao dịch 0.075% (taker fee) cho cả entry và exit
+        Tổng phí = 0.075% x 2 = 0.15% trên mỗi lệnh
+        """
+        # Giả sử position size = $1000 (leverage 10x với margin $100)
+        position_size = 1000.0
+        trading_fee_rate = 0.00075  # 0.075% per trade
+        
+        # Phí giao dịch = 0.075% x 2 (entry + exit) = 0.15%
+        total_fee = position_size * trading_fee_rate * 2
+        
         if row['Result'] == 'Win':
-            return 20.0  # Win = +20 (RR 1:2)
+            gross_pnl = 20.0  # Win = +20 (RR 1:2)
+            return gross_pnl - total_fee  # Net PnL sau phí
         elif row['Result'] == 'Loss':
-            return -10.0  # Loss = -10
+            gross_pnl = -10.0  # Loss = -10
+            return gross_pnl - total_fee  # Net PnL sau phí
         else:
             return 0.0
     
@@ -117,6 +130,12 @@ class TradeAnalyzer:
         long_wr = (long_wins / long_closed * 100) if long_closed > 0 else 0
         short_wr = (short_wins / short_closed * 100) if short_closed > 0 else 0
         
+        # Thời gian giữ lệnh trung bình theo LONG/SHORT
+        long_df = df[(df['Type'] == 'LONG') & (df['Result'] != 'Open')]
+        short_df = df[(df['Type'] == 'SHORT') & (df['Result'] != 'Open')]
+        avg_long_duration = long_df['Duration_Minutes'].mean() if len(long_df) > 0 else 0
+        avg_short_duration = short_df['Duration_Minutes'].mean() if len(short_df) > 0 else 0
+        
         # Thống kê số lệnh theo ngày
         trades_per_day = df.groupby('Date').size()
         max_trades_per_day = int(trades_per_day.max()) if len(trades_per_day) > 0 else 0
@@ -140,6 +159,8 @@ class TradeAnalyzer:
             'short_trades': short_trades,
             'long_win_rate': long_wr,
             'short_win_rate': short_wr,
+            'avg_long_duration': avg_long_duration,
+            'avg_short_duration': avg_short_duration,
             'max_trades_per_day': max_trades_per_day,
             'avg_trades_per_day': avg_trades_per_day,
             'total_trading_days': total_trading_days
@@ -306,13 +327,486 @@ class TradeAnalyzer:
         
         return trades_per_day
     
+    def get_drawdown_analysis(self):
+        """Phân tích Drawdown (giống MT5)"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        df = df.sort_values('Entry_Time')
+        df['Cumulative_PnL'] = df['PnL'].cumsum()
+        
+        # Tính running max (peak)
+        df['Peak'] = df['Cumulative_PnL'].cummax()
+        
+        # Tính drawdown
+        df['Drawdown'] = df['Cumulative_PnL'] - df['Peak']
+        df['Drawdown_Pct'] = (df['Drawdown'] / df['Peak'].replace(0, np.nan)) * 100
+        
+        # Max Drawdown
+        max_drawdown = df['Drawdown'].min()
+        max_drawdown_pct = df['Drawdown_Pct'].min() if not df['Drawdown_Pct'].isna().all() else 0
+        
+        # Tìm thời điểm max drawdown
+        if max_drawdown < 0:
+            max_dd_idx = df['Drawdown'].idxmin()
+            max_dd_date = df.loc[max_dd_idx, 'Entry_Time']
+        else:
+            max_dd_date = None
+        
+        # Tính số lần drawdown (mỗi lần equity giảm xuống dưới peak)
+        drawdown_periods = []
+        in_drawdown = False
+        dd_start = None
+        dd_start_value = 0
+        
+        for idx, row in df.iterrows():
+            if row['Drawdown'] < 0 and not in_drawdown:
+                in_drawdown = True
+                dd_start = row['Entry_Time']
+                dd_start_value = row['Peak']
+            elif row['Drawdown'] >= 0 and in_drawdown:
+                in_drawdown = False
+                drawdown_periods.append({
+                    'Start': dd_start,
+                    'End': row['Entry_Time'],
+                    'Peak_Value': dd_start_value,
+                    'Recovery_Time': row['Entry_Time'] - dd_start if dd_start else None
+                })
+        
+        # Nếu vẫn đang trong drawdown
+        if in_drawdown:
+            drawdown_periods.append({
+                'Start': dd_start,
+                'End': None,
+                'Peak_Value': dd_start_value,
+                'Recovery_Time': None
+            })
+        
+        # Tính average recovery time
+        recovery_times = [p['Recovery_Time'].days for p in drawdown_periods 
+                        if p['Recovery_Time'] is not None]
+        avg_recovery_days = np.mean(recovery_times) if recovery_times else 0
+        
+        # Tính Average Drawdown (chỉ tính các giá trị drawdown < 0)
+        negative_drawdowns = df[df['Drawdown'] < 0]['Drawdown']
+        avg_drawdown = negative_drawdowns.mean() if len(negative_drawdowns) > 0 else 0
+        avg_drawdown_pct = df[df['Drawdown_Pct'] < 0]['Drawdown_Pct'].mean() if len(negative_drawdowns) > 0 else 0
+        
+        return {
+            'max_drawdown': max_drawdown,
+            'max_drawdown_pct': max_drawdown_pct,
+            'max_drawdown_date': max_dd_date,
+            'avg_drawdown': avg_drawdown,
+            'avg_drawdown_pct': avg_drawdown_pct,
+            'num_drawdown_periods': len(drawdown_periods),
+            'avg_recovery_days': avg_recovery_days,
+            'drawdown_df': df[['Entry_Time', 'Cumulative_PnL', 'Peak', 'Drawdown', 'Drawdown_Pct']],
+            'drawdown_periods': drawdown_periods
+        }
+    
+    def get_risk_metrics(self):
+        """Tính các chỉ số rủi ro (giống MT5)"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open']
+        
+        wins = df[df['Result'] == 'Win']
+        losses = df[df['Result'] == 'Loss']
+        
+        total_profit = wins['PnL'].sum() if len(wins) > 0 else 0
+        total_loss = abs(losses['PnL'].sum()) if len(losses) > 0 else 0
+        
+        # Profit Factor = Gross Profit / Gross Loss
+        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+        
+        # Expectancy = (Win% × Avg Win) - (Loss% × Avg Loss)
+        win_rate = len(wins) / len(df) if len(df) > 0 else 0
+        loss_rate = len(losses) / len(df) if len(df) > 0 else 0
+        avg_win = wins['PnL'].mean() if len(wins) > 0 else 0
+        avg_loss = abs(losses['PnL'].mean()) if len(losses) > 0 else 0
+        expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+        
+        # Recovery Factor = Net Profit / Max Drawdown
+        net_profit = df['PnL'].sum()
+        dd_analysis = self.get_drawdown_analysis()
+        max_dd = abs(dd_analysis['max_drawdown']) if dd_analysis['max_drawdown'] < 0 else 1
+        recovery_factor = net_profit / max_dd if max_dd > 0 else float('inf')
+        
+        # Payoff Ratio = Avg Win / Avg Loss
+        payoff_ratio = avg_win / avg_loss if avg_loss > 0 else float('inf')
+        
+        # Sharpe Ratio (simplified - daily returns)
+        df_sorted = df.sort_values('Entry_Time').copy()
+        df_sorted['Date'] = df_sorted['Entry_Time'].dt.date
+        daily_pnl = df_sorted.groupby('Date')['PnL'].sum()
+        
+        if len(daily_pnl) > 1:
+            sharpe_ratio = (daily_pnl.mean() / daily_pnl.std()) * np.sqrt(252) if daily_pnl.std() > 0 else 0
+        else:
+            sharpe_ratio = 0
+        
+        # Sortino Ratio (chỉ tính downside deviation)
+        negative_returns = daily_pnl[daily_pnl < 0]
+        if len(negative_returns) > 1:
+            downside_std = negative_returns.std()
+            sortino_ratio = (daily_pnl.mean() / downside_std) * np.sqrt(252) if downside_std > 0 else 0
+        else:
+            sortino_ratio = 0
+        
+        return {
+            'profit_factor': profit_factor,
+            'expectancy': expectancy,
+            'recovery_factor': recovery_factor,
+            'payoff_ratio': payoff_ratio,
+            'sharpe_ratio': sharpe_ratio,
+            'sortino_ratio': sortino_ratio,
+            'total_profit': total_profit,
+            'total_loss': total_loss,
+            'net_profit': net_profit,
+            'avg_win': avg_win,
+            'avg_loss': avg_loss
+        }
+    
+    def get_trade_quality_stats(self):
+        """Phân tích chất lượng trade (giống MT5)"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open']
+        
+        wins = df[df['Result'] == 'Win']
+        losses = df[df['Result'] == 'Loss']
+        
+        # Thống kê cơ bản
+        avg_win = wins['PnL'].mean() if len(wins) > 0 else 0
+        avg_loss = abs(losses['PnL'].mean()) if len(losses) > 0 else 0
+        max_win = wins['PnL'].max() if len(wins) > 0 else 0
+        max_loss = abs(losses['PnL'].min()) if len(losses) > 0 else 0
+        
+        # Actual RR ratio
+        actual_rr = avg_win / avg_loss if avg_loss > 0 else 0
+        
+        # Win/Loss size distribution
+        win_sizes = wins['PnL'].tolist() if len(wins) > 0 else []
+        loss_sizes = [abs(x) for x in losses['PnL'].tolist()] if len(losses) > 0 else []
+        
+        # Consecutive wins/losses
+        consecutive_wins = []
+        consecutive_losses = []
+        current_win_streak = 0
+        current_loss_streak = 0
+        
+        for _, row in df.iterrows():
+            if row['Result'] == 'Win':
+                current_win_streak += 1
+                if current_loss_streak > 0:
+                    consecutive_losses.append(current_loss_streak)
+                    current_loss_streak = 0
+            else:
+                current_loss_streak += 1
+                if current_win_streak > 0:
+                    consecutive_wins.append(current_win_streak)
+                    current_win_streak = 0
+        
+        # Append last streak
+        if current_win_streak > 0:
+            consecutive_wins.append(current_win_streak)
+        if current_loss_streak > 0:
+            consecutive_losses.append(current_loss_streak)
+        
+        return {
+            'avg_win': avg_win,
+            'avg_loss': avg_loss,
+            'max_win': max_win,
+            'max_loss': max_loss,
+            'actual_rr': actual_rr,
+            'win_sizes': win_sizes,
+            'loss_sizes': loss_sizes,
+            'consecutive_wins': consecutive_wins,
+            'consecutive_losses': consecutive_losses,
+            'median_win': np.median(win_sizes) if win_sizes else 0,
+            'median_loss': np.median(loss_sizes) if loss_sizes else 0
+        }
+    
+    def get_stats_by_session(self):
+        """Thống kê theo phiên giao dịch (Asian, London, New York)"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        
+        # Định nghĩa các phiên (giờ UTC+7)
+        def get_session(hour):
+            if 1 <= hour < 9:
+                return 'Asian'
+            elif 14 <= hour < 17:
+                return 'London'
+            elif 19 <= hour <= 23:
+                return 'New York'
+            else:
+                return 'Off-Session'
+        
+        df['Session'] = df['Hour'].apply(get_session)
+        
+        session_stats = []
+        session_order = ['Asian', 'London', 'New York', 'Off-Session']
+        
+        for session in session_order:
+            session_df = df[df['Session'] == session]
+            if len(session_df) == 0:
+                continue
+            
+            total = len(session_df)
+            wins = len(session_df[session_df['Result'] == 'Win'])
+            losses = len(session_df[session_df['Result'] == 'Loss'])
+            win_rate = (wins / total * 100) if total > 0 else 0
+            pnl = session_df['PnL'].sum()
+            avg_pnl = session_df['PnL'].mean()
+            
+            session_stats.append({
+                'Session': session,
+                'Total_Trades': total,
+                'Wins': wins,
+                'Losses': losses,
+                'Win_Rate': win_rate,
+                'PnL': pnl,
+                'Avg_PnL': avg_pnl
+            })
+        
+        return pd.DataFrame(session_stats)
+    
+    def get_consecutive_analysis(self):
+        """Phân tích hiệu suất sau chuỗi thắng/thua liên tiếp"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        df = df.sort_values('Entry_Time').reset_index(drop=True)
+        
+        # Tính win streak trước mỗi trade
+        results = []
+        win_streak = 0
+        loss_streak = 0
+        
+        for i, row in df.iterrows():
+            # Lưu streak trước trade này
+            results.append({
+                'Trade_Index': i,
+                'Result': row['Result'],
+                'Win_Streak_Before': win_streak,
+                'Loss_Streak_Before': loss_streak
+            })
+            
+            # Cập nhật streak
+            if row['Result'] == 'Win':
+                win_streak += 1
+                loss_streak = 0
+            else:
+                loss_streak += 1
+                win_streak = 0
+        
+        analysis_df = pd.DataFrame(results)
+        
+        # Phân tích win rate sau các mức streak khác nhau
+        after_win_streak = {}
+        after_loss_streak = {}
+        
+        for streak in range(1, 6):  # Phân tích streak từ 1-5
+            # Sau chuỗi thắng
+            after_wins = analysis_df[analysis_df['Win_Streak_Before'] >= streak]
+            if len(after_wins) > 0:
+                wr = (after_wins['Result'] == 'Win').sum() / len(after_wins) * 100
+                after_win_streak[streak] = {
+                    'total': len(after_wins),
+                    'win_rate': wr
+                }
+            
+            # Sau chuỗi thua
+            after_losses = analysis_df[analysis_df['Loss_Streak_Before'] >= streak]
+            if len(after_losses) > 0:
+                wr = (after_losses['Result'] == 'Win').sum() / len(after_losses) * 100
+                after_loss_streak[streak] = {
+                    'total': len(after_losses),
+                    'win_rate': wr
+                }
+        
+        return {
+            'analysis_df': analysis_df,
+            'after_win_streak': after_win_streak,
+            'after_loss_streak': after_loss_streak
+        }
+    
+    def get_hold_time_analysis(self):
+        """Phân tích hiệu suất theo thời gian giữ lệnh"""
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        
+        # Phân loại thời gian giữ lệnh
+        def categorize_duration(minutes):
+            if minutes < 30:
+                return 'Very Short (<30m)'
+            elif minutes < 60:
+                return 'Short (30m-1h)'
+            elif minutes < 240:
+                return 'Medium (1h-4h)'
+            elif minutes < 1440:
+                return 'Long (4h-1d)'
+            else:
+                return 'Very Long (>1d)'
+        
+        df['Duration_Category'] = df['Duration_Minutes'].apply(categorize_duration)
+        
+        categories_order = ['Very Short (<30m)', 'Short (30m-1h)', 'Medium (1h-4h)', 
+                           'Long (4h-1d)', 'Very Long (>1d)']
+        
+        hold_stats = []
+        for category in categories_order:
+            cat_df = df[df['Duration_Category'] == category]
+            if len(cat_df) == 0:
+                continue
+            
+            total = len(cat_df)
+            wins = len(cat_df[cat_df['Result'] == 'Win'])
+            win_rate = (wins / total * 100) if total > 0 else 0
+            pnl = cat_df['PnL'].sum()
+            avg_duration = cat_df['Duration_Minutes'].mean()
+            
+            hold_stats.append({
+                'Duration_Category': category,
+                'Total_Trades': total,
+                'Wins': wins,
+                'Win_Rate': win_rate,
+                'PnL': pnl,
+                'Avg_Duration_Min': avg_duration
+            })
+        
+        return pd.DataFrame(hold_stats)
+    
+    def get_random_sample_analysis(self, sample_size: int = 100, num_iterations: int = 20):
+        """
+        Phân tích Random Sampling - lấy ngẫu nhiên N lệnh liên tục, thực hiện M lần
+        So sánh kết quả với thống kê tổng thể
+        
+        Args:
+            sample_size: Số lệnh mỗi lần sample (default: 100)
+            num_iterations: Số lần thực hiện random (default: 20)
+        """
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        df = df.sort_values('Entry_Time').reset_index(drop=True)
+        
+        total_trades = len(df)
+        
+        # Nếu không đủ lệnh để sample
+        if total_trades < sample_size:
+            return None
+        
+        # Thống kê tổng thể để so sánh
+        overall_stats = self._calculate_sample_stats(df)
+        
+        # Thực hiện random sampling
+        iterations = []
+        max_start_idx = total_trades - sample_size
+        
+        for i in range(num_iterations):
+            # Random điểm bắt đầu
+            start_idx = np.random.randint(0, max_start_idx + 1)
+            sample_df = df.iloc[start_idx:start_idx + sample_size].copy()
+            
+            # Tính stats cho sample này
+            sample_stats = self._calculate_sample_stats(sample_df)
+            sample_stats['start_idx'] = start_idx
+            sample_stats['iteration'] = i + 1
+            iterations.append(sample_stats)
+        
+        # Tính summary statistics
+        summary = {
+            'win_rate': {
+                'avg': np.mean([it['win_rate'] for it in iterations]),
+                'min': np.min([it['win_rate'] for it in iterations]),
+                'max': np.max([it['win_rate'] for it in iterations]),
+                'std': np.std([it['win_rate'] for it in iterations]),
+                'overall': overall_stats['win_rate']
+            },
+            'max_drawdown': {
+                'avg': np.mean([it['max_drawdown'] for it in iterations]),
+                'min': np.min([it['max_drawdown'] for it in iterations]),
+                'max': np.max([it['max_drawdown'] for it in iterations]),
+                'std': np.std([it['max_drawdown'] for it in iterations]),
+                'overall': overall_stats['max_drawdown']
+            },
+            'profit_factor': {
+                'avg': np.mean([it['profit_factor'] for it in iterations if it['profit_factor'] != float('inf')]),
+                'min': np.min([it['profit_factor'] for it in iterations if it['profit_factor'] != float('inf')]) if any(it['profit_factor'] != float('inf') for it in iterations) else 0,
+                'max': np.max([it['profit_factor'] for it in iterations if it['profit_factor'] != float('inf')]) if any(it['profit_factor'] != float('inf') for it in iterations) else 0,
+                'std': np.std([it['profit_factor'] for it in iterations if it['profit_factor'] != float('inf')]) if any(it['profit_factor'] != float('inf') for it in iterations) else 0,
+                'overall': overall_stats['profit_factor']
+            },
+            'max_win_streak': {
+                'avg': np.mean([it['max_win_streak'] for it in iterations]),
+                'min': np.min([it['max_win_streak'] for it in iterations]),
+                'max': np.max([it['max_win_streak'] for it in iterations]),
+                'std': np.std([it['max_win_streak'] for it in iterations]),
+                'overall': overall_stats['max_win_streak']
+            },
+            'max_loss_streak': {
+                'avg': np.mean([it['max_loss_streak'] for it in iterations]),
+                'min': np.min([it['max_loss_streak'] for it in iterations]),
+                'max': np.max([it['max_loss_streak'] for it in iterations]),
+                'std': np.std([it['max_loss_streak'] for it in iterations]),
+                'overall': overall_stats['max_loss_streak']
+            }
+        }
+        
+        return {
+            'sample_size': sample_size,
+            'num_iterations': num_iterations,
+            'total_trades': total_trades,
+            'iterations': iterations,
+            'summary': summary,
+            'overall_stats': overall_stats
+        }
+    
+    def _calculate_sample_stats(self, df):
+        """Tính các thống kê cho một sample DataFrame"""
+        total = len(df)
+        wins = len(df[df['Result'] == 'Win'])
+        losses = len(df[df['Result'] == 'Loss'])
+        
+        win_rate = (wins / total * 100) if total > 0 else 0
+        
+        # Tính PnL và Drawdown
+        df = df.copy()
+        df['Cumulative_PnL'] = df['PnL'].cumsum()
+        df['Peak'] = df['Cumulative_PnL'].cummax()
+        df['Drawdown'] = df['Cumulative_PnL'] - df['Peak']
+        max_drawdown = df['Drawdown'].min()
+        
+        # Profit Factor
+        total_profit = df[df['PnL'] > 0]['PnL'].sum()
+        total_loss = abs(df[df['PnL'] < 0]['PnL'].sum())
+        profit_factor = total_profit / total_loss if total_loss > 0 else float('inf')
+        
+        # Max Win/Loss Streak
+        max_win_streak = 0
+        max_loss_streak = 0
+        current_win = 0
+        current_loss = 0
+        
+        for _, row in df.iterrows():
+            if row['Result'] == 'Win':
+                current_win += 1
+                current_loss = 0
+                max_win_streak = max(max_win_streak, current_win)
+            elif row['Result'] == 'Loss':
+                current_loss += 1
+                current_win = 0
+                max_loss_streak = max(max_loss_streak, current_loss)
+        
+        return {
+            'total_trades': total,
+            'wins': wins,
+            'losses': losses,
+            'win_rate': win_rate,
+            'max_drawdown': max_drawdown,
+            'profit_factor': profit_factor,
+            'max_win_streak': max_win_streak,
+            'max_loss_streak': max_loss_streak,
+            'total_pnl': df['PnL'].sum()
+        }
+    
     def generate_html_report(self, output_file='trade_analysis_report.html'):
-        """Tạo báo cáo HTML với biểu đồ Plotly"""
+        """Tạo báo cáo HTML với biểu đồ Plotly (MT5 Style)"""
         print("\n" + "="*60)
         print("Đang tạo báo cáo HTML...")
         print("="*60)
         
-        # Lấy dữ liệu
+        # Lấy dữ liệu cơ bản
         basic_stats = self.get_basic_stats()
         symbol_stats = self.get_stats_by_symbol()
         hour_stats = self.get_stats_by_hour()
@@ -321,11 +815,19 @@ class TradeAnalyzer:
         cumulative_df = self.get_cumulative_pnl()
         trades_per_day_df = self.get_trades_per_day_stats()
         
+        # Lấy dữ liệu phân tích mới
+        dd_analysis = self.get_drawdown_analysis()
+        risk_metrics = self.get_risk_metrics()
+        trade_quality = self.get_trade_quality_stats()
+        session_stats = self.get_stats_by_session()
+        consecutive_data = self.get_consecutive_analysis()
+        hold_time_stats = self.get_hold_time_analysis()
+        
         # Tạo HTML
         html_content = self._create_html_template()
         
-        # Thêm thống kê cơ bản
-        html_content += self._create_basic_stats_section(basic_stats)
+        # Thêm thống kê cơ bản (MT5 Style)
+        html_content += self._create_basic_stats_section(basic_stats, risk_metrics, dd_analysis)
         
         # Tạo các biểu đồ
         fig_symbol = self._create_symbol_chart(symbol_stats)
@@ -336,10 +838,100 @@ class TradeAnalyzer:
         fig_distribution = self._create_win_loss_distribution()
         fig_trades_per_day = self._create_trades_per_day_chart(trades_per_day_df)
         
-        # Chèn biểu đồ vào HTML
+        # Biểu đồ mới
+        fig_drawdown = self._create_drawdown_chart(dd_analysis)
+        fig_risk_metrics = self._create_risk_metrics_chart(risk_metrics, trade_quality)
+        fig_session = self._create_session_chart(session_stats)
+        fig_consecutive = self._create_consecutive_chart(consecutive_data)
+        fig_hold_time = self._create_hold_time_chart(hold_time_stats)
+        
+        # === RISK & PERFORMANCE SECTION ===
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>📈 Equity Curve & Drawdown Analysis</h2>'
+        html_content += fig_drawdown.to_html(full_html=False, include_plotlyjs='cdn')
+        html_content += '</div>'
+        
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>⚖️ Risk Metrics & Trade Quality (MT5 Style)</h2>'
+        html_content += fig_risk_metrics.to_html(full_html=False, include_plotlyjs=False)
+        html_content += '</div>'
+        
+        # === SESSION ANALYSIS SECTION ===
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>🌍 Phân Tích Theo Phiên Giao Dịch</h2>'
+        html_content += '<p style="color: #666; margin-bottom: 15px;">Asian (1h-9h) | London (14h-17h) | New York (19h-23h)</p>'
+        html_content += fig_session.to_html(full_html=False, include_plotlyjs=False)
+        html_content += '</div>'
+        
+        # === BEHAVIORAL ANALYSIS ===
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>🔄 Phân Tích Chuỗi Thắng/Thua (Consecutive Analysis)</h2>'
+        html_content += '<p style="color: #666; margin-bottom: 15px;">Win rate của trade tiếp theo sau chuỗi thắng/thua liên tiếp</p>'
+        html_content += fig_consecutive.to_html(full_html=False, include_plotlyjs=False)
+        html_content += '</div>'
+        
+        # === RANDOM SAMPLING ANALYSIS ===
+        random_sample_data = self.get_random_sample_analysis(sample_size=100, num_iterations=20)
+        if random_sample_data is not None:
+            fig_random_sample = self._create_random_sample_chart(random_sample_data)
+            fig_random_distribution = self._create_random_sample_distribution_chart(random_sample_data)
+            
+            html_content += '<div class="chart-container">'
+            html_content += '<h2>🎲 Random Sampling Analysis (100 lệnh x 20 lần)</h2>'
+            html_content += '<p style="color: #666; margin-bottom: 15px;">Lấy ngẫu nhiên 100 lệnh liên tục, thực hiện 20 lần để kiểm tra tính ổn định của chiến lược</p>'
+            
+            # Thêm summary table
+            summary = random_sample_data['summary']
+            html_content += '''
+            <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 20px;">
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; text-align: center;">
+                    <div style="font-size: 0.75em; color: #666; text-transform: uppercase;">Win Rate</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #2c3e50;">''' + f"{summary['win_rate']['avg']:.1f}%" + '''</div>
+                    <div style="font-size: 0.7em; color: #888;">Range: ''' + f"{summary['win_rate']['min']:.1f}% - {summary['win_rate']['max']:.1f}%" + '''</div>
+                </div>
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; text-align: center;">
+                    <div style="font-size: 0.75em; color: #666; text-transform: uppercase;">Max Drawdown</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #e74c3c;">$''' + f"{abs(summary['max_drawdown']['avg']):.0f}" + '''</div>
+                    <div style="font-size: 0.7em; color: #888;">Range: $''' + f"{abs(summary['max_drawdown']['min']):.0f} - ${abs(summary['max_drawdown']['max']):.0f}" + '''</div>
+                </div>
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; text-align: center;">
+                    <div style="font-size: 0.75em; color: #666; text-transform: uppercase;">Profit Factor</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #27ae60;">''' + f"{summary['profit_factor']['avg']:.2f}" + '''</div>
+                    <div style="font-size: 0.7em; color: #888;">Range: ''' + f"{summary['profit_factor']['min']:.2f} - {summary['profit_factor']['max']:.2f}" + '''</div>
+                </div>
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; text-align: center;">
+                    <div style="font-size: 0.75em; color: #666; text-transform: uppercase;">Max Win Streak</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #27ae60;">''' + f"{summary['max_win_streak']['avg']:.1f}" + '''</div>
+                    <div style="font-size: 0.7em; color: #888;">Range: ''' + f"{summary['max_win_streak']['min']:.0f} - {summary['max_win_streak']['max']:.0f}" + '''</div>
+                </div>
+                <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; text-align: center;">
+                    <div style="font-size: 0.75em; color: #666; text-transform: uppercase;">Max Loss Streak</div>
+                    <div style="font-size: 1.1em; font-weight: 600; color: #e74c3c;">''' + f"{summary['max_loss_streak']['avg']:.1f}" + '''</div>
+                    <div style="font-size: 0.7em; color: #888;">Range: ''' + f"{summary['max_loss_streak']['min']:.0f} - {summary['max_loss_streak']['max']:.0f}" + '''</div>
+                </div>
+            </div>
+            '''
+            
+            if fig_random_sample is not None:
+                html_content += fig_random_sample.to_html(full_html=False, include_plotlyjs=False)
+            html_content += '</div>'
+            
+            html_content += '<div class="chart-container">'
+            html_content += '<h2>📊 Phân Phối Kết Quả Random Sampling</h2>'
+            html_content += '<p style="color: #666; margin-bottom: 15px;">Box plot thể hiện phân phối các metrics qua 20 lần random. Đường cam = giá trị tổng thể.</p>'
+            if fig_random_distribution is not None:
+                html_content += fig_random_distribution.to_html(full_html=False, include_plotlyjs=False)
+            html_content += '</div>'
+        
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>⏱️ Phân Tích Theo Thời Gian Giữ Lệnh</h2>'
+        html_content += fig_hold_time.to_html(full_html=False, include_plotlyjs=False)
+        html_content += '</div>'
+        
+        # === TRADITIONAL ANALYSIS ===
         html_content += '<div class="chart-container">'
         html_content += '<h2>📊 Phân Tích Theo Symbol</h2>'
-        html_content += fig_symbol.to_html(full_html=False, include_plotlyjs='cdn')
+        html_content += fig_symbol.to_html(full_html=False, include_plotlyjs=False)
         html_content += '</div>'
         
         html_content += '<div class="chart-container">'
@@ -353,7 +945,7 @@ class TradeAnalyzer:
         html_content += '</div>'
         
         html_content += '<div class="chart-container">'
-        html_content += '<h2>📆 Phân Tích Theo Tháng</h2>'
+        html_content += '<h2>📆 PnL Theo Tháng</h2>'
         html_content += fig_month.to_html(full_html=False, include_plotlyjs=False)
         html_content += '</div>'
         
@@ -373,7 +965,10 @@ class TradeAnalyzer:
         html_content += '</div>'
         
         # Thêm bảng chi tiết
-        html_content += self._create_detailed_tables(symbol_stats, hour_stats, day_stats, month_stats, trades_per_day_df)
+        html_content += self._create_detailed_tables(
+            symbol_stats, hour_stats, day_stats, month_stats, 
+            session_stats, hold_time_stats
+        )
         
         # Kết thúc HTML
         html_content += '</div></body></html>'
@@ -407,188 +1002,248 @@ class TradeAnalyzer:
         }}
         body {{
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
+            background: #f5f5f5;
+            padding: 15px;
             color: #333;
         }}
         .container {{
             max-width: 1400px;
             margin: 0 auto;
             background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
         }}
         .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #2c3e50;
             color: white;
-            padding: 40px;
+            padding: 20px;
             text-align: center;
         }}
         .header h1 {{
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+            font-size: 1.6em;
+            margin-bottom: 5px;
         }}
         .header p {{
-            font-size: 1.1em;
-            opacity: 0.9;
+            font-size: 0.9em;
+            opacity: 0.8;
         }}
         .stats-grid {{
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 20px;
-            padding: 30px;
-            background: #f8f9fa;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 8px;
+            padding: 15px;
+            background: #fafafa;
         }}
         .stat-card {{
             background: white;
-            padding: 25px;
-            border-radius: 10px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }}
-        .stat-card:hover {{
-            transform: translateY(-5px);
-            box-shadow: 0 8px 15px rgba(0,0,0,0.2);
+            padding: 10px 12px;
+            border-radius: 4px;
+            border: 1px solid #e0e0e0;
         }}
         .stat-label {{
-            font-size: 0.9em;
+            font-size: 0.7em;
             color: #666;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 10px;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
         }}
         .stat-value {{
-            font-size: 2em;
-            font-weight: bold;
-            color: #667eea;
+            font-size: 1.1em;
+            font-weight: 600;
+            color: #2c3e50;
         }}
         .stat-value.positive {{
-            color: #10b981;
+            color: #27ae60;
         }}
         .stat-value.negative {{
-            color: #ef4444;
+            color: #e74c3c;
+        }}
+        .summary-box {{
+            background: #2c3e50;
+            color: white;
+            padding: 15px;
+            border-radius: 4px;
+            grid-column: span 4;
+        }}
+        .summary-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+        }}
+        .summary-item .label {{
+            font-size: 0.7em;
+            opacity: 0.8;
+            text-transform: uppercase;
+        }}
+        .summary-item .value {{
+            font-size: 1.2em;
+            font-weight: 600;
         }}
         .chart-container {{
-            padding: 30px;
-            border-bottom: 1px solid #e5e7eb;
-        }}
-        .chart-container:last-child {{
-            border-bottom: none;
+            padding: 20px;
+            border-bottom: 1px solid #eee;
         }}
         .chart-container h2 {{
-            margin-bottom: 20px;
-            color: #374151;
-            font-size: 1.8em;
+            margin-bottom: 15px;
+            color: #2c3e50;
+            font-size: 1.2em;
         }}
         table {{
             width: 100%;
             border-collapse: collapse;
-            margin-top: 20px;
-            background: white;
+            margin-top: 15px;
+            font-size: 0.85em;
         }}
         th {{
-            background: #667eea;
+            background: #2c3e50;
             color: white;
-            padding: 15px;
+            padding: 10px;
             text-align: left;
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 0.85em;
-            letter-spacing: 0.5px;
+            font-weight: 500;
         }}
         td {{
-            padding: 12px 15px;
-            border-bottom: 1px solid #e5e7eb;
+            padding: 8px 10px;
+            border-bottom: 1px solid #eee;
         }}
         tr:hover {{
-            background: #f9fafb;
+            background: #f9f9f9;
         }}
         .footer {{
             text-align: center;
-            padding: 30px;
-            background: #f8f9fa;
+            padding: 15px;
+            background: #fafafa;
             color: #666;
-            font-size: 0.9em;
+            font-size: 0.8em;
         }}
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>📈 TRADE ANALYSIS REPORT</h1>
-            <p>Smart Money Concepts Trading Strategy</p>
-            <p style="font-size: 0.9em; margin-top: 10px;">Generated: {timestamp}</p>
+            <h1>TRADE ANALYSIS REPORT</h1>
+            <p>Generated: {timestamp}</p>
         </div>
 """
         return html
     
-    def _create_basic_stats_section(self, stats):
+    def _create_basic_stats_section(self, stats, risk_metrics, dd_analysis):
         """Tạo section thống kê cơ bản"""
-        pnl_class = 'positive' if stats['total_pnl'] >= 0 else 'negative'
+        # Format các giá trị
+        pf = risk_metrics['profit_factor']
+        pf_display = f"{pf:.2f}" if pf != float('inf') else "-"
+        rf = risk_metrics['recovery_factor']
+        rf_display = f"{rf:.2f}" if rf != float('inf') else "-"
+        pr = risk_metrics['payoff_ratio']
+        pr_display = f"{pr:.2f}" if pr != float('inf') else "-"
         
         html = f"""
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Tổng Số Lệnh</div>
-                <div class="stat-value">{stats['total_trades']}</div>
+        <div style="padding: 15px; background: #fafafa;">
+            <!-- Row 1: Summary -->
+            <div style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; margin-bottom: 8px;">
+                <div class="stat-card" style="background: #2c3e50; color: white;">
+                    <div class="stat-label" style="color: #aaa;">Net Profit</div>
+                    <div class="stat-value" style="color: {'#2ecc71' if stats['total_pnl'] >= 0 else '#e74c3c'};">${stats['total_pnl']:.0f}</div>
+                </div>
+                <div class="stat-card" style="background: #2c3e50; color: white;">
+                    <div class="stat-label" style="color: #aaa;">Win Rate</div>
+                    <div class="stat-value" style="color: white;">{stats['win_rate']:.2f}%</div>
+                </div>
+                <div class="stat-card" style="background: #2c3e50; color: white;">
+                    <div class="stat-label" style="color: #aaa;">Profit Factor</div>
+                    <div class="stat-value" style="color: white;">{pf_display}</div>
+                </div>
+                <div class="stat-card" style="background: #2c3e50; color: white;">
+                    <div class="stat-label" style="color: #aaa;">Max Drawdown</div>
+                    <div class="stat-value" style="color: #e74c3c;">${dd_analysis['max_drawdown']:.0f}</div>
+                </div>
+                <div class="stat-card" style="background: #2c3e50; color: white;">
+                    <div class="stat-label" style="color: #aaa;">Avg Drawdown</div>
+                    <div class="stat-value" style="color: #e74c3c;">${dd_analysis['avg_drawdown']:.0f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total</div>
+                    <div class="stat-value">{stats['total_trades']}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Wins</div>
+                    <div class="stat-value positive">{stats['wins']}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Losses</div>
+                    <div class="stat-value negative">{stats['losses']}</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Win Rate</div>
-                <div class="stat-value positive">{stats['win_rate']:.2f}%</div>
+            
+            <!-- Row 2: Risk Metrics -->
+            <div style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; margin-bottom: 8px;">
+                <div class="stat-card">
+                    <div class="stat-label">Gross Profit</div>
+                    <div class="stat-value positive">${risk_metrics['total_profit']:.0f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Gross Loss</div>
+                    <div class="stat-value negative">${risk_metrics['total_loss']:.0f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Expectancy</div>
+                    <div class="stat-value {'positive' if risk_metrics['expectancy'] >= 0 else 'negative'}">${risk_metrics['expectancy']:.2f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Payoff Ratio</div>
+                    <div class="stat-value">{pr_display}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Sharpe</div>
+                    <div class="stat-value">{risk_metrics['sharpe_ratio']:.2f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Sortino</div>
+                    <div class="stat-value">{risk_metrics['sortino_ratio']:.2f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Trading Days</div>
+                    <div class="stat-value">{stats['total_trading_days']}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">DD Periods</div>
+                    <div class="stat-value">{dd_analysis['num_drawdown_periods']}</div>
+                </div>
             </div>
-            <div class="stat-card">
-                <div class="stat-label">Số Lệnh Thắng</div>
-                <div class="stat-value positive">{stats['wins']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Số Lệnh Thua</div>
-                <div class="stat-value negative">{stats['losses']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Total PnL</div>
-                <div class="stat-value {pnl_class}">${stats['total_pnl']:.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Chuỗi Thắng Dài Nhất</div>
-                <div class="stat-value">{stats['max_win_streak']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Chuỗi Thua Dài Nhất</div>
-                <div class="stat-value">{stats['max_loss_streak']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Chuỗi Thắng TB</div>
-                <div class="stat-value">{stats['avg_win_streak']:.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Chuỗi Thua TB</div>
-                <div class="stat-value">{stats['avg_loss_streak']:.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Thời Gian TB (phút)</div>
-                <div class="stat-value">{stats['avg_duration_minutes']:.0f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">LONG Trades</div>
-                <div class="stat-value">{stats['long_trades']} ({stats['long_win_rate']:.1f}%)</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">SHORT Trades</div>
-                <div class="stat-value">{stats['short_trades']} ({stats['short_win_rate']:.1f}%)</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Số Ngày Giao Dịch</div>
-                <div class="stat-value">{stats['total_trading_days']}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Lệnh/Ngày TB</div>
-                <div class="stat-value">{stats['avg_trades_per_day']:.2f}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Max Lệnh/Ngày</div>
-                <div class="stat-value">{stats['max_trades_per_day']}</div>
+            
+            <!-- Row 3: Trade Details -->
+            <div style="display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px;">
+                <div class="stat-card">
+                    <div class="stat-label">Avg Win</div>
+                    <div class="stat-value positive">${risk_metrics['avg_win']:.2f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Loss</div>
+                    <div class="stat-value negative">${risk_metrics['avg_loss']:.2f}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Win Streak</div>
+                    <div class="stat-value">{stats['max_win_streak']}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Loss Streak</div>
+                    <div class="stat-value">{stats['max_loss_streak']}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Avg Duration</div>
+                    <div class="stat-value">{stats['avg_duration_minutes']:.0f}m</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">LONG WR | Dur</div>
+                    <div class="stat-value">{stats['long_win_rate']:.1f}% | {stats['avg_long_duration']:.0f}m</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">SHORT WR | Dur</div>
+                    <div class="stat-value">{stats['short_win_rate']:.1f}% | {stats['avg_short_duration']:.0f}m</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Trades/Day</div>
+                    <div class="stat-value">{stats['avg_trades_per_day']:.1f}</div>
+                </div>
             </div>
         </div>
 """
@@ -729,47 +1384,29 @@ class TradeAnalyzer:
         return fig
     
     def _create_month_chart(self, df):
-        """Biểu đồ theo tháng"""
-        fig = make_subplots(
-            rows=2, cols=1,
-            subplot_titles=('PnL by Month', 'Win Rate by Month'),
-            specs=[[{'type': 'bar'}], [{'type': 'bar'}]],
-            vertical_spacing=0.15
-        )
+        """Biểu đồ PnL theo tháng"""
+        fig = go.Figure()
         
-        # PnL bars
-        colors = ['green' if val >= 0 else 'red' for val in df['PnL']]
-        fig.add_trace(
-            go.Bar(
-                x=df['Month'],
-                y=df['PnL'],
-                name='PnL',
-                marker_color=colors,
-                text=[f"${val:.0f}" for val in df['PnL']],
-                textposition='outside'
-            ),
-            row=1, col=1
-        )
+        # PnL bars với màu theo giá trị
+        colors = ['rgb(46, 204, 113)' if val >= 0 else 'rgb(231, 76, 60)' for val in df['PnL']]
         
-        # Win Rate bars
-        fig.add_trace(
-            go.Bar(
-                x=df['Month'],
-                y=df['Win_Rate'],
-                name='Win Rate',
-                marker_color='rgb(26, 118, 255)',
-                text=[f"{val:.1f}%" for val in df['Win_Rate']],
-                textposition='outside'
-            ),
-            row=2, col=1
-        )
+        fig.add_trace(go.Bar(
+            x=df['Month'],
+            y=df['PnL'],
+            name='PnL',
+            marker_color=colors,
+            text=[f"${val:.0f}" for val in df['PnL']],
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>PnL: $%{y:.2f}<extra></extra>'
+        ))
         
-        fig.update_xaxes(title_text="Tháng", row=2, col=1)
-        fig.update_yaxes(title_text="PnL ($)", row=1, col=1)
-        fig.update_yaxes(title_text="Win Rate (%)", row=2, col=1)
+        # Thêm đường zero
+        fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
         
         fig.update_layout(
-            height=700,
+            xaxis_title='Tháng',
+            yaxis_title='PnL ($)',
+            height=400,
             showlegend=False,
             plot_bgcolor='rgba(240,240,240,0.5)'
         )
@@ -878,7 +1515,546 @@ class TradeAnalyzer:
         
         return fig
     
-    def _create_detailed_tables(self, symbol_stats, hour_stats, day_stats, month_stats, trades_per_day_df=None):
+    def _create_drawdown_chart(self, dd_analysis):
+        """Biểu đồ Drawdown (giống MT5)"""
+        df = dd_analysis['drawdown_df']
+        avg_drawdown = dd_analysis['avg_drawdown']
+        max_drawdown = dd_analysis['max_drawdown']
+        
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=('Equity Curve & Peak', 'Drawdown'),
+            specs=[[{'type': 'scatter'}], [{'type': 'scatter'}]],
+            vertical_spacing=0.12,
+            row_heights=[0.6, 0.4]
+        )
+        
+        # Equity curve
+        fig.add_trace(
+            go.Scatter(
+                x=df['Entry_Time'],
+                y=df['Cumulative_PnL'],
+                mode='lines',
+                name='Equity',
+                line=dict(color='rgb(26, 118, 255)', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(26, 118, 255, 0.1)',
+                hovertemplate='<b>%{x}</b><br>Equity: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Peak line
+        fig.add_trace(
+            go.Scatter(
+                x=df['Entry_Time'],
+                y=df['Peak'],
+                mode='lines',
+                name='Peak',
+                line=dict(color='rgb(46, 204, 113)', width=1, dash='dot'),
+                hovertemplate='<b>%{x}</b><br>Peak: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Drawdown area
+        fig.add_trace(
+            go.Scatter(
+                x=df['Entry_Time'],
+                y=df['Drawdown'],
+                mode='lines',
+                name='Drawdown',
+                line=dict(color='rgb(231, 76, 60)', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(231, 76, 60, 0.3)',
+                hovertemplate='<b>%{x}</b><br>Drawdown: $%{y:.2f}<extra></extra>'
+            ),
+            row=2, col=1
+        )
+        
+        # Average Drawdown line (đường ngang)
+        fig.add_hline(
+            y=avg_drawdown, 
+            line_dash="dash", 
+            line_color="orange", 
+            line_width=2,
+            annotation_text=f"Avg DD: ${avg_drawdown:.0f}",
+            annotation_position="right",
+            row=2, col=1
+        )
+        
+        # Max Drawdown line (đường ngang)
+        fig.add_hline(
+            y=max_drawdown, 
+            line_dash="dot", 
+            line_color="darkred", 
+            line_width=2,
+            annotation_text=f"Max DD: ${max_drawdown:.0f}",
+            annotation_position="right",
+            row=2, col=1
+        )
+        
+        fig.update_yaxes(title_text="Equity ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Drawdown ($)", row=2, col=1)
+        fig.update_xaxes(title_text="Thời gian", row=2, col=1)
+        
+        fig.update_layout(
+            height=600,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_session_chart(self, session_df):
+        """Biểu đồ theo phiên giao dịch"""
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Win Rate theo Session', 'PnL theo Session'),
+            specs=[[{'type': 'bar'}, {'type': 'bar'}]]
+        )
+        
+        # Màu cho các session
+        session_colors = {
+            'Asian': 'rgb(255, 193, 7)',
+            'London': 'rgb(0, 123, 255)',
+            'New York': 'rgb(40, 167, 69)',
+            'Off-Session': 'rgb(108, 117, 125)'
+        }
+        colors = [session_colors.get(s, 'gray') for s in session_df['Session']]
+        
+        # Win Rate
+        fig.add_trace(
+            go.Bar(
+                x=session_df['Session'],
+                y=session_df['Win_Rate'],
+                name='Win Rate',
+                marker_color=colors,
+                text=[f"{v:.1f}%" for v in session_df['Win_Rate']],
+                textposition='outside'
+            ),
+            row=1, col=1
+        )
+        
+        # PnL
+        pnl_colors = ['rgb(46, 204, 113)' if v >= 0 else 'rgb(231, 76, 60)' for v in session_df['PnL']]
+        fig.add_trace(
+            go.Bar(
+                x=session_df['Session'],
+                y=session_df['PnL'],
+                name='PnL',
+                marker_color=pnl_colors,
+                text=[f"${v:.0f}" for v in session_df['PnL']],
+                textposition='outside'
+            ),
+            row=1, col=2
+        )
+        
+        fig.update_yaxes(title_text="Win Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="PnL ($)", row=1, col=2)
+        
+        fig.update_layout(
+            height=400,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_consecutive_chart(self, consecutive_data):
+        """Biểu đồ phân tích sau chuỗi thắng/thua"""
+        after_win = consecutive_data['after_win_streak']
+        after_loss = consecutive_data['after_loss_streak']
+        
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Win Rate SAU Chuỗi Thắng', 'Win Rate SAU Chuỗi Thua'),
+            specs=[[{'type': 'bar'}, {'type': 'bar'}]]
+        )
+        
+        # After win streak
+        if after_win:
+            streaks = list(after_win.keys())
+            win_rates = [after_win[s]['win_rate'] for s in streaks]
+            totals = [after_win[s]['total'] for s in streaks]
+            
+            fig.add_trace(
+                go.Bar(
+                    x=[f"{s}+ wins" for s in streaks],
+                    y=win_rates,
+                    name='After Win Streak',
+                    marker_color='rgb(46, 204, 113)',
+                    text=[f"{wr:.1f}%<br>(n={t})" for wr, t in zip(win_rates, totals)],
+                    textposition='outside'
+                ),
+                row=1, col=1
+            )
+        
+        # After loss streak
+        if after_loss:
+            streaks = list(after_loss.keys())
+            win_rates = [after_loss[s]['win_rate'] for s in streaks]
+            totals = [after_loss[s]['total'] for s in streaks]
+            
+            fig.add_trace(
+                go.Bar(
+                    x=[f"{s}+ losses" for s in streaks],
+                    y=win_rates,
+                    name='After Loss Streak',
+                    marker_color='rgb(231, 76, 60)',
+                    text=[f"{wr:.1f}%<br>(n={t})" for wr, t in zip(win_rates, totals)],
+                    textposition='outside'
+                ),
+                row=1, col=2
+            )
+        
+        # Thêm đường 50% reference
+        fig.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5, row=1, col=1)
+        fig.add_hline(y=50, line_dash="dash", line_color="gray", opacity=0.5, row=1, col=2)
+        
+        fig.update_yaxes(title_text="Win Rate (%)", range=[0, 100], row=1, col=1)
+        fig.update_yaxes(title_text="Win Rate (%)", range=[0, 100], row=1, col=2)
+        
+        fig.update_layout(
+            height=400,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_hold_time_chart(self, hold_df):
+        """Biểu đồ phân tích theo thời gian giữ lệnh"""
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=('Win Rate theo Thời Gian Giữ Lệnh', 'PnL theo Thời Gian Giữ Lệnh'),
+            specs=[[{'type': 'bar'}, {'type': 'bar'}]]
+        )
+        
+        # Win Rate
+        fig.add_trace(
+            go.Bar(
+                x=hold_df['Duration_Category'],
+                y=hold_df['Win_Rate'],
+                name='Win Rate',
+                marker_color='rgb(55, 83, 109)',
+                text=[f"{v:.1f}%<br>(n={t})" for v, t in zip(hold_df['Win_Rate'], hold_df['Total_Trades'])],
+                textposition='outside'
+            ),
+            row=1, col=1
+        )
+        
+        # PnL
+        pnl_colors = ['rgb(46, 204, 113)' if v >= 0 else 'rgb(231, 76, 60)' for v in hold_df['PnL']]
+        fig.add_trace(
+            go.Bar(
+                x=hold_df['Duration_Category'],
+                y=hold_df['PnL'],
+                name='PnL',
+                marker_color=pnl_colors,
+                text=[f"${v:.0f}" for v in hold_df['PnL']],
+                textposition='outside'
+            ),
+            row=1, col=2
+        )
+        
+        fig.update_yaxes(title_text="Win Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="PnL ($)", row=1, col=2)
+        fig.update_xaxes(tickangle=45)
+        
+        fig.update_layout(
+            height=450,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_random_sample_chart(self, random_data):
+        """Biểu đồ phân tích Random Sampling"""
+        if random_data is None:
+            return None
+        
+        summary = random_data['summary']
+        iterations = random_data['iterations']
+        
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Win Rate: Random Samples vs Overall',
+                'Max Drawdown: Random Samples vs Overall',
+                'Profit Factor: Random Samples vs Overall',
+                'Win/Loss Streak: Random Samples vs Overall'
+            ),
+            vertical_spacing=0.15,
+            horizontal_spacing=0.1
+        )
+        
+        # === Win Rate Chart ===
+        wr_data = summary['win_rate']
+        fig.add_trace(
+            go.Bar(
+                x=['Min', 'Avg', 'Max', 'Overall'],
+                y=[wr_data['min'], wr_data['avg'], wr_data['max'], wr_data['overall']],
+                marker_color=['rgb(255, 193, 7)', 'rgb(26, 118, 255)', 'rgb(46, 204, 113)', 'rgb(108, 117, 125)'],
+                text=[f"{v:.1f}%" for v in [wr_data['min'], wr_data['avg'], wr_data['max'], wr_data['overall']]],
+                textposition='outside',
+                name='Win Rate'
+            ),
+            row=1, col=1
+        )
+        
+        # === Max Drawdown Chart ===
+        dd_data = summary['max_drawdown']
+        fig.add_trace(
+            go.Bar(
+                x=['Min (Best)', 'Avg', 'Max (Worst)', 'Overall'],
+                y=[abs(dd_data['min']), abs(dd_data['avg']), abs(dd_data['max']), abs(dd_data['overall'])],
+                marker_color=['rgb(46, 204, 113)', 'rgb(255, 193, 7)', 'rgb(231, 76, 60)', 'rgb(108, 117, 125)'],
+                text=[f"${abs(v):.0f}" for v in [dd_data['min'], dd_data['avg'], dd_data['max'], dd_data['overall']]],
+                textposition='outside',
+                name='Max Drawdown'
+            ),
+            row=1, col=2
+        )
+        
+        # === Profit Factor Chart ===
+        pf_data = summary['profit_factor']
+        pf_overall = pf_data['overall'] if pf_data['overall'] != float('inf') else 10
+        fig.add_trace(
+            go.Bar(
+                x=['Min', 'Avg', 'Max', 'Overall'],
+                y=[pf_data['min'], pf_data['avg'], min(pf_data['max'], 10), min(pf_overall, 10)],
+                marker_color=['rgb(231, 76, 60)', 'rgb(26, 118, 255)', 'rgb(46, 204, 113)', 'rgb(108, 117, 125)'],
+                text=[f"{v:.2f}" for v in [pf_data['min'], pf_data['avg'], min(pf_data['max'], 10), min(pf_overall, 10)]],
+                textposition='outside',
+                name='Profit Factor'
+            ),
+            row=2, col=1
+        )
+        
+        # === Win/Loss Streak Chart ===
+        ws_data = summary['max_win_streak']
+        ls_data = summary['max_loss_streak']
+        
+        fig.add_trace(
+            go.Bar(
+                x=['Win Streak (Avg)', 'Win Streak (Max)', 'Loss Streak (Avg)', 'Loss Streak (Max)'],
+                y=[ws_data['avg'], ws_data['max'], ls_data['avg'], ls_data['max']],
+                marker_color=['rgb(144, 238, 144)', 'rgb(46, 204, 113)', 'rgb(255, 182, 193)', 'rgb(231, 76, 60)'],
+                text=[f"{v:.1f}" for v in [ws_data['avg'], ws_data['max'], ls_data['avg'], ls_data['max']]],
+                textposition='outside',
+                name='Streaks'
+            ),
+            row=2, col=2
+        )
+        
+        # Add reference lines for overall values
+        fig.add_hline(y=ws_data['overall'], line_dash="dash", line_color="green", 
+                     annotation_text=f"Overall: {ws_data['overall']}", row=2, col=2)
+        
+        fig.update_yaxes(title_text="Win Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="Drawdown ($)", row=1, col=2)
+        fig.update_yaxes(title_text="Profit Factor", row=2, col=1)
+        fig.update_yaxes(title_text="Streak Length", row=2, col=2)
+        
+        fig.update_layout(
+            height=600,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_random_sample_distribution_chart(self, random_data):
+        """Biểu đồ phân phối của các lần random sampling"""
+        if random_data is None:
+            return None
+        
+        iterations = random_data['iterations']
+        
+        # Extract data for box plots
+        win_rates = [it['win_rate'] for it in iterations]
+        drawdowns = [abs(it['max_drawdown']) for it in iterations]
+        profit_factors = [it['profit_factor'] for it in iterations if it['profit_factor'] != float('inf')]
+        
+        fig = make_subplots(
+            rows=1, cols=3,
+            subplot_titles=(
+                f'Win Rate Distribution (n={len(iterations)})',
+                f'Max Drawdown Distribution (n={len(iterations)})',
+                f'Profit Factor Distribution (n={len(profit_factors)})'
+            )
+        )
+        
+        # Win Rate Box Plot
+        fig.add_trace(
+            go.Box(
+                y=win_rates,
+                name='Win Rate',
+                marker_color='rgb(26, 118, 255)',
+                boxmean=True
+            ),
+            row=1, col=1
+        )
+        
+        # Max Drawdown Box Plot
+        fig.add_trace(
+            go.Box(
+                y=drawdowns,
+                name='Max Drawdown',
+                marker_color='rgb(231, 76, 60)',
+                boxmean=True
+            ),
+            row=1, col=2
+        )
+        
+        # Profit Factor Box Plot
+        fig.add_trace(
+            go.Box(
+                y=profit_factors,
+                name='Profit Factor',
+                marker_color='rgb(46, 204, 113)',
+                boxmean=True
+            ),
+            row=1, col=3
+        )
+        
+        # Add overall reference lines
+        overall = random_data['overall_stats']
+        fig.add_hline(y=overall['win_rate'], line_dash="dash", line_color="orange",
+                     annotation_text=f"Overall: {overall['win_rate']:.1f}%", row=1, col=1)
+        fig.add_hline(y=abs(overall['max_drawdown']), line_dash="dash", line_color="orange",
+                     annotation_text=f"Overall: ${abs(overall['max_drawdown']):.0f}", row=1, col=2)
+        if overall['profit_factor'] != float('inf'):
+            fig.add_hline(y=overall['profit_factor'], line_dash="dash", line_color="orange",
+                         annotation_text=f"Overall: {overall['profit_factor']:.2f}", row=1, col=3)
+        
+        fig.update_yaxes(title_text="Win Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="Drawdown ($)", row=1, col=2)
+        fig.update_yaxes(title_text="Profit Factor", row=1, col=3)
+        
+        fig.update_layout(
+            height=400,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_risk_metrics_chart(self, risk_metrics, trade_quality):
+        """Biểu đồ các chỉ số rủi ro (style MT5)"""
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Risk Metrics', 
+                'Profit vs Loss Distribution',
+                'Trade Quality Indicators',
+                'Win/Loss Size Comparison'
+            ),
+            specs=[
+                [{'type': 'indicator'}, {'type': 'pie'}],
+                [{'type': 'bar'}, {'type': 'bar'}]
+            ],
+            vertical_spacing=0.15,
+            horizontal_spacing=0.1
+        )
+        
+        # Risk Metrics Gauge
+        pf = risk_metrics['profit_factor']
+        pf_display = min(pf, 10) if pf != float('inf') else 10
+        
+        fig.add_trace(
+            go.Indicator(
+                mode="gauge+number",
+                value=pf_display,
+                title={'text': "Profit Factor"},
+                gauge={
+                    'axis': {'range': [0, 5]},
+                    'bar': {'color': "darkblue"},
+                    'steps': [
+                        {'range': [0, 1], 'color': "red"},
+                        {'range': [1, 2], 'color': "yellow"},
+                        {'range': [2, 5], 'color': "green"}
+                    ],
+                    'threshold': {
+                        'line': {'color': "black", 'width': 4},
+                        'thickness': 0.75,
+                        'value': pf_display
+                    }
+                }
+            ),
+            row=1, col=1
+        )
+        
+        # Profit vs Loss Pie
+        fig.add_trace(
+            go.Pie(
+                labels=['Gross Profit', 'Gross Loss'],
+                values=[risk_metrics['total_profit'], risk_metrics['total_loss']],
+                hole=0.4,
+                marker_colors=['rgb(46, 204, 113)', 'rgb(231, 76, 60)'],
+                textinfo='label+percent',
+                textfont_size=12
+            ),
+            row=1, col=2
+        )
+        
+        # Trade Quality Bar
+        quality_metrics = ['Expectancy', 'Avg Win', 'Avg Loss', 'Payoff Ratio']
+        quality_values = [
+            risk_metrics['expectancy'],
+            risk_metrics['avg_win'],
+            risk_metrics['avg_loss'],
+            min(risk_metrics['payoff_ratio'], 10) if risk_metrics['payoff_ratio'] != float('inf') else 10
+        ]
+        colors = ['rgb(26, 118, 255)', 'rgb(46, 204, 113)', 'rgb(231, 76, 60)', 'rgb(255, 193, 7)']
+        
+        fig.add_trace(
+            go.Bar(
+                x=quality_metrics,
+                y=quality_values,
+                marker_color=colors,
+                text=[f"${v:.2f}" if i < 3 else f"{v:.2f}" for i, v in enumerate(quality_values)],
+                textposition='outside'
+            ),
+            row=2, col=1
+        )
+        
+        # Win/Loss Size Comparison
+        fig.add_trace(
+            go.Bar(
+                x=['Max Win', 'Median Win', 'Median Loss', 'Max Loss'],
+                y=[
+                    trade_quality['max_win'],
+                    trade_quality['median_win'],
+                    trade_quality['median_loss'],
+                    trade_quality['max_loss']
+                ],
+                marker_color=['rgb(46, 204, 113)', 'rgb(144, 238, 144)', 
+                             'rgb(255, 182, 193)', 'rgb(231, 76, 60)'],
+                text=[
+                    f"${trade_quality['max_win']:.0f}",
+                    f"${trade_quality['median_win']:.0f}",
+                    f"${trade_quality['median_loss']:.0f}",
+                    f"${trade_quality['max_loss']:.0f}"
+                ],
+                textposition='outside'
+            ),
+            row=2, col=2
+        )
+        
+        fig.update_layout(
+            height=700,
+            showlegend=False,
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_detailed_tables(self, symbol_stats, hour_stats, day_stats, month_stats, 
+                                   session_stats=None, hold_time_stats=None):
         """Tạo bảng chi tiết"""
         html = '<div style="padding: 30px;">'
         html += '<h2>📋 Chi Tiết Thống Kê</h2>'
@@ -886,6 +2062,16 @@ class TradeAnalyzer:
         # Symbol table
         html += '<h3 style="margin-top: 30px; color: #374151;">Theo Symbol</h3>'
         html += symbol_stats.to_html(index=False, classes='table', border=0)
+        
+        # Session table (MỚI)
+        if session_stats is not None and len(session_stats) > 0:
+            html += '<h3 style="margin-top: 30px; color: #374151;">Theo Phiên Giao Dịch</h3>'
+            html += session_stats.to_html(index=False, classes='table', border=0)
+        
+        # Hold time table (MỚI)
+        if hold_time_stats is not None and len(hold_time_stats) > 0:
+            html += '<h3 style="margin-top: 30px; color: #374151;">Theo Thời Gian Giữ Lệnh</h3>'
+            html += hold_time_stats.to_html(index=False, classes='table', border=0)
         
         # Hour table
         html += '<h3 style="margin-top: 30px; color: #374151;">Theo Giờ</h3>'
@@ -898,12 +2084,6 @@ class TradeAnalyzer:
         # Month table
         html += '<h3 style="margin-top: 30px; color: #374151;">Theo Tháng</h3>'
         html += month_stats.to_html(index=False, classes='table', border=0)
-        
-        # Trades per day table (nếu có)
-        if trades_per_day_df is not None and len(trades_per_day_df) > 0:
-            html += '<h3 style="margin-top: 30px; color: #374151;">Số Lệnh Theo Từng Ngày (Top 20 ngày có nhiều lệnh nhất)</h3>'
-            top_days = trades_per_day_df.nlargest(20, 'Total_Trades')
-            html += top_days.to_html(index=False, classes='table', border=0)
         
         html += '</div>'
         
