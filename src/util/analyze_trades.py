@@ -63,6 +63,9 @@ class TradeAnalyzer:
             self.trades_df['Exit_Time'] - self.trades_df['Entry_Time']
         ).dt.total_seconds() / 60
         
+        # Tính SL% (Stop Loss Percent)
+        self.trades_df['SL_Percent'] = self.trades_df.apply(self._calculate_sl_percent, axis=1)
+        
         # Tính profit/loss (đơn giản hóa, giả sử RR = 2)
         self.trades_df['PnL'] = self.trades_df.apply(self._calculate_pnl, axis=1)
         
@@ -90,6 +93,28 @@ class TradeAnalyzer:
             gross_pnl = -10.0  # Loss = -10
             return gross_pnl - total_fee  # Net PnL sau phí
         else:
+            return 0.0
+    
+    def _calculate_sl_percent(self, row):
+        """
+        Tính SL% (khoảng cách từ Entry đến Stop Loss theo %)
+        LONG: SL% = (Entry_Price - Stop_Loss) / Entry_Price * 100
+        SHORT: SL% = (Stop_Loss - Entry_Price) / Entry_Price * 100
+        """
+        try:
+            entry_price = float(row['Entry_Price'])
+            stop_loss = float(row['Stop_Loss'])
+            
+            if entry_price == 0:
+                return 0.0
+            
+            if row['Type'] == 'LONG':
+                sl_percent = (entry_price - stop_loss) / entry_price * 100
+            else:  # SHORT
+                sl_percent = (stop_loss - entry_price) / entry_price * 100
+            
+            return abs(sl_percent)  # Luôn trả về giá trị dương
+        except (ValueError, KeyError, TypeError):
             return 0.0
     
     def get_basic_stats(self):
@@ -668,6 +693,104 @@ class TradeAnalyzer:
         
         return pd.DataFrame(hold_stats)
     
+    def get_sl_percent_analysis(self, num_ranges: int = 5):
+        """
+        Phân tích Win Rate theo khoảng SL% (Stop Loss Percent)
+        
+        Tính toán:
+        - SL% trung bình, lớn nhất, nhỏ nhất
+        - Chia thành 5 khoảng đều (equal range) từ Min đến Max
+        - Chia thành 5 khoảng theo percentile (equal count)
+        - Tính Win Rate cho từng khoảng
+        
+        Args:
+            num_ranges: Số khoảng để chia (default: 5)
+        """
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        
+        # Lọc bỏ các giá trị SL_Percent = 0 hoặc bất thường
+        df = df[df['SL_Percent'] > 0]
+        
+        if len(df) == 0:
+            return None
+        
+        sl_values = df['SL_Percent']
+        
+        # Thống kê cơ bản SL%
+        avg_sl = sl_values.mean()
+        min_sl = sl_values.min()
+        max_sl = sl_values.max()
+        median_sl = sl_values.median()
+        std_sl = sl_values.std()
+        
+        # === CHIA THEO EQUAL RANGE (khoảng đều) ===
+        range_size = (max_sl - min_sl) / num_ranges
+        equal_range_stats = []
+        
+        for i in range(num_ranges):
+            range_min = min_sl + (i * range_size)
+            range_max = min_sl + ((i + 1) * range_size)
+            
+            # Khoảng cuối cùng bao gồm cả max
+            if i == num_ranges - 1:
+                range_df = df[(df['SL_Percent'] >= range_min) & (df['SL_Percent'] <= range_max)]
+            else:
+                range_df = df[(df['SL_Percent'] >= range_min) & (df['SL_Percent'] < range_max)]
+            
+            total = len(range_df)
+            wins = len(range_df[range_df['Result'] == 'Win'])
+            win_rate = (wins / total * 100) if total > 0 else 0
+            
+            equal_range_stats.append({
+                'Range': f"{range_min:.2f}% - {range_max:.2f}%",
+                'Range_Min': range_min,
+                'Range_Max': range_max,
+                'Total_Trades': total,
+                'Wins': wins,
+                'Losses': total - wins,
+                'Win_Rate': win_rate
+            })
+        
+        # === CHIA THEO PERCENTILE (số lượng đều) ===
+        percentile_stats = []
+        percentiles = np.linspace(0, 100, num_ranges + 1)
+        
+        for i in range(num_ranges):
+            p_min = np.percentile(sl_values, percentiles[i])
+            p_max = np.percentile(sl_values, percentiles[i + 1])
+            
+            # Khoảng cuối cùng bao gồm cả max
+            if i == num_ranges - 1:
+                range_df = df[(df['SL_Percent'] >= p_min) & (df['SL_Percent'] <= p_max)]
+            else:
+                range_df = df[(df['SL_Percent'] >= p_min) & (df['SL_Percent'] < p_max)]
+            
+            total = len(range_df)
+            wins = len(range_df[range_df['Result'] == 'Win'])
+            win_rate = (wins / total * 100) if total > 0 else 0
+            
+            percentile_stats.append({
+                'Range': f"{p_min:.2f}% - {p_max:.2f}%",
+                'Percentile': f"P{int(percentiles[i])}-P{int(percentiles[i+1])}",
+                'Range_Min': p_min,
+                'Range_Max': p_max,
+                'Total_Trades': total,
+                'Wins': wins,
+                'Losses': total - wins,
+                'Win_Rate': win_rate
+            })
+        
+        return {
+            'avg_sl_percent': avg_sl,
+            'min_sl_percent': min_sl,
+            'max_sl_percent': max_sl,
+            'median_sl_percent': median_sl,
+            'std_sl_percent': std_sl,
+            'total_trades': len(df),
+            'equal_range_stats': pd.DataFrame(equal_range_stats),
+            'percentile_stats': pd.DataFrame(percentile_stats)
+        }
+    
     def get_random_sample_analysis(self, sample_size: int = 100, num_iterations: int = 20):
         """
         Phân tích Random Sampling - lấy ngẫu nhiên N lệnh liên tục, thực hiện M lần
@@ -822,12 +945,13 @@ class TradeAnalyzer:
         session_stats = self.get_stats_by_session()
         consecutive_data = self.get_consecutive_analysis()
         hold_time_stats = self.get_hold_time_analysis()
+        sl_analysis = self.get_sl_percent_analysis()
         
         # Tạo HTML
         html_content = self._create_html_template()
         
         # Thêm thống kê cơ bản (MT5 Style)
-        html_content += self._create_basic_stats_section(basic_stats, risk_metrics, dd_analysis)
+        html_content += self._create_basic_stats_section(basic_stats, risk_metrics, dd_analysis, sl_analysis)
         
         # Tạo các biểu đồ
         fig_symbol = self._create_symbol_chart(symbol_stats)
@@ -855,6 +979,84 @@ class TradeAnalyzer:
         html_content += '<h2>⚖️ Risk Metrics & Trade Quality (MT5 Style)</h2>'
         html_content += fig_risk_metrics.to_html(full_html=False, include_plotlyjs=False)
         html_content += '</div>'
+        
+        # === SL% ANALYSIS SECTION ===
+        if sl_analysis is not None:
+            fig_sl_percent = self._create_sl_percent_chart(sl_analysis)
+            if fig_sl_percent is not None:
+                html_content += '<div class="chart-container">'
+                html_content += '<h2>🎯 Phân Tích Win Rate Theo SL% (Stop Loss Percent)</h2>'
+                html_content += f'<p style="color: #666; margin-bottom: 15px;">Avg SL%: {sl_analysis["avg_sl_percent"]:.2f}% | Min: {sl_analysis["min_sl_percent"]:.2f}% | Max: {sl_analysis["max_sl_percent"]:.2f}% | Median: {sl_analysis["median_sl_percent"]:.2f}%</p>'
+                
+                # Thêm bảng chi tiết SL% stats
+                equal_range_df = sl_analysis['equal_range_stats']
+                percentile_df = sl_analysis['percentile_stats']
+                
+                html_content += '''
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px;">
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: #2c3e50;">Chia Đều Khoảng (Equal Range)</h4>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #2c3e50; color: white;">
+                                    <th style="padding: 8px; text-align: left;">Khoảng SL%</th>
+                                    <th style="padding: 8px; text-align: center;">Số Lệnh</th>
+                                    <th style="padding: 8px; text-align: center;">Wins</th>
+                                    <th style="padding: 8px; text-align: center;">Win Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                '''
+                
+                for _, row in equal_range_df.iterrows():
+                    wr_color = '#27ae60' if row['Win_Rate'] >= 50 else '#e74c3c'
+                    html_content += f'''
+                                <tr>
+                                    <td style="padding: 8px; border-bottom: 1px solid #eee;">{row['Range']}</td>
+                                    <td style="padding: 8px; text-align: center; border-bottom: 1px solid #eee;">{row['Total_Trades']}</td>
+                                    <td style="padding: 8px; text-align: center; border-bottom: 1px solid #eee;">{row['Wins']}</td>
+                                    <td style="padding: 8px; text-align: center; border-bottom: 1px solid #eee; color: {wr_color}; font-weight: 600;">{row['Win_Rate']:.1f}%</td>
+                                </tr>
+                    '''
+                
+                html_content += '''
+                            </tbody>
+                        </table>
+                    </div>
+                    <div>
+                        <h4 style="margin-bottom: 10px; color: #2c3e50;">Chia Theo Percentile (Equal Count)</h4>
+                        <table style="width: 100%; border-collapse: collapse; font-size: 0.85em;">
+                            <thead>
+                                <tr style="background: #2c3e50; color: white;">
+                                    <th style="padding: 8px; text-align: left;">Percentile</th>
+                                    <th style="padding: 8px; text-align: left;">Khoảng SL%</th>
+                                    <th style="padding: 8px; text-align: center;">Số Lệnh</th>
+                                    <th style="padding: 8px; text-align: center;">Win Rate</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                '''
+                
+                for _, row in percentile_df.iterrows():
+                    wr_color = '#27ae60' if row['Win_Rate'] >= 50 else '#e74c3c'
+                    html_content += f'''
+                                <tr>
+                                    <td style="padding: 8px; border-bottom: 1px solid #eee;">{row['Percentile']}</td>
+                                    <td style="padding: 8px; border-bottom: 1px solid #eee;">{row['Range']}</td>
+                                    <td style="padding: 8px; text-align: center; border-bottom: 1px solid #eee;">{row['Total_Trades']}</td>
+                                    <td style="padding: 8px; text-align: center; border-bottom: 1px solid #eee; color: {wr_color}; font-weight: 600;">{row['Win_Rate']:.1f}%</td>
+                                </tr>
+                    '''
+                
+                html_content += '''
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                '''
+                
+                html_content += fig_sl_percent.to_html(full_html=False, include_plotlyjs=False)
+                html_content += '</div>'
         
         # === SESSION ANALYSIS SECTION ===
         html_content += '<div class="chart-container">'
@@ -1126,7 +1328,7 @@ class TradeAnalyzer:
 """
         return html
     
-    def _create_basic_stats_section(self, stats, risk_metrics, dd_analysis):
+    def _create_basic_stats_section(self, stats, risk_metrics, dd_analysis, sl_analysis=None):
         """Tạo section thống kê cơ bản"""
         # Format các giá trị
         pf = risk_metrics['profit_factor']
@@ -1135,6 +1337,15 @@ class TradeAnalyzer:
         rf_display = f"{rf:.2f}" if rf != float('inf') else "-"
         pr = risk_metrics['payoff_ratio']
         pr_display = f"{pr:.2f}" if pr != float('inf') else "-"
+        
+        # SL% stats
+        if sl_analysis is not None:
+            avg_sl = f"{sl_analysis['avg_sl_percent']:.2f}%"
+            min_sl = f"{sl_analysis['min_sl_percent']:.2f}%"
+            max_sl = f"{sl_analysis['max_sl_percent']:.2f}%"
+            median_sl = f"{sl_analysis['median_sl_percent']:.2f}%"
+        else:
+            avg_sl = min_sl = max_sl = median_sl = "-"
         
         html = f"""
         <div style="padding: 15px; background: #fafafa;">
@@ -1243,6 +1454,26 @@ class TradeAnalyzer:
                 <div class="stat-card">
                     <div class="stat-label">Trades/Day</div>
                     <div class="stat-value">{stats['avg_trades_per_day']:.1f}</div>
+                </div>
+            </div>
+            
+            <!-- Row 4: SL% Analysis -->
+            <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 8px;">
+                <div class="stat-card" style="background: #3498db; color: white;">
+                    <div class="stat-label" style="color: #ddd;">Avg SL%</div>
+                    <div class="stat-value" style="color: white;">{avg_sl}</div>
+                </div>
+                <div class="stat-card" style="background: #27ae60; color: white;">
+                    <div class="stat-label" style="color: #ddd;">Min SL%</div>
+                    <div class="stat-value" style="color: white;">{min_sl}</div>
+                </div>
+                <div class="stat-card" style="background: #e74c3c; color: white;">
+                    <div class="stat-label" style="color: #ddd;">Max SL%</div>
+                    <div class="stat-value" style="color: white;">{max_sl}</div>
+                </div>
+                <div class="stat-card" style="background: #9b59b6; color: white;">
+                    <div class="stat-label" style="color: #ddd;">Median SL%</div>
+                    <div class="stat-value" style="color: white;">{median_sl}</div>
                 </div>
             </div>
         </div>
@@ -1768,6 +1999,144 @@ class TradeAnalyzer:
             showlegend=False,
             plot_bgcolor='rgba(240,240,240,0.5)'
         )
+        
+        return fig
+    
+    def _create_sl_percent_chart(self, sl_analysis):
+        """
+        Biểu đồ phân tích Win Rate theo khoảng SL%
+        Bao gồm 2 biểu đồ: Equal Range và Percentile
+        """
+        if sl_analysis is None:
+            return None
+        
+        equal_range_df = sl_analysis['equal_range_stats']
+        percentile_df = sl_analysis['percentile_stats']
+        
+        fig = make_subplots(
+            rows=2, cols=2,
+            subplot_titles=(
+                'Win Rate theo SL% (Chia Đều Khoảng)',
+                'Số Lệnh theo SL% (Chia Đều Khoảng)',
+                'Win Rate theo SL% (Chia Theo Percentile)',
+                'Số Lệnh theo SL% (Chia Theo Percentile)'
+            ),
+            specs=[[{'type': 'bar'}, {'type': 'bar'}],
+                   [{'type': 'bar'}, {'type': 'bar'}]],
+            vertical_spacing=0.15,
+            horizontal_spacing=0.1
+        )
+        
+        # === Row 1: Equal Range ===
+        # Win Rate - Equal Range
+        colors_wr = ['rgb(46, 204, 113)' if wr >= 50 else 'rgb(231, 76, 60)' 
+                     for wr in equal_range_df['Win_Rate']]
+        fig.add_trace(
+            go.Bar(
+                x=equal_range_df['Range'],
+                y=equal_range_df['Win_Rate'],
+                name='Win Rate',
+                marker_color=colors_wr,
+                text=[f"{v:.1f}%" for v in equal_range_df['Win_Rate']],
+                textposition='outside'
+            ),
+            row=1, col=1
+        )
+        
+        # Trades Count - Equal Range (Stacked: Wins vs Losses)
+        fig.add_trace(
+            go.Bar(
+                x=equal_range_df['Range'],
+                y=equal_range_df['Wins'],
+                name='Wins',
+                marker_color='rgb(46, 204, 113)',
+                text=[f"{v}" for v in equal_range_df['Wins']],
+                textposition='inside'
+            ),
+            row=1, col=2
+        )
+        fig.add_trace(
+            go.Bar(
+                x=equal_range_df['Range'],
+                y=equal_range_df['Losses'],
+                name='Losses',
+                marker_color='rgb(231, 76, 60)',
+                text=[f"{v}" for v in equal_range_df['Losses']],
+                textposition='inside'
+            ),
+            row=1, col=2
+        )
+        
+        # === Row 2: Percentile ===
+        # Win Rate - Percentile
+        colors_wr_p = ['rgb(46, 204, 113)' if wr >= 50 else 'rgb(231, 76, 60)' 
+                       for wr in percentile_df['Win_Rate']]
+        fig.add_trace(
+            go.Bar(
+                x=percentile_df['Percentile'],
+                y=percentile_df['Win_Rate'],
+                name='Win Rate',
+                marker_color=colors_wr_p,
+                text=[f"{v:.1f}%<br>({r})" for v, r in zip(percentile_df['Win_Rate'], percentile_df['Range'])],
+                textposition='outside',
+                showlegend=False
+            ),
+            row=2, col=1
+        )
+        
+        # Trades Count - Percentile (Stacked)
+        fig.add_trace(
+            go.Bar(
+                x=percentile_df['Percentile'],
+                y=percentile_df['Wins'],
+                name='Wins',
+                marker_color='rgb(46, 204, 113)',
+                text=[f"{v}" for v in percentile_df['Wins']],
+                textposition='inside',
+                showlegend=False
+            ),
+            row=2, col=2
+        )
+        fig.add_trace(
+            go.Bar(
+                x=percentile_df['Percentile'],
+                y=percentile_df['Losses'],
+                name='Losses',
+                marker_color='rgb(231, 76, 60)',
+                text=[f"{v}" for v in percentile_df['Losses']],
+                textposition='inside',
+                showlegend=False
+            ),
+            row=2, col=2
+        )
+        
+        # Update layout
+        fig.update_layout(
+            height=700,
+            barmode='stack',
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=1.02,
+                xanchor='center',
+                x=0.5
+            ),
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        # Add 50% reference line for Win Rate charts
+        fig.add_hline(y=50, line_dash="dash", line_color="gray", 
+                      annotation_text="50%", row=1, col=1)
+        fig.add_hline(y=50, line_dash="dash", line_color="gray", 
+                      annotation_text="50%", row=2, col=1)
+        
+        fig.update_yaxes(title_text="Win Rate (%)", row=1, col=1)
+        fig.update_yaxes(title_text="Số Lệnh", row=1, col=2)
+        fig.update_yaxes(title_text="Win Rate (%)", row=2, col=1)
+        fig.update_yaxes(title_text="Số Lệnh", row=2, col=2)
+        
+        fig.update_xaxes(tickangle=30)
         
         return fig
     
