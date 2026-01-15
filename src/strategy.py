@@ -75,6 +75,7 @@ class Config:
     
     # === RISK MANAGEMENT ===
     sl_buffer_pct: float = 0.1      # Buffer SL (% of OB range)
+    sl_multiplier: float = 1.05   # Hệ số mở rộng SL (1.0 = bình thường, 1.1 = mở rộng 10% tránh stop hunt)
     risk_reward_ratio: float = 2.0  # Fixed RR = 1:2
     risk_per_trade: float = 10.0    # USD
     
@@ -88,6 +89,7 @@ class Config:
             "eqhl_threshold": self.eqhl_threshold,
             "ob_body_ratio": self.ob_body_ratio,
             "sl_buffer_pct": self.sl_buffer_pct,
+            "sl_multiplier": self.sl_multiplier,
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
         }
@@ -1098,22 +1100,26 @@ class Strategy:
             trade_type = 'LONG'
             # Entry at OB top (more conservative) or current close
             entry = min(ob.high, entry_price)
-            # SL below OB with buffer
-            stop_loss = ob.low - buffer
-            # TP based on RR
-            risk = entry - stop_loss
-            take_profit = entry + (risk * self.config.risk_reward_ratio)
+            # SL below OB with buffer, then apply multiplier
+            base_sl = ob.low - buffer
+            base_risk = entry - base_sl
+            stop_loss = entry - (base_risk * self.config.sl_multiplier)
+            # TP based on actual risk to maintain RR ratio
+            actual_risk = entry - stop_loss
+            take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
             
         else:  # BEARISH
             # SHORT trade
             trade_type = 'SHORT'
             # Entry at OB bottom (more conservative) or current close
             entry = max(ob.low, entry_price)
-            # SL above OB with buffer
-            stop_loss = ob.high + buffer
-            # TP based on RR
-            risk = stop_loss - entry
-            take_profit = entry - (risk * self.config.risk_reward_ratio)
+            # SL above OB with buffer, then apply multiplier
+            base_sl = ob.high + buffer
+            base_risk = base_sl - entry
+            stop_loss = entry + (base_risk * self.config.sl_multiplier)
+            # TP based on actual risk to maintain RR ratio
+            actual_risk = stop_loss - entry
+            take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
         
         # Validate signal
         if trade_type == 'LONG' and stop_loss >= entry:

@@ -283,30 +283,33 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     total_closed = total_wins + total_losses
     overall_win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0
     
-    # Get RR ratio from config
+    # Get RR ratio and SL multiplier from config
     rr_ratio = config.risk_reward_ratio
+    sl_multiplier = config.sl_multiplier
     
     # Build report with aligned markdown table
     lines = [
         "",
         f"##  TRADE RESULTS - {STRATEGY_NAME} - {timestamp}",
-        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>6} | {:>4} | {:>4} |".format(
-            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "ROE", "W-S", "L-S"
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
         ),
-        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->8}|{:->12}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", ""),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", ""),
     ]
     
     # Add individual symbol results
     for summary in all_summaries:
         # ROE = (Wins * RR Ratio) - Losses
         roe = (summary['wins'] * rr_ratio) - summary['losses']
-        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>6} | {:>4} | {:>4} |".format(
+        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
             summary['symbol'],
             summary['total_trades'],
             summary['wins'],
             summary['losses'],
             summary['open_trades'],
             f"*{summary['win_rate']}%*",
+            f"{rr_ratio}",
+            f"{sl_multiplier}",
             f"{round(roe, 2)}",
             summary['longest_win_streak'],
             summary['longest_loss_streak']
@@ -324,13 +327,15 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         overall_longest_win_streak = max(overall_longest_win_streak, summary['longest_win_streak'])
         overall_longest_loss_streak = max(overall_longest_loss_streak, summary['longest_loss_streak'])
     
-    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>6} | {:>10} | {:>6} | {:>4} | {:>4} |".format(
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
         "TOTAL",
         total_trades,
         total_wins,
         total_losses,
         total_open,
         f"*{round(overall_win_rate, 2)}%*",
+        f"{rr_ratio}",
+        f"{sl_multiplier}",
         f"{round(overall_roe, 2)}",
         overall_longest_win_streak,
         overall_longest_loss_streak
