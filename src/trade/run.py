@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import threading
 from datetime import datetime, timedelta
 from collections import deque
@@ -185,12 +186,17 @@ def create_dashboard() -> Layout:
     layout.split_column(
         Layout(name="header", size=3),
         Layout(name="body", size=14),
-        Layout(name="logs", size=13),
+        Layout(name="bottom", size=13),
     )
     
     layout["body"].split_row(
         Layout(name="process1"),
         Layout(name="process2"),
+    )
+    
+    layout["bottom"].split_row(
+        Layout(name="logs"),
+        Layout(name="orders"),
     )
     
     return layout
@@ -288,12 +294,77 @@ def generate_logs_panel() -> Panel:
     return Panel(log_text, title="[bold]Recent Logs[/bold]", border_style="dim")
 
 
+def load_orders_from_log() -> list:
+    """Load orders from log file"""
+    log_path = Path(LOG_FILE)
+    if not log_path.exists():
+        return []
+    
+    try:
+        with open(log_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            orders = data.get("sent_orders", [])
+            # Chỉ lấy format mới (list of dicts)
+            if orders and isinstance(orders[0], dict):
+                return orders
+            return []
+    except:
+        return []
+
+
+def generate_orders_panel() -> Panel:
+    """Generate orders log panel - hiển thị 10 lệnh mới nhất"""
+    orders = load_orders_from_log()
+    
+    # Lấy 10 lệnh mới nhất (reverse để mới nhất lên đầu)
+    recent_orders = orders[-10:][::-1]
+    
+    table = Table(show_header=True, box=None, padding=(0, 1), expand=True)
+    table.add_column("Time", style="dim", width=8)
+    table.add_column("Symbol", style="green")
+    table.add_column("Type", width=5)
+    
+    for order in recent_orders:
+        # Chỉ lấy giờ (không lấy ngày)
+        sent_at = order.get("sent_at", "")
+        if sent_at:
+            try:
+                time_only = sent_at.split(" ")[1] if " " in sent_at else sent_at
+            except:
+                time_only = sent_at
+        else:
+            time_only = "-"
+        
+        # Parse symbol và type từ key (format: "SYMBOL|TYPE|ENTRY_TIME")
+        key = order.get("key", "")
+        parts = key.split("|")
+        symbol = parts[0] if len(parts) > 0 else "-"
+        order_type = parts[1] if len(parts) > 1 else "-"
+        
+        # Style cho type
+        type_style = "green" if order_type.upper() == "BUY" else "red"
+        
+        table.add_row(
+            time_only,
+            symbol,
+            Text(order_type, style=type_style)
+        )
+    
+    if not recent_orders:
+        return Panel(Text("No orders sent yet...", style="dim"), 
+                    title="[bold magenta]Orders Log[/bold magenta]", 
+                    border_style="magenta")
+    
+    return Panel(table, title="[bold magenta]Orders Log[/bold magenta]", border_style="magenta")
+
+
 def update_dashboard(layout: Layout) -> Layout:
     """Update all panels in the dashboard"""
     layout["header"].update(generate_header())
     layout["process1"].update(generate_process1_panel())
     layout["process2"].update(generate_process2_panel())
     layout["logs"].update(generate_logs_panel())
+    layout["orders"].update(generate_orders_panel())
     return layout
 
 

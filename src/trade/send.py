@@ -10,25 +10,37 @@ from pathlib import Path
 from notify import send_entry_telegram
 
 
-def load_sent_orders(log_file: Path) -> set:
-    """Load danh sách các lệnh đã gửi từ file log"""
+def load_sent_orders(log_file: Path) -> tuple[set, list]:
+    """
+    Load danh sách các lệnh đã gửi từ file log
+    Returns: (set of order keys, list of order details)
+    """
     if not log_file.exists():
-        return set()
+        return set(), []
     
     try:
         with open(log_file, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return set(data.get("sent_orders", []))
+            orders = data.get("sent_orders", [])
+            
+            # Hỗ trợ cả format cũ (list of strings) và format mới (list of dicts)
+            if orders and isinstance(orders[0], str):
+                # Format cũ - chuyển sang format mới
+                return set(orders), []
+            else:
+                # Format mới
+                keys = set(order.get("key", "") for order in orders)
+                return keys, orders
     except:
-        return set()
+        return set(), []
 
 
-def save_sent_orders(log_file: Path, sent_orders: set) -> None:
-    """Lưu danh sách các lệnh đã gửi vào file log"""
+def save_sent_orders(log_file: Path, sent_orders: list) -> None:
+    """Lưu danh sách các lệnh đã gửi vào file log (format mới với chi tiết)"""
     try:
         with open(log_file, 'w', encoding='utf-8') as f:
             json.dump({
-                "sent_orders": list(sent_orders),
+                "sent_orders": sent_orders,
                 "last_updated": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }, f, indent=2, ensure_ascii=False)
     except:
@@ -78,7 +90,7 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
     output_path = Path(output_dir)
     log_path = Path(log_file)
     
-    sent_orders = load_sent_orders(log_path)
+    sent_keys, sent_orders = load_sent_orders(log_path)
     open_orders = scan_open_orders(output_path)
     
     new_sent_count = 0
@@ -86,7 +98,7 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
     for row in open_orders:
         order_key = generate_order_key(row)
         
-        if order_key in sent_orders:
+        if order_key in sent_keys:
             continue
         
         try:
@@ -99,7 +111,16 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                 name_coin=row['Symbol']
             )
             
-            sent_orders.add(order_key)
+            # Thêm order với thông tin chi tiết
+            order_detail = {
+                "key": order_key,
+                "entry_price": float(row['Entry_Price']),
+                "stop_loss": float(row['Stop_Loss']),
+                "take_profit": float(row['Take_Profit']),
+                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            sent_orders.append(order_detail)
+            sent_keys.add(order_key)
             new_sent_count += 1
             
         except:
