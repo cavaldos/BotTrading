@@ -74,6 +74,7 @@ results.md
 trade/logs/*
 trade/data/*
 /src/trade/config.yaml
+/src/utils/data_config.yaml
 
 # ====================
 # Logs

@@ -1,0 +1,25 @@
+# Data Fetching Configuration (Example)
+# Copy this file to data_config.yaml and customize as needed
+
+# List of trading pairs
+currencies:
+  - "BTCUSDT"
+  - "ETHUSDT"
+  - "BNBUSDT"
+
+# List of timeframes
+timeframes:
+  - "5m"
+  - "15m"
+
+# Directory path to save data
+folder_path: "res/data"
+
+# Number of candles to fetch (for mode: by_candles)
+candles_limit: 2000
+
+# Start date for fetching data (for mode: by_date, format: YYYY-MM-DD)
+start_date: "2026-01-01"
+
+# Fetch mode: "by_candles" or "by_date"
+mode: "by_candles"

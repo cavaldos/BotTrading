@@ -1,13 +1,46 @@
 import requests # pyright: ignore[reportMissingModuleSource]
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
+import yaml # pyright: ignore[reportMissingModuleSource]
 from datetime import datetime, timedelta
 import os
 import shutil
 import time
 
 
-# Hàm lấy dữ liệu nến (candlestick) từ Binance
+# Default configuration values
+DEFAULT_CONFIG = {
+    'currencies': ['BTCUSDT'],
+    'timeframes': ['5m', '15m'],
+    'folder_path': 'res/data',
+    'candles_limit': 2000,
+    'start_date': '2026-01-01',
+    'mode': 'by_candles'
+}
+
+
+def load_config(config_path=None):
+    if config_path is None:
+        config_path = os.path.join(os.path.dirname(__file__), 'data_config.yaml')
+    
+    if not os.path.exists(config_path):
+        print(f"Config file not found at {config_path}. Using default config.")
+        return DEFAULT_CONFIG.copy()
+    
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+            # Merge with default config to ensure all keys are present
+            merged_config = DEFAULT_CONFIG.copy()
+            if config:
+                merged_config.update(config)
+            return merged_config
+    except Exception as e:
+        print(f"Error reading config file: {e}. Using default config.")
+        return DEFAULT_CONFIG.copy()
+
+
+# Fetch candlestick data from Binance
 def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, limit=10000):
     url = f'https://api.binance.com/api/v3/klines'
     params = {
@@ -16,40 +49,29 @@ def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, l
         'limit': limit
     }
 
-    # Nếu có start_time và end_time thì thêm vào params
+    # Add start_time and end_time to params if provided
     if start_time:
         params['startTime'] = start_time
     if end_time:
         params['endTime'] = end_time
 
     try:
-        # Gửi yêu cầu GET tới Binance API
+        # Send GET request to Binance API
         response = requests.get(url, params=params)
         response.raise_for_status()
         candles = response.json()
         return candles
     except requests.exceptions.RequestException as e:
-        print(f"Lỗi khi kết nối tới Binance API: {e}")
+        print(f"Error connecting to Binance API: {e}")
         return []
 
-# Hàm lấy dữ liệu nến mới nhất (hỗ trợ lấy nhiều cây nến)
+# Fetch latest candles (supports fetching multiple candles)
 def get_latest_candles(symbol, interval='1h', limit=100):
-    """
-    Lấy dữ liệu nến mới nhất từ Binance API.
-    
-    Args:
-        symbol: Mã cặp tiền tệ (ví dụ: 'BTCUSDT')
-        interval: Khung thời gian (ví dụ: '1h', '5m')
-        limit: Số lượng cây nến cần lấy
-    
-    Returns:
-        Danh sách các cây nến, mỗi cây nến là một mảng theo định dạng Binance API
-    """
-    # API Binance có giới hạn tối đa 1000 cây nến mỗi yêu cầu
+    # Binance API has a maximum limit of 1000 candles per request
     MAX_API_LIMIT = 1000
     url = f'https://api.binance.com/api/v3/klines'
     
-    # Nếu limit <= 1000, chỉ cần một yêu cầu API
+    # If limit <= 1000, only one API request is needed
     if limit <= MAX_API_LIMIT:
         params = {
             'symbol': symbol,
@@ -62,15 +84,15 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"Lỗi khi kết nối tới Binance API: {e}")
+            print(f"Error connecting to Binance API: {e}")
             return []
     
-    # Nếu limit > 1000, cần phải thực hiện nhiều yêu cầu API
+    # If limit > 1000, multiple API requests are needed
     else:
         all_candles = []
         remaining = limit
         
-        # Đầu tiên lấy MAX_API_LIMIT cây nến mới nhất
+        # First, fetch MAX_API_LIMIT most recent candles
         params = {
             'symbol': symbol,
             'interval': interval,
@@ -88,10 +110,10 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             all_candles.extend(candles)
             remaining -= len(candles)
             
-            # Nếu cần thêm cây nến, tiếp tục lấy về quá khứ
+            # If more candles needed, continue fetching historical data
             while remaining > 0:
-                # Lấy endTime từ cây nến đầu tiên của lần lấy trước
-                end_time = candles[0][0] - 1  # Thời điểm bắt đầu của cây nến đầu tiên - 1ms
+                # Get endTime from the first candle of the previous fetch
+                end_time = candles[0][0] - 1  # Start time of first candle - 1ms
                 
                 params = {
                     'symbol': symbol,
@@ -107,29 +129,29 @@ def get_latest_candles(symbol, interval='1h', limit=100):
                 if not candles:
                     break
                     
-                all_candles = candles + all_candles  # Thêm vào đầu để duy trì thứ tự thời gian tăng dần
+                all_candles = candles + all_candles  # Prepend to maintain ascending time order
                 remaining -= len(candles)
                 
-                # Thêm độ trễ nhỏ để tránh quá tải API
+                # Add small delay to avoid API rate limiting
                 time.sleep(0.1)
             
-            # Cắt bớt nếu lấy quá số lượng yêu cầu
+            # Trim if fetched more than requested
             if len(all_candles) > limit:
                 all_candles = all_candles[-limit:]
                 
             return all_candles
             
         except requests.exceptions.RequestException as e:
-            print(f"Lỗi khi kết nối tới Binance API: {e}")
+            print(f"Error connecting to Binance API: {e}")
             return all_candles if all_candles else []
 
-# Chuyển đổi timestamp và lưu vào file .txt
+# Convert timestamp and save to CSV file
 def save_to_csv(candles, filename):
     with open(filename, 'w') as file:
-        # Viết header
+        # Write header
         file.write("Time,Open,High,Low,Close,Volume\n")
 
-        # Viết từng dòng dữ liệu
+        # Write each data row
         for candle in candles:
             timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
             open_price = float(candle[1])
@@ -138,11 +160,11 @@ def save_to_csv(candles, filename):
             close_price = float(candle[4])
             volume = float(candle[5])
 
-            # Ghi dữ liệu vào file theo định dạng yêu cầu
+            # Write data to file in required format
             file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
 
 def get_and_save_data(symbol, start_date, filename, time_interval='1h'):
-    # Chuyển đổi ngày bắt đầu thành timestamp
+    # Convert start date to timestamp
     start_timestamp = int(datetime.strptime(start_date, "%Y-%m-%d").timestamp() * 1000)
 
     all_candles = []
@@ -152,22 +174,22 @@ def get_and_save_data(symbol, start_date, filename, time_interval='1h'):
         if not candles:
             break
 
-        # Thêm dữ liệu vào danh sách
+        # Add data to list
         all_candles.extend(candles)
 
-        # Cập nhật thời gian bắt đầu cho lần lấy tiếp theo (cây nến cuối cùng)
-        start_timestamp = candles[-1][0] + 1  # +1 ms để lấy dữ liệu tiếp theo
+        # Update start time for next fetch (last candle)
+        start_timestamp = candles[-1][0] + 1  # +1 ms to fetch next data
 
     save_to_csv(all_candles, filename)
 
 
 def remove_all_files(folder_path):
-    # Kiểm tra xem thư mục có tồn tại không
+    # Check if folder exists
     if not os.path.exists(folder_path):
-        print(f"Thư mục {folder_path} không tồn tại.")
+        print(f"Folder {folder_path} does not exist.")
         return
 
-    # Lặp và xóa tất cả các file
+    # Loop and delete all files
     for filename in os.listdir(folder_path):
         file_path = os.path.join(folder_path, filename)
         try:
@@ -176,78 +198,17 @@ def remove_all_files(folder_path):
             elif os.path.isdir(file_path):
                 shutil.rmtree(file_path)
         except Exception as e:
-            print(f'Lỗi khi xóa {file_path}. Lý do: {e}')
+            print(f'Error deleting {file_path}. Reason: {e}')
 
 
 def get_and_save_multiple_data(currencies, timeframes, start_date, folder_path):
     for currency in currencies:
         for timeframe in timeframes:
             filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-            print(f"Đang tải dữ liệu cho {currency} với khung thời gian {timeframe}...")
+            print(f"Downloading data for {currency} with timeframe {timeframe}...")
             get_and_save_data(currency, start_date, filename, time_interval=timeframe)
 
-def continuous_data_collection(currencies, timeframes, folder_path, limit=100, sleep_time=60):
-
-    # Tạo thư mục nếu chưa tồn tại
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
-    
-    print(f"Bắt đầu thu thập dữ liệu liên tục với {limit} cây nến gần nhất...")
-    
-    try:
-        while True:
-            current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            print(f"Đang cập nhật dữ liệu vào {current_time}")
-            for currency in currencies:
-                for timeframe in timeframes:
-                    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-                    print(f"Đang lấy {limit} cây nến cho {currency} với khung thời gian {timeframe}...")
-                    
-                    # Lấy số lượng cây nến theo yêu cầu
-                    latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit)
-                    
-                    if latest_candles:
-                        # Lưu dữ liệu vào file
-                        save_to_csv(latest_candles, filename)
-                        print(f"Đã cập nhật {len(latest_candles)} cây nến cho {currency}_{timeframe}")
-                    else:
-                        print(f"Không lấy được dữ liệu cho {currency}_{timeframe}")
-            
-            # Đợi một khoảng thời gian trước khi lấy dữ liệu mới
-            print(f"Đợi {sleep_time} giây cho lần cập nhật tiếp theo...")
-            time.sleep(sleep_time)
-            
-    except KeyboardInterrupt:
-        print("Đã dừng thu thập dữ liệu.")
-
-
-
-def getdata_by_date():
-    currencies = ['BTCUSDT','ETHUSDT', 'BNBUSDT']
-    timeframes = ['5m','15m']
-    folder_path = 'res/data'
-    start_date = '2025-07-01'  # Ngày bắt đầu lấy dữ liệu (định dạng YYYY-MM-DD)
-    
-    remove_all_files(folder_path) 
-    
-    # Tạo thư mục nếu chưa tồn tại
-    if not os.path.exists(folder_path):
-        os.makedirs(folder_path)
-    
-    print(f"Bắt đầu lấy dữ liệu từ ngày {start_date}...")
-    get_and_save_multiple_data(currencies, timeframes, start_date, folder_path)
-    print("Hoàn thành lấy dữ liệu theo thời điểm!")
-
 def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
-    """
-    Lấy dữ liệu nến và lưu vào file CSV.
-    
-    Args:
-        currencies: Danh sách các cặp tiền tệ
-        timeframes: Danh sách các khung thời gian
-        folder_path: Đường dẫn thư mục lưu file
-        limit: Số lượng cây nến cần lấy
-    """
     for currency in currencies:
         for timeframe in timeframes:
             filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
@@ -257,29 +218,65 @@ def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
             if latest_candles:
                 save_to_csv(latest_candles, filename)
             else:
-                print(f"Không lấy được dữ liệu cho {currency}_{timeframe}")
+                print(f"Failed to fetch data for {currency}_{timeframe}")
+
+def getdata_by_date(config=None):
+    if config is None:
+        config = load_config()
+    elif isinstance(config, str):
+        config = load_config(config)
+    
+    currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])
+    timeframes = config.get('timeframes', DEFAULT_CONFIG['timeframes'])
+    folder_path = config.get('folder_path', DEFAULT_CONFIG['folder_path'])
+    start_date = config.get('start_date', DEFAULT_CONFIG['start_date'])
+    
+    remove_all_files(folder_path) 
+    
+    # Create folder if it doesn't exist
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
+    print(f"Starting to fetch data from {start_date}...")
+    get_and_save_multiple_data(currencies, timeframes, start_date, folder_path)
+    print("Completed fetching data by date!")
 
 
-def getdata_by_candles():
-    currencies = ['BTCUSDT']
-    timeframes = ['5m','15m']
-    folder_path = 'res/data'
-    candles_limit = 2000  # Số lượng cây nến muốn lấy
+def getdata_by_candles(config=None):
+    if config is None:
+        config = load_config()
+    elif isinstance(config, str):
+        config = load_config(config)
+    
+    currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])
+    timeframes = config.get('timeframes', DEFAULT_CONFIG['timeframes'])
+    folder_path = config.get('folder_path', DEFAULT_CONFIG['folder_path'])
+    candles_limit = config.get('candles_limit', DEFAULT_CONFIG['candles_limit'])
     
     remove_all_files(folder_path) 
     
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
     
-    print(f"Bắt đầu lấy {candles_limit} cây nến gần nhất...")
+    print(f"Starting to fetch {candles_limit} most recent candles...")
     fetch_and_save_candles(currencies, timeframes, folder_path, candles_limit)
     print("Done")
 
 
-def getdata():
-    # getdata_by_date()
-    getdata_by_candles()
+def getdata(config_path=None):
+    config = load_config(config_path)
+    mode = config.get('mode', 'by_candles')
+    
+    if mode == 'by_date':
+        getdata_by_date(config)
+    else:
+        getdata_by_candles(config)
 
 
 if __name__ == '__main__':
-    getdata()
+    import sys
+    # Support passing config path from command line
+    if len(sys.argv) > 1:
+        getdata(sys.argv[1])
+    else:
+        getdata()

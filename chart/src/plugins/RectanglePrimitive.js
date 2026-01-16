@@ -176,7 +176,7 @@ export function createOrderBlockRect(ob, numBars = 20) {
 
   return new RectanglePrimitive({
     startTime: ob.startTime,
-    endTime: Math.min(endTime, ob.endTime), // Use the shorter of the two
+    endTime: endTime, // Extend full length for better visibility
     lowPrice: ob.low,
     highPrice: ob.high,
     fillColor: isBullish 

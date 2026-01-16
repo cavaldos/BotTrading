@@ -1,7 +1,8 @@
-import { useEffect, useRef, useMemo, useImperativeHandle, forwardRef } from 'react';
+import { useEffect, useRef, useMemo, useImperativeHandle, forwardRef, useState, useCallback } from 'react';
 import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
 import { createSeriesMarkers } from 'lightweight-charts';
 import { createTradeZones, createOrderBlockRect } from '../plugins/RectanglePrimitive';
+import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 
 /**
  * TradingChart component using TradingView's lightweight-charts
@@ -27,6 +28,9 @@ const TradingChart = forwardRef(function TradingChart({
   const volumeSeriesRef = useRef(null);
   const markersRef = useRef(null);
   const primitivesRef = useRef([]);
+  const measurementRef = useRef(null);
+  const measurementHandlerRef = useRef(null);
+  const [isMeasuring, setIsMeasuring] = useState(false);
 
   // Chart colors
   const colors = useMemo(() => ({
@@ -54,7 +58,23 @@ const TradingChart = forwardRef(function TradingChart({
     },
     
     getChart: () => chartRef.current,
-  }), []);
+    
+    // Measurement tool controls
+    toggleMeasurement: () => {
+      if (measurementHandlerRef.current) {
+        const isEnabled = measurementHandlerRef.current.toggle();
+        setIsMeasuring(isEnabled);
+        return isEnabled;
+      }
+      return false;
+    },
+    clearMeasurement: () => {
+      if (measurementHandlerRef.current) {
+        measurementHandlerRef.current.clear();
+      }
+    },
+    isMeasuring: () => isMeasuring,
+  }), [isMeasuring]);
 
   // Initialize chart
   useEffect(() => {
@@ -70,7 +90,7 @@ const TradingChart = forwardRef(function TradingChart({
         horzLines: { color: colors.grid },
       },
       crosshair: {
-        mode: 1, // Normal crosshair
+        mode: 0, // Magnet mode - crosshair follows mouse cursor exactly
         vertLine: {
           color: colors.crosshair,
           width: 1,
@@ -103,9 +123,19 @@ const TradingChart = forwardRef(function TradingChart({
         vertTouchDrag: true,
       },
       handleScale: {
-        axisPressedMouseMove: true,
+        axisPressedMouseMove: {
+          time: true,
+          price: true,
+        },
+        axisDoubleClickReset: {
+          time: true,
+          price: true,
+        },
         mouseWheel: true,
         pinch: true,
+      },
+      rightPriceScale: {
+        autoScale: false, // Disable auto-scale to allow manual vertical movement
       },
     });
 
@@ -152,8 +182,17 @@ const TradingChart = forwardRef(function TradingChart({
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
+    // Initialize measurement tool
+    const measurementPrimitive = new MeasurementPrimitive();
+    candleSeries.attachPrimitive(measurementPrimitive);
+    measurementRef.current = measurementPrimitive;
+    measurementHandlerRef.current = createMeasurementHandler(chart, candleSeries, measurementPrimitive);
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      if (measurementHandlerRef.current) {
+        measurementHandlerRef.current.disable();
+      }
       chart.remove();
     };
   }, [colors]);
@@ -218,22 +257,94 @@ const TradingChart = forwardRef(function TradingChart({
       // Only show recent order blocks to avoid clutter
       const recentOBs = orderBlocks.slice(-30);
       recentOBs.forEach(ob => {
-        const obRect = createOrderBlockRect(ob, 15); // 15 bars length
+        const obRect = createOrderBlockRect(ob, 150); // 100 bars length for better visibility
         candleSeriesRef.current.attachPrimitive(obRect);
         primitivesRef.current.push(obRect);
       });
     }
   }, [trades, orderBlocks, showOrderBlocks]);
 
+  // Toggle measurement mode
+  const handleToggleMeasurement = useCallback(() => {
+    if (measurementHandlerRef.current) {
+      const isEnabled = measurementHandlerRef.current.toggle();
+      setIsMeasuring(isEnabled);
+    }
+  }, []);
+
+  // Clear measurement
+  const handleClearMeasurement = useCallback(() => {
+    if (measurementHandlerRef.current) {
+      measurementHandlerRef.current.clear();
+    }
+  }, []);
+
   return (
-    <div 
-      ref={chartContainerRef} 
-      style={{ 
-        width: '100%', 
-        height: '100%',
-        minHeight: '500px',
-      }}
-    />
+    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {/* Measurement toolbar */}
+      <div style={{
+        position: 'absolute',
+        top: 10,
+        right: 10,
+        zIndex: 100,
+        display: 'flex',
+        gap: '8px',
+      }}>
+        <button
+          onClick={handleToggleMeasurement}
+          style={{
+            padding: '8px 12px',
+            backgroundColor: isMeasuring ? '#2962ff' : 'rgba(41, 98, 255, 0.3)',
+            color: '#fff',
+            border: isMeasuring ? '2px solid #2962ff' : '1px solid rgba(41, 98, 255, 0.5)',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '12px',
+            fontWeight: 'bold',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '4px',
+          }}
+          title="Toggle measurement tool (Ruler)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21.3 8.7l-6-6-12 12 6 6 12-12z"/>
+            <path d="M8 16l2-2"/>
+            <path d="M6.5 13.5l2-2"/>
+            <path d="M11 18.5l2-2"/>
+            <path d="M13.5 16l2-2"/>
+          </svg>
+          {isMeasuring ? 'Measuring' : 'Ruler'}
+        </button>
+        {isMeasuring && (
+          <button
+            onClick={handleClearMeasurement}
+            style={{
+              padding: '8px 12px',
+              backgroundColor: 'rgba(239, 83, 80, 0.3)',
+              color: '#ef5350',
+              border: '1px solid rgba(239, 83, 80, 0.5)',
+              borderRadius: '4px',
+              cursor: 'pointer',
+              fontSize: '12px',
+              fontWeight: 'bold',
+            }}
+            title="Clear measurement"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      
+      <div 
+        ref={chartContainerRef} 
+        style={{ 
+          width: '100%', 
+          height: '100%',
+          minHeight: '500px',
+        }}
+      />
+    </div>
   );
 });
 
