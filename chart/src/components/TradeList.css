@@ -1,0 +1,149 @@
+.trade-list {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 100;
+  background: rgba(30, 34, 45, 0.95);
+  border: 1px solid #363c4e;
+  border-radius: 6px;
+  min-width: 140px;
+  max-height: 400px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.trade-list.collapsed {
+  min-width: auto;
+}
+
+.trade-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #1e222d;
+  border-bottom: 1px solid #363c4e;
+}
+
+.trade-list-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #d1d4dc;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  color: #9598a1;
+  cursor: pointer;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 3px;
+  transition: all 0.2s;
+}
+
+.toggle-btn:hover {
+  background: #363c4e;
+  color: #d1d4dc;
+}
+
+.trade-list-items {
+  max-height: 350px;
+  overflow-y: auto;
+}
+
+.trade-list-items::-webkit-scrollbar {
+  width: 4px;
+}
+
+.trade-list-items::-webkit-scrollbar-track {
+  background: #1e222d;
+}
+
+.trade-list-items::-webkit-scrollbar-thumb {
+  background: #363c4e;
+  border-radius: 2px;
+}
+
+.trade-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  border-left: 2px solid transparent;
+}
+
+.trade-item:hover {
+  background: rgba(41, 98, 255, 0.1);
+}
+
+.trade-item.selected {
+  background: rgba(41, 98, 255, 0.2);
+  border-left-color: #2962ff;
+}
+
+.trade-item.win {
+  border-left-color: transparent;
+}
+
+.trade-item.loss {
+  border-left-color: transparent;
+}
+
+.trade-item.selected.win {
+  border-left-color: #26a69a;
+}
+
+.trade-item.selected.loss {
+  border-left-color: #ef5350;
+}
+
+.trade-number {
+  font-size: 11px;
+  color: #9598a1;
+  font-weight: 500;
+  min-width: 24px;
+}
+
+.trade-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.trade-type.long {
+  color: #26a69a;
+  background: rgba(38, 166, 154, 0.15);
+}
+
+.trade-type.short {
+  color: #ef5350;
+  background: rgba(239, 83, 80, 0.15);
+}
+
+.trade-result {
+  font-size: 10px;
+  font-weight: 700;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  margin-left: auto;
+}
+
+.trade-result.win {
+  color: #26a69a;
+  background: rgba(38, 166, 154, 0.2);
+}
+
+.trade-result.loss {
+  color: #ef5350;
+  background: rgba(239, 83, 80, 0.2);
+}

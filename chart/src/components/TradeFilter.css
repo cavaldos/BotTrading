@@ -1,0 +1,73 @@
+.trade-filter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #1e222d;
+  border-bottom: 1px solid #363c4e;
+}
+
+.filter-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.filter-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border: 1px solid #363c4e;
+  border-radius: 4px;
+  background: #131722;
+  color: #d1d4dc;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 13px;
+}
+
+.filter-btn:hover {
+  background: #2a2e39;
+  border-color: #9598a1;
+}
+
+.filter-btn.active {
+  background: #2a2e39;
+  border-color: #2962ff;
+}
+
+.filter-label {
+  font-weight: 500;
+}
+
+.filter-count {
+  font-weight: 600;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+
+.summary-stats {
+  display: flex;
+  gap: 24px;
+}
+
+.stat {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #9598a1;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.stat-value {
+  font-size: 18px;
+  font-weight: 600;
+}

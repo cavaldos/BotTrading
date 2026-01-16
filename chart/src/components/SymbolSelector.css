@@ -1,0 +1,68 @@
+.symbol-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.symbol-select {
+  background: #2a2e39;
+  color: #d1d4dc;
+  border: 1px solid #363a45;
+  border-radius: 4px;
+  padding: 6px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  min-width: 200px;
+  transition: all 0.2s ease;
+}
+
+.symbol-select:hover {
+  border-color: #505565;
+  background: #363a45;
+}
+
+.symbol-select:focus {
+  border-color: #2962ff;
+  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2);
+}
+
+.symbol-select.loading {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.symbol-select option {
+  background: #1e222d;
+  color: #d1d4dc;
+  padding: 8px;
+}
+
+.symbol-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.timeframe-badge {
+  background: #363a45;
+  color: #9598a1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .symbol-select {
+    min-width: 160px;
+    font-size: 13px;
+    padding: 5px 10px;
+  }
+  
+  .symbol-info {
+    display: none;
+  }
+}
