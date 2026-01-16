@@ -157,8 +157,7 @@ def verify_trades(candles_path: str, trades_path: str) -> None:
 
 if __name__ == "__main__":
     # Default paths
-    BASE_DIR = Path(__file__).parent.parent
-    CANDLES_PATH = BASE_DIR / "data/BTCUSDT_5m.csv"
-    TRADES_PATH = BASE_DIR / "output/BTCUSDT_5m_trades.csv"
+    CANDLES_PATH = "res/data/BTCUSDT_5m.csv"
+    TRADES_PATH = "res/output/BTCUSDT_5m_trades.csv"
     
     verify_trades(str(CANDLES_PATH), str(TRADES_PATH))

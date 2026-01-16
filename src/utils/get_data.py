@@ -221,23 +221,41 @@ def continuous_data_collection(currencies, timeframes, folder_path, limit=100, s
         print("Đã dừng thu thập dữ liệu.")
 
 
-def getdata():
-    # Cấu hình dễ dàng thay đổi
-    currencies = ['BTCUSDT']
+
+def getdata_by_date():
+    currencies = ['BTCUSDT','ETHUSDT', 'BNBUSDT']
     timeframes = ['5m','15m']
-    folder_path = 'src/data'  # Remove 'src/' prefix
-    candles_limit = 20000  # Số lượng cây nến muốn lấy
-    update_interval = 60    # Thời gian cập nhật (giây)
+    folder_path = 'res/data'
+    start_date = '2025-07-01'  # Ngày bắt đầu lấy dữ liệu (định dạng YYYY-MM-DD)
     
-    # Xóa dữ liệu cũ (nếu có)
     remove_all_files(folder_path) 
     
     # Tạo thư mục nếu chưa tồn tại
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
     
-    # # Bắt đầu thu thập dữ liệu liên tục
+    print(f"Bắt đầu lấy dữ liệu từ ngày {start_date}...")
+    get_and_save_multiple_data(currencies, timeframes, start_date, folder_path)
+    print("Hoàn thành lấy dữ liệu theo thời điểm!")
+
+def getdata_by_candles():
+    currencies = ['BTCUSDT']
+    timeframes = ['5m','15m']
+    folder_path = 'res/data'
+    candles_limit = 20000  # Số lượng cây nến muốn lấy
+    update_interval = 60    # Thời gian cập nhật (giây)
+    
+    remove_all_files(folder_path) 
+    
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
     continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
+
+
+def getdata():
+    getdata_by_date()
+    # getdata_by_candles()
 
 
 if __name__ == '__main__':

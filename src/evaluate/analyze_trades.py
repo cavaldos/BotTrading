@@ -23,10 +23,18 @@ import glob
 class TradeAnalyzer:
     """Phân tích các lệnh giao dịch từ CSV files"""
     
+    # Cấu hình tài khoản mô phỏng
+    INITIAL_CAPITAL = 1000.0  # Vốn ban đầu (USD)
+    RISK_PERCENT = 0.01  # Risk 1% mỗi lệnh
+    TRADING_FEE_RATE = 0.00075  # 0.075% phí giao dịch (taker fee)
+    
     def __init__(self, output_folder: str = "output"):
         self.output_folder = Path(output_folder)
         self.trades_df = None
         self.all_trades = []
+        
+        # Account simulation data
+        self.simulation_result = None
         
     def load_trades(self):
         """Load tất cả file CSV từ folder output"""
@@ -66,7 +74,10 @@ class TradeAnalyzer:
         # Tính SL% (Stop Loss Percent)
         self.trades_df['SL_Percent'] = self.trades_df.apply(self._calculate_sl_percent, axis=1)
         
-        # Tính profit/loss (đơn giản hóa, giả sử RR = 2)
+        # Tính RR Ratio (Risk:Reward) từ dữ liệu TP/SL
+        self.trades_df['RR_Ratio'] = self.trades_df.apply(self._calculate_rr_ratio, axis=1)
+        
+        # Tính profit/loss (sử dụng RR thực tế từ dữ liệu)
         self.trades_df['PnL'] = self.trades_df.apply(self._calculate_pnl, axis=1)
         
         print(f"\n✓ Tổng cộng: {len(self.trades_df)} trades")
@@ -75,22 +86,30 @@ class TradeAnalyzer:
     
     def _calculate_pnl(self, row):
         """
-        Tính PnL (giả sử mỗi lệnh risk $10, RR=2)
+        Tính PnL dựa trên RR thực tế từ dữ liệu
+        Risk = $10 (1% của $1000)
+        Reward = Risk × RR_Ratio
         Đã bao gồm phí giao dịch 0.075% (taker fee) cho cả entry và exit
         Tổng phí = 0.075% x 2 = 0.15% trên mỗi lệnh
         """
         # Giả sử position size = $1000 (leverage 10x với margin $100)
         position_size = 1000.0
+        risk_amount = 10.0  # Risk $10 per trade (1% of $1000)
         trading_fee_rate = 0.00075  # 0.075% per trade
         
         # Phí giao dịch = 0.075% x 2 (entry + exit) = 0.15%
         total_fee = position_size * trading_fee_rate * 2
         
+        # Lấy RR ratio từ dữ liệu (đã tính ở _calculate_rr_ratio)
+        rr_ratio = row.get('RR_Ratio', 2.0) if 'RR_Ratio' in row.index else 2.0
+        if rr_ratio <= 0:
+            rr_ratio = 2.0  # Fallback to default RR=2 if invalid
+        
         if row['Result'] == 'Win':
-            gross_pnl = 20.0  # Win = +20 (RR 1:2)
+            gross_pnl = risk_amount * rr_ratio  # Win = +Risk × RR
             return gross_pnl - total_fee  # Net PnL sau phí
         elif row['Result'] == 'Loss':
-            gross_pnl = -10.0  # Loss = -10
+            gross_pnl = -risk_amount  # Loss = -Risk
             return gross_pnl - total_fee  # Net PnL sau phí
         else:
             return 0.0
@@ -116,6 +135,177 @@ class TradeAnalyzer:
             return abs(sl_percent)  # Luôn trả về giá trị dương
         except (ValueError, KeyError, TypeError):
             return 0.0
+    
+    def _calculate_rr_ratio(self, row):
+        """
+        Tính tỉ lệ Risk:Reward (RR) từ Entry, TP, SL
+        LONG: RR = (Take_Profit - Entry_Price) / (Entry_Price - Stop_Loss)
+        SHORT: RR = (Entry_Price - Take_Profit) / (Stop_Loss - Entry_Price)
+        
+        Returns:
+            float: Tỉ lệ RR (ví dụ: 2.0 nghĩa là 1:2)
+        """
+        try:
+            entry_price = float(row['Entry_Price'])
+            stop_loss = float(row['Stop_Loss'])
+            take_profit = float(row['Take_Profit'])
+            
+            if entry_price == 0:
+                return 0.0
+            
+            if row['Type'] == 'LONG':
+                risk = entry_price - stop_loss
+                reward = take_profit - entry_price
+            else:  # SHORT
+                risk = stop_loss - entry_price
+                reward = entry_price - take_profit
+            
+            if risk <= 0:
+                return 0.0
+            
+            return abs(reward / risk)
+        except (ValueError, KeyError, TypeError):
+            return 0.0
+    
+    def simulate_account(self):
+        """
+        Giả lập tài khoản giao dịch với:
+        - Vốn ban đầu: $1000
+        - Risk mỗi lệnh: 1% của balance hiện tại
+        - Khi balance <= 0: Nạp thêm $1000 và tiếp tục
+        
+        Returns:
+            dict: Kết quả mô phỏng bao gồm equity curve, ROE, ROI, số lần deposit
+        """
+        df = self.trades_df[self.trades_df['Result'] != 'Open'].copy()
+        df = df.sort_values('Entry_Time').reset_index(drop=True)
+        
+        # Khởi tạo tài khoản
+        initial_capital = self.INITIAL_CAPITAL
+        balance = initial_capital
+        total_deposited = initial_capital  # Tổng vốn đã nạp
+        deposit_count = 0  # Số lần nạp thêm (không tính lần đầu)
+        
+        # Tracking data
+        equity_history = []
+        deposit_events = []  # Lưu thời điểm và số dư khi deposit
+        
+        for idx, row in df.iterrows():
+            # Risk 1% của balance hiện tại
+            risk_amount = balance * self.RISK_PERCENT
+            
+            # Position size dựa trên SL%
+            sl_percent = row['SL_Percent'] if row['SL_Percent'] > 0 else 1.0
+            position_size = (risk_amount / sl_percent) * 100
+            
+            # Phí giao dịch - giới hạn max 50% của risk_amount để tránh phí quá lớn
+            raw_fee = position_size * self.TRADING_FEE_RATE * 2
+            total_fee = min(raw_fee, risk_amount * 0.5)
+            
+            # Tính PnL dựa trên kết quả
+            rr_ratio = row['RR_Ratio'] if row['RR_Ratio'] > 0 else 2.0
+            
+            if row['Result'] == 'Win':
+                pnl = (risk_amount * rr_ratio) - total_fee
+            else:  # Loss
+                pnl = -risk_amount - total_fee
+            
+            # Cập nhật balance
+            balance += pnl
+            
+            # Lưu lịch sử
+            equity_history.append({
+                'Entry_Time': row['Entry_Time'],
+                'Symbol': row['Symbol'],
+                'Type': row['Type'],
+                'Result': row['Result'],
+                'RR_Ratio': rr_ratio,
+                'Risk_Amount': risk_amount,
+                'PnL': pnl,
+                'Balance': balance,
+                'Deposit_Count': deposit_count
+            })
+            
+            # Kiểm tra cháy tài khoản
+            if balance <= 0:
+                deposit_count += 1
+                deposit_amount = self.INITIAL_CAPITAL
+                total_deposited += deposit_amount
+                
+                deposit_events.append({
+                    'Time': row['Entry_Time'],
+                    'Trade_Index': idx,
+                    'Balance_Before': balance,
+                    'Deposit_Amount': deposit_amount,
+                    'Deposit_Number': deposit_count
+                })
+                
+                balance = deposit_amount  # Reset balance
+                
+                # Cập nhật record cuối cùng với balance mới sau deposit
+                equity_history[-1]['Balance_After_Deposit'] = balance
+        
+        # Tạo DataFrame từ equity history
+        equity_df = pd.DataFrame(equity_history)
+        
+        # Tính các metrics
+        final_balance = balance
+        total_pnl = final_balance - total_deposited
+        
+        # ROE = (Final Balance - Initial Capital) / Initial Capital × 100%
+        # Chỉ tính trên vốn ban đầu $1000
+        roe = ((final_balance - initial_capital) / initial_capital) * 100
+        
+        # ROI = Total PnL / Total Deposited × 100%
+        # Tính trên tổng vốn đã bỏ ra
+        roi = (total_pnl / total_deposited) * 100 if total_deposited > 0 else 0
+        
+        # RR Statistics
+        closed_df = df[df['Result'] != 'Open']
+        avg_rr = closed_df['RR_Ratio'].mean() if len(closed_df) > 0 else 0
+        min_rr = closed_df['RR_Ratio'].min() if len(closed_df) > 0 else 0
+        max_rr = closed_df['RR_Ratio'].max() if len(closed_df) > 0 else 0
+        median_rr = closed_df['RR_Ratio'].median() if len(closed_df) > 0 else 0
+        
+        # Drawdown từ equity curve simulation
+        if len(equity_df) > 0:
+            equity_df['Peak'] = equity_df['Balance'].cummax()
+            equity_df['Drawdown'] = equity_df['Balance'] - equity_df['Peak']
+            equity_df['Drawdown_Pct'] = (equity_df['Drawdown'] / equity_df['Peak']) * 100
+            max_drawdown = equity_df['Drawdown'].min()
+            max_drawdown_pct = equity_df['Drawdown_Pct'].min()
+        else:
+            max_drawdown = 0
+            max_drawdown_pct = 0
+        
+        self.simulation_result = {
+            'initial_capital': initial_capital,
+            'final_balance': final_balance,
+            'total_deposited': total_deposited,
+            'deposit_count': deposit_count,
+            'total_pnl': total_pnl,
+            'roe': roe,
+            'roi': roi,
+            'avg_rr': avg_rr,
+            'min_rr': min_rr,
+            'max_rr': max_rr,
+            'median_rr': median_rr,
+            'max_drawdown': max_drawdown,
+            'max_drawdown_pct': max_drawdown_pct,
+            'equity_df': equity_df,
+            'deposit_events': deposit_events
+        }
+        
+        return self.simulation_result
+    
+    def get_account_simulation_stats(self):
+        """
+        Lấy thống kê từ simulation (chạy simulate_account nếu chưa có)
+        """
+        if self.simulation_result is None:
+            self.simulate_account()
+        
+        return self.simulation_result
     
     def get_basic_stats(self):
         """Thống kê cơ bản"""
@@ -167,6 +357,13 @@ class TradeAnalyzer:
         avg_trades_per_day = float(trades_per_day.mean()) if len(trades_per_day) > 0 else 0
         total_trading_days = len(trades_per_day)
         
+        # RR Statistics
+        closed_df = df[df['Result'] != 'Open']
+        avg_rr = closed_df['RR_Ratio'].mean() if len(closed_df) > 0 else 0
+        min_rr = closed_df['RR_Ratio'].min() if len(closed_df) > 0 else 0
+        max_rr = closed_df['RR_Ratio'].max() if len(closed_df) > 0 else 0
+        median_rr = float(np.median(closed_df['RR_Ratio'])) if len(closed_df) > 0 else 0
+        
         return {
             'total_trades': total_trades,
             'wins': wins,
@@ -188,7 +385,11 @@ class TradeAnalyzer:
             'avg_short_duration': avg_short_duration,
             'max_trades_per_day': max_trades_per_day,
             'avg_trades_per_day': avg_trades_per_day,
-            'total_trading_days': total_trading_days
+            'total_trading_days': total_trading_days,
+            'avg_rr': avg_rr,
+            'min_rr': min_rr,
+            'max_rr': max_rr,
+            'median_rr': median_rr
         }
     
     def _calculate_max_streak(self, df, result_type):
@@ -947,11 +1148,14 @@ class TradeAnalyzer:
         hold_time_stats = self.get_hold_time_analysis()
         sl_analysis = self.get_sl_percent_analysis()
         
+        # Account Simulation
+        sim_data = self.get_account_simulation_stats()
+        
         # Tạo HTML
         html_content = self._create_html_template()
         
-        # Thêm thống kê cơ bản (MT5 Style)
-        html_content += self._create_basic_stats_section(basic_stats, risk_metrics, dd_analysis, sl_analysis)
+        # Thêm thống kê cơ bản (MT5 Style) - bao gồm cả simulation stats
+        html_content += self._create_basic_stats_section(basic_stats, risk_metrics, dd_analysis, sl_analysis, sim_data)
         
         # Tạo các biểu đồ
         fig_symbol = self._create_symbol_chart(symbol_stats)
@@ -969,10 +1173,81 @@ class TradeAnalyzer:
         fig_consecutive = self._create_consecutive_chart(consecutive_data)
         fig_hold_time = self._create_hold_time_chart(hold_time_stats)
         
+        # Biểu đồ Account Simulation
+        fig_simulation = self._create_simulation_equity_chart(sim_data)
+        fig_rr_distribution = self._create_rr_distribution_chart(sim_data)
+        
+        # === ACCOUNT SIMULATION SECTION ===
+        html_content += '<div class="chart-container">'
+        html_content += '<h2>💰 Account Simulation (Vốn $1,000 - Risk 1%)</h2>'
+        
+        # Summary cards cho simulation
+        roe_color = '#27ae60' if sim_data['roe'] >= 0 else '#e74c3c'
+        roi_color = '#27ae60' if sim_data['roi'] >= 0 else '#e74c3c'
+        deposit_color = '#e74c3c' if sim_data['deposit_count'] > 0 else '#27ae60'
+        
+        html_content += f'''
+        <div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin-bottom: 20px;">
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">Initial Capital</div>
+                <div style="font-size: 1.3em; font-weight: 600;">${sim_data['initial_capital']:.0f}</div>
+            </div>
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">Final Balance</div>
+                <div style="font-size: 1.3em; font-weight: 600; color: {roe_color};">${sim_data['final_balance']:.0f}</div>
+            </div>
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">Total Deposited</div>
+                <div style="font-size: 1.3em; font-weight: 600;">${sim_data['total_deposited']:.0f}</div>
+            </div>
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">ROE</div>
+                <div style="font-size: 1.3em; font-weight: 600; color: {roe_color};">{sim_data['roe']:.1f}%</div>
+            </div>
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">ROI</div>
+                <div style="font-size: 1.3em; font-weight: 600; color: {roi_color};">{sim_data['roi']:.1f}%</div>
+            </div>
+            <div style="background: #2c3e50; color: white; padding: 15px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.75em; color: #aaa; text-transform: uppercase;">Margin Calls</div>
+                <div style="font-size: 1.3em; font-weight: 600; color: {deposit_color};">{sim_data['deposit_count']}</div>
+            </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px;">
+            <div style="background: #3498db; color: white; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.7em; text-transform: uppercase;">Avg RR</div>
+                <div style="font-size: 1.1em; font-weight: 600;">1:{sim_data['avg_rr']:.2f}</div>
+            </div>
+            <div style="background: #27ae60; color: white; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.7em; text-transform: uppercase;">Min RR</div>
+                <div style="font-size: 1.1em; font-weight: 600;">1:{sim_data['min_rr']:.2f}</div>
+            </div>
+            <div style="background: #e74c3c; color: white; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.7em; text-transform: uppercase;">Max RR</div>
+                <div style="font-size: 1.1em; font-weight: 600;">1:{sim_data['max_rr']:.2f}</div>
+            </div>
+            <div style="background: #9b59b6; color: white; padding: 12px; border-radius: 6px; text-align: center;">
+                <div style="font-size: 0.7em; text-transform: uppercase;">Median RR</div>
+                <div style="font-size: 1.1em; font-weight: 600;">1:{sim_data['median_rr']:.2f}</div>
+            </div>
+        </div>
+        '''
+        
+        if fig_simulation is not None:
+            html_content += fig_simulation.to_html(full_html=False, include_plotlyjs='cdn')
+        html_content += '</div>'
+        
+        # RR Distribution Chart
+        if fig_rr_distribution is not None:
+            html_content += '<div class="chart-container">'
+            html_content += '<h2>📊 RR Ratio Distribution</h2>'
+            html_content += fig_rr_distribution.to_html(full_html=False, include_plotlyjs=False)
+            html_content += '</div>'
+        
         # === RISK & PERFORMANCE SECTION ===
         html_content += '<div class="chart-container">'
         html_content += '<h2>📈 Equity Curve & Drawdown Analysis</h2>'
-        html_content += fig_drawdown.to_html(full_html=False, include_plotlyjs='cdn')
+        html_content += fig_drawdown.to_html(full_html=False, include_plotlyjs=False)
         html_content += '</div>'
         
         html_content += '<div class="chart-container">'
@@ -1328,7 +1603,7 @@ class TradeAnalyzer:
 """
         return html
     
-    def _create_basic_stats_section(self, stats, risk_metrics, dd_analysis, sl_analysis=None):
+    def _create_basic_stats_section(self, stats, risk_metrics, dd_analysis, sl_analysis=None, sim_data=None):
         """Tạo section thống kê cơ bản"""
         # Format các giá trị
         pf = risk_metrics['profit_factor']
@@ -1833,6 +2108,201 @@ class TradeAnalyzer:
             height=600,
             showlegend=True,
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_simulation_equity_chart(self, sim_data):
+        """
+        Biểu đồ Equity Curve từ Account Simulation
+        Hiển thị balance theo thời gian với các điểm deposit
+        """
+        equity_df = sim_data['equity_df']
+        deposit_events = sim_data['deposit_events']
+        
+        if len(equity_df) == 0:
+            return None
+        
+        fig = make_subplots(
+            rows=2, cols=1,
+            subplot_titles=(
+                f"Account Simulation (Initial: ${sim_data['initial_capital']:.0f}, Risk: 1%)",
+                'Drawdown from Peak'
+            ),
+            specs=[[{'type': 'scatter'}], [{'type': 'scatter'}]],
+            vertical_spacing=0.12,
+            row_heights=[0.65, 0.35]
+        )
+        
+        # Equity curve
+        fig.add_trace(
+            go.Scatter(
+                x=equity_df['Entry_Time'],
+                y=equity_df['Balance'],
+                mode='lines',
+                name='Balance',
+                line=dict(color='rgb(26, 118, 255)', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(26, 118, 255, 0.1)',
+                hovertemplate='<b>%{x}</b><br>Balance: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Peak line
+        fig.add_trace(
+            go.Scatter(
+                x=equity_df['Entry_Time'],
+                y=equity_df['Peak'],
+                mode='lines',
+                name='Peak',
+                line=dict(color='rgb(46, 204, 113)', width=1, dash='dot'),
+                hovertemplate='<b>%{x}</b><br>Peak: $%{y:.2f}<extra></extra>'
+            ),
+            row=1, col=1
+        )
+        
+        # Deposit markers
+        if deposit_events:
+            deposit_times = [e['Time'] for e in deposit_events]
+            deposit_balances = [sim_data['initial_capital'] for _ in deposit_events]  # Balance after deposit
+            deposit_numbers = [e['Deposit_Number'] for e in deposit_events]
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=deposit_times,
+                    y=deposit_balances,
+                    mode='markers+text',
+                    name='Deposit',
+                    marker=dict(color='rgb(255, 193, 7)', size=15, symbol='triangle-up'),
+                    text=[f"Deposit #{n}" for n in deposit_numbers],
+                    textposition='top center',
+                    hovertemplate='<b>Deposit #%{text}</b><br>Time: %{x}<br>New Balance: $%{y:.0f}<extra></extra>'
+                ),
+                row=1, col=1
+            )
+        
+        # Drawdown area
+        fig.add_trace(
+            go.Scatter(
+                x=equity_df['Entry_Time'],
+                y=equity_df['Drawdown'],
+                mode='lines',
+                name='Drawdown',
+                line=dict(color='rgb(231, 76, 60)', width=2),
+                fill='tozeroy',
+                fillcolor='rgba(231, 76, 60, 0.3)',
+                hovertemplate='<b>%{x}</b><br>Drawdown: $%{y:.2f}<extra></extra>'
+            ),
+            row=2, col=1
+        )
+        
+        # Initial capital reference line
+        fig.add_hline(
+            y=sim_data['initial_capital'],
+            line_dash="dash",
+            line_color="gray",
+            annotation_text=f"Initial: ${sim_data['initial_capital']:.0f}",
+            annotation_position="right",
+            row=1, col=1
+        )
+        
+        # Max Drawdown line
+        fig.add_hline(
+            y=sim_data['max_drawdown'],
+            line_dash="dot",
+            line_color="darkred",
+            line_width=2,
+            annotation_text=f"Max DD: ${sim_data['max_drawdown']:.0f}",
+            annotation_position="right",
+            row=2, col=1
+        )
+        
+        fig.update_yaxes(title_text="Balance ($)", row=1, col=1)
+        fig.update_yaxes(title_text="Drawdown ($)", row=2, col=1)
+        fig.update_xaxes(title_text="Time", row=2, col=1)
+        
+        fig.update_layout(
+            height=650,
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            plot_bgcolor='rgba(240,240,240,0.5)'
+        )
+        
+        return fig
+    
+    def _create_rr_distribution_chart(self, sim_data):
+        """
+        Biểu đồ phân phối RR Ratio
+        """
+        df = self.trades_df[self.trades_df['Result'] != 'Open']
+        
+        if len(df) == 0:
+            return None
+        
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=(
+                'RR Ratio Distribution',
+                'RR Ratio: Wins vs Losses'
+            ),
+            specs=[[{'type': 'histogram'}, {'type': 'box'}]]
+        )
+        
+        # Histogram of RR Ratio
+        fig.add_trace(
+            go.Histogram(
+                x=df['RR_Ratio'],
+                nbinsx=30,
+                name='RR Distribution',
+                marker_color='rgb(26, 118, 255)',
+                opacity=0.7
+            ),
+            row=1, col=1
+        )
+        
+        # Average RR line
+        avg_rr = df['RR_Ratio'].mean()
+        fig.add_vline(
+            x=avg_rr,
+            line_dash="dash",
+            line_color="red",
+            annotation_text=f"Avg: {avg_rr:.2f}",
+            row=1, col=1
+        )
+        
+        # Box plot comparing Wins vs Losses RR
+        wins_df = df[df['Result'] == 'Win']
+        losses_df = df[df['Result'] == 'Loss']
+        
+        fig.add_trace(
+            go.Box(
+                y=wins_df['RR_Ratio'],
+                name='Wins',
+                marker_color='rgb(46, 204, 113)',
+                boxmean=True
+            ),
+            row=1, col=2
+        )
+        
+        fig.add_trace(
+            go.Box(
+                y=losses_df['RR_Ratio'],
+                name='Losses',
+                marker_color='rgb(231, 76, 60)',
+                boxmean=True
+            ),
+            row=1, col=2
+        )
+        
+        fig.update_xaxes(title_text="RR Ratio", row=1, col=1)
+        fig.update_yaxes(title_text="Count", row=1, col=1)
+        fig.update_yaxes(title_text="RR Ratio", row=1, col=2)
+        
+        fig.update_layout(
+            height=400,
+            showlegend=False,
             plot_bgcolor='rgba(240,240,240,0.5)'
         )
         
@@ -2472,8 +2942,8 @@ def main():
     print("="*60)
     
     # Khởi tạo analyzer
-    analyzer = TradeAnalyzer(output_folder="src/output")
-    
+    analyzer = TradeAnalyzer(output_folder="res/output")
+
     # Load dữ liệu
     if not analyzer.load_trades():
         print("❌ Không thể load dữ liệu!")
@@ -2495,14 +2965,34 @@ def main():
     print(f"  Thời gian TB:           {stats['avg_duration_minutes']:.0f} phút")
     print(f"  LONG Trades:            {stats['long_trades']} (WR: {stats['long_win_rate']:.1f}%)")
     print(f"  SHORT Trades:           {stats['short_trades']} (WR: {stats['short_win_rate']:.1f}%)")
+    
+    print(f"\n📊 RR RATIO:")
+    print("-" * 60)
+    print(f"  Avg RR:                 1:{stats['avg_rr']:.2f}")
+    print(f"  Min RR:                 1:{stats['min_rr']:.2f}")
+    print(f"  Max RR:                 1:{stats['max_rr']:.2f}")
+    print(f"  Median RR:              1:{stats['median_rr']:.2f}")
+    
     print(f"\n📊 THỐNG KÊ THEO NGÀY:")
     print("-" * 60)
     print(f"  Tổng số ngày giao dịch: {stats['total_trading_days']}")
     print(f"  Số lệnh/ngày TB:        {stats['avg_trades_per_day']:.2f}")
     print(f"  Max lệnh trong 1 ngày:  {stats['max_trades_per_day']}")
     
+    # Account Simulation
+    print(f"\n💰 ACCOUNT SIMULATION (Vốn $1,000 - Risk 1%):")
+    print("-" * 60)
+    sim_data = analyzer.get_account_simulation_stats()
+    print(f"  Initial Capital:        ${sim_data['initial_capital']:.0f}")
+    print(f"  Final Balance:          ${sim_data['final_balance']:.2f}")
+    print(f"  Total Deposited:        ${sim_data['total_deposited']:.0f}")
+    print(f"  Margin Calls (Resets):  {sim_data['deposit_count']}")
+    print(f"  ROE:                    {sim_data['roe']:.2f}%")
+    print(f"  ROI:                    {sim_data['roi']:.2f}%")
+    print(f"  Max Drawdown:           ${sim_data['max_drawdown']:.2f} ({sim_data['max_drawdown_pct']:.1f}%)")
+    
     # Tạo báo cáo HTML
-    output_file = analyzer.generate_html_report('src/report/trade_analysis_report.html')
+    output_file = analyzer.generate_html_report('res/report/trade_analysis_report.html')
     
     print(f"\n✅ Hoàn tất! Mở file để xem báo cáo:")
     print(f"   {output_file}")

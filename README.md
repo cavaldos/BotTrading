@@ -16,6 +16,7 @@ pip install --upgrade pip
 4. Install requirements
 ```bash
 pip install -r requirements.txt
+pip install -e .  
 ```
 
 5. Export requirements

@@ -1,5 +1,65 @@
+# ====================
+# Environment
+# ====================
 .env
+.env.*
+*.local
+
+# ====================
+# Virtual Environment
+# ====================
 /venv
+/.venv
+.venv/
+venv/
+
+# ====================
+# Python
+# ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / Packaging
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.manifest
+*.spec
+pip-wheel-metadata/
+
+# PyInstaller
+*.spec
+
+# Numba cache
+__numba_cache__/
+
+# ====================
+# IDE / Editor
+# ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+
+# ====================
+# OS Generated
+# ====================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+
+# ====================
+# Project Specific
+# ====================
 src/data/*
 src/res/*
 src/report/*
@@ -8,11 +68,16 @@ src/output/*
 src/results/*
 src/sum/*
 sum/result.md
+res/*
 results.md
-.trash
-data
-.vscode
-/.idea
-/.vscode
-.DS_Store
-__pycache__/
+.trash/
+data/
+trade/logs/*
+trade/data/*
+
+# ====================
+# Logs
+# ====================
+*.log
+logs/
+*.out

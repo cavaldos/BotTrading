@@ -13,20 +13,16 @@ To change strategy:
 3. Strategy must have generate_signals(df, symbol) -> List[Signal] method
 """
 
-import sys
 from pathlib import Path
-
-# Add src directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
 
 import pandas as pd
 from tqdm import tqdm
 
 # Import strategy components (interface contract)
-from strategy import Config, Strategy, Signal, STRATEGY_NAME
+from src.strategy import Config, Strategy, Signal, STRATEGY_NAME
 
 # Import statistics/reporting functions
-from statistics import (
+from src.statistics import (
     Trade,
     TradeSimulator,
     generate_trade_report,
@@ -40,9 +36,9 @@ from statistics import (
 # ==============================================================================
 # SYSTEM CONFIG (Fixed settings - paths and folders)
 # ==============================================================================
-DATA_FOLDER = "src/data"                  # Input folder containing CSV data files
-OUTPUT_FOLDER = "src/output"          # Output folder for trade reports
-REPORT_FOLDER = "src/report"           # Folder for markdown summary report
+DATA_FOLDER = "res/data"                  # Input folder containing CSV data files
+OUTPUT_FOLDER = "res/output"          # Output folder for trade reports
+REPORT_FOLDER = "res/report"           # Folder for markdown summary report
 
 
 # ==============================================================================

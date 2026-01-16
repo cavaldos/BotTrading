@@ -1,38 +1,17 @@
-"""
-Verify Trade Signals - No Look-Ahead Bias Test
-================================================
-This script verifies that each trade signal was generated correctly
-without using future data (look-ahead bias).
-
-For each trade:
-1. Load data up to the trade's entry_time
-2. Run generate_signals() on that data slice
-3. Verify signal appears at the LAST candle (entry_time)
-
-If signal doesn't appear or appears at wrong time -> FAIL (look-ahead bias detected)
-
-Usage:
-    python src/util/verify_look_bias.py
-    # Uses folder config from main.py
-"""
-import sys
 from pathlib import Path
 
-# Add src directory to path for imports
-src_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(src_dir))
-
 import pandas as pd
-from strategy import Config, Strategy
 from glob import glob
+
+from src.strategy import Config, Strategy
 
 # Import folder settings from main.py
 try:
-    from main import DATA_FOLDER, OUTPUT_FOLDER
+    from src.main import DATA_FOLDER, OUTPUT_FOLDER
 except ImportError:
     # Fallback to defaults if main.py not found
-    DATA_FOLDER = "src/data"
-    OUTPUT_FOLDER = "src/output"
+    DATA_FOLDER = "res/data"
+    OUTPUT_FOLDER = "res/output"
 
 
 def load_latest_trade_file(output_folder: str):

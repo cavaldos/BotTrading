@@ -18,7 +18,7 @@ from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from numba import njit
 
-from strategy import STRATEGY_NAME, Signal, Config
+from src.strategy import STRATEGY_NAME, Signal, Config
 
 
 # ==================== DATA CLASSES ====================
@@ -208,7 +208,6 @@ def generate_trade_report(trades: List[Trade], output_dir: str, symbol: str) -> 
     df = pd.DataFrame(data)
     output_path = Path(output_dir) / f"{symbol}_trades.csv"
     df.to_csv(output_path, index=False)
-    print(f"  - Trade report saved to: {output_path}")
     return df
 
 
