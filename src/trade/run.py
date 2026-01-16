@@ -344,6 +344,7 @@ class OutputFolderHandler(FileSystemEventHandler):
 def getdata():
     """Fetch data from API"""
     remove_all_files(DATA_FOLDER)
+    remove_all_files(OUTPUT_FOLDER)
     
     if not os.path.exists(DATA_FOLDER):
         os.makedirs(DATA_FOLDER)
