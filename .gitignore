@@ -73,6 +73,7 @@ results.md
 .trash/
 trade/logs/*
 trade/data/*
+/src/trade/config.yaml
 
 # ====================
 # Logs

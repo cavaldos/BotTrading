@@ -238,24 +238,47 @@ def getdata_by_date():
     get_and_save_multiple_data(currencies, timeframes, start_date, folder_path)
     print("Hoàn thành lấy dữ liệu theo thời điểm!")
 
+def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
+    """
+    Lấy dữ liệu nến và lưu vào file CSV.
+    
+    Args:
+        currencies: Danh sách các cặp tiền tệ
+        timeframes: Danh sách các khung thời gian
+        folder_path: Đường dẫn thư mục lưu file
+        limit: Số lượng cây nến cần lấy
+    """
+    for currency in currencies:
+        for timeframe in timeframes:
+            filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+            
+            latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit)
+            
+            if latest_candles:
+                save_to_csv(latest_candles, filename)
+            else:
+                print(f"Không lấy được dữ liệu cho {currency}_{timeframe}")
+
+
 def getdata_by_candles():
     currencies = ['BTCUSDT']
     timeframes = ['5m','15m']
     folder_path = 'res/data'
-    candles_limit = 20000  # Số lượng cây nến muốn lấy
-    update_interval = 60    # Thời gian cập nhật (giây)
+    candles_limit = 2000  # Số lượng cây nến muốn lấy
     
     remove_all_files(folder_path) 
     
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
     
-    continuous_data_collection(currencies, timeframes, folder_path, limit=candles_limit, sleep_time=update_interval)
+    print(f"Bắt đầu lấy {candles_limit} cây nến gần nhất...")
+    fetch_and_save_candles(currencies, timeframes, folder_path, candles_limit)
+    print("Done")
 
 
 def getdata():
-    getdata_by_date()
-    # getdata_by_candles()
+    # getdata_by_date()
+    getdata_by_candles()
 
 
 if __name__ == '__main__':
