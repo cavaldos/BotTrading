@@ -32,13 +32,17 @@ from src.statistics import (
     print_final_summary
 )
 
+# Import config loader
+from src.utils.get_data import load_config
+
 
 # ==============================================================================
-# SYSTEM CONFIG (Fixed settings - paths and folders)
+# SYSTEM CONFIG (Default values - can be overridden by data_config.yaml)
 # ==============================================================================
-DATA_FOLDER = "res/data"                  # Input folder containing CSV data files
-OUTPUT_FOLDER = "res/output"          # Output folder for trade reports
-REPORT_FOLDER = "res/report"           # Folder for markdown summary report
+DEFAULT_DATA_FOLDER = "res/data"
+DEFAULT_OUTPUT_FOLDER = "res/output"
+DEFAULT_REPORT_FOLDER = "res/report"
+DEFAULT_BACKTEST_RESULTS_FILE = "backtest_results"
 
 
 # ==============================================================================
@@ -62,13 +66,31 @@ def get_symbol_from_filename(filename: str) -> str:
 
 def create_config() -> Config:
     """
-    Create Config with system paths.
+    Create Config with system paths from data_config.yaml.
     Strategy-specific settings use defaults from strategy.py.
     """
+    # Load paths from data_config.yaml
+    data_config = load_config()
+    
+    data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
+    output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
+    
     return Config(
-        data_folder=DATA_FOLDER,
-        output_folder=OUTPUT_FOLDER,
+        data_folder=data_folder,
+        output_folder=output_folder,
     )
+
+
+def get_report_folder() -> str:
+    """Get report folder from config"""
+    data_config = load_config()
+    return data_config.get('report_folder', DEFAULT_REPORT_FOLDER)
+
+
+def get_backtest_results_file() -> str:
+    """Get backtest results filename from config"""
+    data_config = load_config()
+    return data_config.get('backtest_results_file', DEFAULT_BACKTEST_RESULTS_FILE)
 
 
 # ==============================================================================
@@ -148,11 +170,12 @@ def main():
     print("Generating summary report...")
     
     # Create report folder if needed
-    report_dir = Path(REPORT_FOLDER)
+    report_dir = Path(get_report_folder())
     report_dir.mkdir(parents=True, exist_ok=True)
     
     # Generate text summary
-    summary_path = str(report_dir / "backtest_results.md")
+    backtest_file = get_backtest_results_file()
+    summary_path = str(report_dir / f"{backtest_file}.md")
     generate_text_report(all_summaries, config, summary_path)
     
     # Print final summary

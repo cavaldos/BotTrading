@@ -21,7 +21,7 @@ DEFAULT_CONFIG = {
 
 def load_config(config_path=None):
     if config_path is None:
-        config_path = os.path.join(os.path.dirname(__file__), 'data_config.yaml')
+        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
     
     if not os.path.exists(config_path):
         print(f"Config file not found at {config_path}. Using default config.")
@@ -264,13 +264,41 @@ def getdata_by_candles(config=None):
 
 
 def getdata(config_path=None):
+    from tqdm import tqdm  # pyright: ignore[reportMissingModuleSource]
+    
     config = load_config(config_path)
     mode = config.get('mode', 'by_candles')
     
-    if mode == 'by_date':
-        getdata_by_date(config)
-    else:
-        getdata_by_candles(config)
+    currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])
+    timeframes = config.get('timeframes', DEFAULT_CONFIG['timeframes'])
+    folder_path = config.get('folder_path', DEFAULT_CONFIG['folder_path'])
+    
+    remove_all_files(folder_path)
+    if not os.path.exists(folder_path):
+        os.makedirs(folder_path)
+    
+    total_tasks = len(currencies) * len(timeframes)
+    
+    with tqdm(total=total_tasks, desc="Downloading data") as pbar:
+        for currency in currencies:
+            for timeframe in timeframes:
+                filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+                pbar.set_description(f"Downloading {currency}_{timeframe}")
+                
+                if mode == 'by_date':
+                    start_date = config.get('start_date', DEFAULT_CONFIG['start_date'])
+                    get_and_save_data(currency, start_date, filename, time_interval=timeframe)
+                else:
+                    candles_limit = config.get('candles_limit', DEFAULT_CONFIG['candles_limit'])
+                    latest_candles = get_latest_candles(currency, interval=timeframe, limit=candles_limit)
+                    if latest_candles:
+                        save_to_csv(latest_candles, filename)
+                    else:
+                        tqdm.write(f"Failed to fetch data for {currency}_{timeframe}")
+                
+                pbar.update(1)
+    
+    print("Done!")
 
 
 if __name__ == '__main__':

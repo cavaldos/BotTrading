@@ -2,14 +2,14 @@
 
 # Data settings
 data:
-  folder: "res/live/data"
+  folder: "res/logs/data"
   currencies:
     - "BTCUSDT"
   candles_limit: 2000
 
 # Output settings
 output:
-  folder: "res/live/output"
+  folder: "res/logs/output"
   log_file: "res/logs/sent_orders.json"
 
 # Timeframe settings
