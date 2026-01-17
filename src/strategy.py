@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 from numba import njit
-from reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
+from src.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
 
 
 # ==================== STRATEGY NAME ====================
