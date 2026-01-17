@@ -41,6 +41,7 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 from numba import njit
+from reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
 
 
 # ==================== STRATEGY NAME ====================
@@ -79,6 +80,23 @@ class Config:
     risk_reward_ratio: float = 2.0  # Fixed RR = 1:2
     risk_per_trade: float = 10.0    # USD
     
+    # === REVERSAL PATTERN FILTER ===
+    # Mảng các ID cặp pattern muốn sử dụng
+    # [0] = tất cả patterns (mặc định)
+    # [1] = chỉ doji
+    # [1, 2] = doji + hammer/hanging
+    # Pattern Pair IDs:
+    #   0 = all (tất cả patterns)
+    #   1 = doji
+    #   2 = hammer / hanging_man
+    #   3 = inverted_hammer / shooting_star
+    #   4 = bullish_engulfing / bearish_engulfing
+    #   5 = piercing_line / dark_cloud_cover
+    #   6 = bullish_harami / bearish_harami
+    #   7 = three_white_soldiers / three_black_crows
+    #   8 = morning_star / evening_star
+    reversal_pattern_ids: List[int] = field(default_factory=lambda: [4,5])
+    
     def get_strategy_info(self) -> dict:
         """Return strategy configuration for reporting"""
         return {
@@ -92,6 +110,7 @@ class Config:
             "sl_multiplier": self.sl_multiplier,
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
+            "reversal_pattern_ids": self.reversal_pattern_ids,
         }
 
 
@@ -986,7 +1005,11 @@ class Strategy:
                     continue
                 
                 if self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
-                    if ob.has_fvg and ob.has_liquidity:
+                    # Check if current candle is a reversal pattern
+                    is_reversal = self._is_reversal_candle(opens, closes, highs, lows, 
+                                                           current_idx, ob.bias)
+                    
+                    if ob.has_fvg and ob.has_liquidity and is_reversal:
                         signal = self._create_signal(
                             symbol=symbol,
                             ob=ob,
@@ -1053,6 +1076,25 @@ class Strategy:
                 return True
         
         return False
+    
+    def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, 
+                           lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
+        """
+        Check if current candle is a reversal pattern (bullish or bearish based on ob_bias).
+        
+        Uses JIT-compiled function from reversal_patterns module for performance.
+        """
+        is_bullish = (ob_bias == 'BULLISH')
+        
+        # Chuyển list thành numpy array cho JIT function
+        pattern_ids = np.array(self.config.reversal_pattern_ids, dtype=np.int64)
+        
+        # Nếu chỉ có [0] thì dùng function check tất cả (nhanh hơn)
+        if len(pattern_ids) == 1 and pattern_ids[0] == 0:
+            return check_reversal_pattern_jit(opens, closes, highs, lows, current_idx, is_bullish)
+        
+        # Ngược lại, check theo danh sách IDs
+        return check_pattern_by_ids_jit(opens, closes, highs, lows, current_idx, is_bullish, pattern_ids)
     
     def _price_touches_ob(self, ob: OrderBlock, high: float, low: float) -> bool:
         """
