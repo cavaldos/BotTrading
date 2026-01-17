@@ -42,7 +42,7 @@ const TradingChart = forwardRef(function TradingChart({
     crosshair: '#9598a1',
   }), []);
 
-  // Expose scrollToTime method via ref
+  // Expose scrollToTrade method via ref
   useImperativeHandle(ref, () => ({
     scrollToTime: (time, barsAround = 30) => {
       if (!chartRef.current) return;
@@ -55,6 +55,43 @@ const TradingChart = forwardRef(function TradingChart({
       const to = time + (barsAround * barDuration);
       
       timeScale.setVisibleRange({ from, to });
+    },
+    
+    scrollToTrade: (time, priceRange, barsAround = 30) => {
+      if (!chartRef.current || !candleSeriesRef.current) return;
+      
+      const timeScale = chartRef.current.timeScale();
+      const barDuration = 900; // 15 minutes in seconds
+      
+      // Set visible range for time (horizontal)
+      const from = time - (barsAround * barDuration);
+      const to = time + (barsAround * barDuration);
+      timeScale.setVisibleRange({ from, to });
+      
+      // Set visible range for price (vertical) with padding
+      if (priceRange) {
+        const { low, high } = priceRange;
+        const padding = (high - low) * 0.5; // 50% padding for better visibility
+        const minValue = low - padding;
+        const maxValue = high + padding;
+        
+        // Get the series price scale and set visible range
+        const seriesPriceScale = candleSeriesRef.current.priceScale();
+        if (seriesPriceScale) {
+          // Disable auto scale first
+          seriesPriceScale.applyOptions({
+            autoScale: false,
+          });
+          
+          // Use setVisibleRange if available (lightweight-charts v5+)
+          if (typeof seriesPriceScale.setVisibleRange === 'function') {
+            seriesPriceScale.setVisibleRange({
+              from: minValue,
+              to: maxValue,
+            });
+          }
+        }
+      }
     },
     
     getChart: () => chartRef.current,

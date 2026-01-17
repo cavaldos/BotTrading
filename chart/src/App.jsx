@@ -45,13 +45,18 @@ function App() {
     return filterMarkers(data.markers, trades);
   }, [data?.markers, data?.trades, filter]);
 
-  // Handle trade click - scroll chart to trade position
+  // Handle trade click - scroll chart to trade position (both horizontal and vertical)
   const handleTradeClick = (trade) => {
     setSelectedTradeId(trade.id);
     
-    // Scroll chart to trade entry time
+    // Scroll chart to trade entry time and price range
     if (chartRef.current) {
-      chartRef.current.scrollToTime(trade.entryTime, 40);
+      // Calculate price range from entry, TP and SL
+      const priceRange = {
+        low: Math.min(trade.entryPrice, trade.stopLoss, trade.takeProfit),
+        high: Math.max(trade.entryPrice, trade.stopLoss, trade.takeProfit),
+      };
+      chartRef.current.scrollToTrade(trade.entryTime, priceRange, 40);
     }
   };
 

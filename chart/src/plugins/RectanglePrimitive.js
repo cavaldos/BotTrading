@@ -13,6 +13,8 @@
  * @param {string} options.fillColor - Fill color (rgba)
  * @param {string} options.borderColor - Border color (optional)
  * @param {number} options.borderWidth - Border width (optional)
+ * @param {string} options.label - Text label to display inside rectangle (optional)
+ * @param {string} options.labelColor - Label text color (optional)
  */
 export class RectanglePrimitive {
   constructor(options) {
@@ -24,6 +26,8 @@ export class RectanglePrimitive {
       fillColor: options.fillColor || 'rgba(100, 200, 50, 0.3)',
       borderColor: options.borderColor || null,
       borderWidth: options.borderWidth || 1,
+      label: options.label || null,
+      labelColor: options.labelColor || '#ffffff',
     };
     this._chart = null;
     this._series = null;
@@ -122,6 +126,33 @@ class RectangleRenderer {
         ctx.lineWidth = options.borderWidth;
         ctx.stroke();
       }
+
+      // Draw label if specified
+      if (options.label) {
+        const fontSize = 11;
+        ctx.font = `bold ${fontSize}px Arial`;
+        ctx.fillStyle = options.labelColor;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        
+        // Position label at the left side, vertically centered
+        const labelX = x + 5;
+        const labelY = y + height / 2;
+        
+        // Draw text shadow for better visibility
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
+        ctx.shadowBlur = 3;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        
+        ctx.fillText(options.label, labelX, labelY);
+        
+        // Reset shadow
+        ctx.shadowColor = 'transparent';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = 0;
+      }
     });
   }
 }
@@ -135,6 +166,10 @@ export function createTradeZones(trade) {
   const isLong = trade.type === 'LONG';
   const rectangles = [];
 
+  // Calculate TP% and SL%
+  const tpPercent = Math.abs((trade.takeProfit - trade.entryPrice) / trade.entryPrice * 100);
+  const slPercent = Math.abs((trade.stopLoss - trade.entryPrice) / trade.entryPrice * 100);
+
   // TP Zone (green)
   rectangles.push(new RectanglePrimitive({
     startTime: trade.entryTime,
@@ -144,6 +179,8 @@ export function createTradeZones(trade) {
     fillColor: 'rgba(38, 166, 154, 0.25)',
     borderColor: 'rgba(38, 166, 154, 0.6)',
     borderWidth: 1,
+    label: `TP: ${tpPercent.toFixed(2)}%`,
+    labelColor: '#26a69a',
   }));
 
   // SL Zone (red)
@@ -155,6 +192,8 @@ export function createTradeZones(trade) {
     fillColor: 'rgba(239, 83, 80, 0.25)',
     borderColor: 'rgba(239, 83, 80, 0.6)',
     borderWidth: 1,
+    label: `SL: ${slPercent.toFixed(2)}%`,
+    labelColor: '#ef5350',
   }));
 
   return rectangles;
