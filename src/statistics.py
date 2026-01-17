@@ -289,7 +289,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # Build report with aligned markdown table
     lines = [
         "",
-        f"##  TRADE RESULTS - {STRATEGY_NAME} - {timestamp}",
+        f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
         "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
             "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
         ),

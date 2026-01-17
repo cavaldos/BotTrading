@@ -45,7 +45,7 @@ from src.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_i
 
 
 # ==================== STRATEGY NAME ====================
-STRATEGY_NAME = "SMC - Order Block + CHoCH + Liquidity"
+STRATEGY_NAME = "SMC"
 
 
 # ==================== CONFIGURATION ====================
@@ -88,14 +88,18 @@ class Config:
     # Pattern Pair IDs:
     #   0 = all (tất cả patterns)
     #   1 = doji
+    #   0 = all patterns
+    #   1 = doji
     #   2 = hammer / hanging_man
     #   3 = inverted_hammer / shooting_star
     #   4 = bullish_engulfing / bearish_engulfing
     #   5 = piercing_line / dark_cloud_cover
     #   6 = bullish_harami / bearish_harami
-    #   7 = three_white_soldiers / three_black_crows
-    #   8 = morning_star / evening_star
-    reversal_pattern_ids: List[int] = field(default_factory=lambda: [4,5])
+    #   7 = morning_star / evening_star
+    #   8 = tweezer_bottom / tweezer_top
+    #   9 = three_outside_up / three_outside_down
+    #   10 = bullish_belt_hold / bearish_belt_hold
+    reversal_pattern_ids: List[int] = field(default_factory=lambda: [0])
     
     def get_strategy_info(self) -> dict:
         """Return strategy configuration for reporting"""

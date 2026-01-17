@@ -4,12 +4,10 @@ Reversal Candle Patterns - Numba JIT Optimized
 All candlestick reversal pattern detection functions optimized with @njit.
 
 Patterns included:
-- Single candle: Doji, Hammer, Inverted Hammer, Shooting Star, Hanging Man,
-                 Dragonfly Doji, Gravestone Doji, Belt Hold
+- Single candle: Doji, Hammer, Inverted Hammer, Shooting Star, Hanging Man, Belt Hold
 - Two candle: Bullish/Bearish Engulfing, Piercing Line, Dark Cloud Cover, 
-              Bullish/Bearish Harami, Tweezer Top/Bottom, Bullish/Bearish Kicker
-- Three candle: Three White Soldiers, Three Black Crows, Morning Star, Evening Star,
-                Three Inside Up/Down, Three Outside Up/Down, Abandoned Baby
+              Bullish/Bearish Harami, Tweezer Top/Bottom
+- Three candle: Morning Star, Evening Star, Three Outside Up/Down
 
 Usage:
     from reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
@@ -33,15 +31,10 @@ Pattern Pair IDs:
     4  = bullish_engulfing / bearish_engulfing
     5  = piercing_line / dark_cloud_cover
     6  = bullish_harami / bearish_harami
-    7  = three_white_soldiers / three_black_crows
-    8  = morning_star / evening_star
-    9  = tweezer_bottom / tweezer_top
-    10 = three_inside_up / three_inside_down
-    11 = three_outside_up / three_outside_down
-    12 = bullish_abandoned_baby / bearish_abandoned_baby
-    13 = dragonfly_doji / gravestone_doji
-    14 = bullish_kicker / bearish_kicker
-    15 = bullish_belt_hold / bearish_belt_hold
+    7  = morning_star / evening_star
+    8  = tweezer_bottom / tweezer_top
+    9  = three_outside_up / three_outside_down
+    10 = bullish_belt_hold / bearish_belt_hold
 """
 
 import numpy as np
@@ -59,15 +52,10 @@ PATTERN_INVERTED_SHOOTING = 3
 PATTERN_ENGULFING = 4
 PATTERN_PIERCING_DARKCLOUD = 5
 PATTERN_HARAMI = 6
-PATTERN_THREE_SOLDIERS_CROWS = 7
-PATTERN_STAR = 8
-PATTERN_TWEEZER = 9
-PATTERN_THREE_INSIDE = 10
-PATTERN_THREE_OUTSIDE = 11
-PATTERN_ABANDONED_BABY = 12
-PATTERN_DRAGONFLY_GRAVESTONE = 13
-PATTERN_KICKER = 14
-PATTERN_BELT_HOLD = 15
+PATTERN_STAR = 7
+PATTERN_TWEEZER = 8
+PATTERN_THREE_OUTSIDE = 9
+PATTERN_BELT_HOLD = 10
 
 # Danh sách tên các cặp pattern để reference
 PATTERN_PAIR_NAMES = [
@@ -78,15 +66,10 @@ PATTERN_PAIR_NAMES = [
     "engulfing",                # 4
     "piercing_darkcloud",       # 5
     "harami",                   # 6
-    "three_soldiers_crows",     # 7
-    "star",                     # 8
-    "tweezer",                  # 9
-    "three_inside",             # 10
-    "three_outside",            # 11
-    "abandoned_baby",           # 12
-    "dragonfly_gravestone",     # 13
-    "kicker",                   # 14
-    "belt_hold",                # 15
+    "star",                     # 7
+    "tweezer",                  # 8
+    "three_outside",            # 9
+    "belt_hold",                # 10
 ]
 
 
@@ -215,76 +198,6 @@ def _is_hanging_man_jit(open_price: float, close_price: float, high: float, low:
             upper_shadow <= body)
 
 
-# ==================== SPECIALIZED DOJI PATTERNS ====================
-
-@njit(cache=True)
-def _is_dragonfly_doji_jit(open_price: float, close_price: float, 
-                            high: float, low: float, tolerance: float = 0.1) -> bool:
-    """
-    Dragonfly Doji: Open = Close = High (approximately), long lower shadow.
-    Bullish reversal pattern - appears at bottom of downtrend.
-    
-    Criteria:
-    - Body is very small (open ≈ close)
-    - Open/Close near High (upper shadow <= tolerance * range)
-    - Long lower shadow (>= 2x body or significant portion of range)
-    """
-    candle_range = high - low
-    if candle_range == 0:
-        return False
-    
-    body = abs(close_price - open_price)
-    body_top = max(open_price, close_price)
-    body_bottom = min(open_price, close_price)
-    upper_shadow = high - body_top
-    lower_shadow = body_bottom - low
-    
-    # Body should be small (doji-like)
-    if body / candle_range > 0.1:
-        return False
-    
-    # Open/Close should be near High
-    if upper_shadow > tolerance * candle_range:
-        return False
-    
-    # Lower shadow should be significant
-    return lower_shadow >= 0.7 * candle_range
-
-
-@njit(cache=True)
-def _is_gravestone_doji_jit(open_price: float, close_price: float, 
-                             high: float, low: float, tolerance: float = 0.1) -> bool:
-    """
-    Gravestone Doji: Open = Close = Low (approximately), long upper shadow.
-    Bearish reversal pattern - appears at top of uptrend.
-    
-    Criteria:
-    - Body is very small (open ≈ close)
-    - Open/Close near Low (lower shadow <= tolerance * range)
-    - Long upper shadow (>= 2x body or significant portion of range)
-    """
-    candle_range = high - low
-    if candle_range == 0:
-        return False
-    
-    body = abs(close_price - open_price)
-    body_top = max(open_price, close_price)
-    body_bottom = min(open_price, close_price)
-    upper_shadow = high - body_top
-    lower_shadow = body_bottom - low
-    
-    # Body should be small (doji-like)
-    if body / candle_range > 0.1:
-        return False
-    
-    # Open/Close should be near Low
-    if lower_shadow > tolerance * candle_range:
-        return False
-    
-    # Upper shadow should be significant
-    return upper_shadow >= 0.7 * candle_range
-
-
 @njit(cache=True)
 def _is_bullish_belt_hold_jit(open_price: float, close_price: float, 
                                high: float, low: float) -> bool:
@@ -406,55 +319,6 @@ def _is_tweezer_top_jit(prev_open: float, prev_close: float, prev_high: float, p
     
     return abs(prev_high - curr_high) / avg_high <= tolerance
 
-
-@njit(cache=True)
-def _is_bullish_kicker_jit(prev_open: float, prev_close: float,
-                            curr_open: float, curr_close: float) -> bool:
-    """
-    Bullish Kicker: Strong reversal - bearish candle followed by bullish candle 
-    that gaps up above previous open.
-    Very strong bullish reversal pattern.
-    
-    Criteria:
-    - First candle: bearish
-    - Second candle: bullish
-    - Gap up: current open > previous open (gap above previous body)
-    """
-    # First must be bearish
-    if prev_close >= prev_open:
-        return False
-    
-    # Second must be bullish
-    if curr_close <= curr_open:
-        return False
-    
-    # Current open must gap above previous open
-    return curr_open > prev_open
-
-
-@njit(cache=True)
-def _is_bearish_kicker_jit(prev_open: float, prev_close: float,
-                            curr_open: float, curr_close: float) -> bool:
-    """
-    Bearish Kicker: Strong reversal - bullish candle followed by bearish candle
-    that gaps down below previous open.
-    Very strong bearish reversal pattern.
-    
-    Criteria:
-    - First candle: bullish
-    - Second candle: bearish
-    - Gap down: current open < previous open (gap below previous body)
-    """
-    # First must be bullish
-    if prev_close <= prev_open:
-        return False
-    
-    # Second must be bearish
-    if curr_close >= curr_open:
-        return False
-    
-    # Current open must gap below previous open
-    return curr_open < prev_open
 
 
 @njit(cache=True)
@@ -604,88 +468,6 @@ def _is_bearish_harami_jit(prev_open: float, prev_close: float, prev_high: float
 # ==================== THREE CANDLE PATTERNS ====================
 
 @njit(cache=True)
-def _is_three_inside_up_jit(opens: np.ndarray, closes: np.ndarray, 
-                             highs: np.ndarray, lows: np.ndarray, idx: int) -> bool:
-    """
-    Three Inside Up: Bullish Harami + confirmation candle closing higher.
-    Strong bullish reversal pattern.
-    
-    Criteria:
-    - First candle: long bearish
-    - Second candle: small bullish, contained within first's body (Harami)
-    - Third candle: bullish, closes above first candle's open
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, h1, l1 = opens[idx - 2], closes[idx - 2], highs[idx - 2], lows[idx - 2]
-    o2, c2 = opens[idx - 1], closes[idx - 1]
-    o3, c3 = opens[idx], closes[idx]
-    
-    # First candle: bearish with substantial body
-    range1 = h1 - l1
-    body1 = abs(c1 - o1)
-    if c1 >= o1 or (range1 > 0 and body1 < 0.3 * range1):
-        return False
-    
-    # Second candle: bullish and contained within first's body
-    if c2 <= o2:  # must be bullish
-        return False
-    
-    body1_low = min(o1, c1)
-    body1_high = max(o1, c1)
-    if not (o2 >= body1_low and c2 <= body1_high):  # must be contained
-        return False
-    
-    # Third candle: bullish and closes above first's open
-    if c3 <= o3:  # must be bullish
-        return False
-    
-    return c3 > o1
-
-
-@njit(cache=True)
-def _is_three_inside_down_jit(opens: np.ndarray, closes: np.ndarray, 
-                               highs: np.ndarray, lows: np.ndarray, idx: int) -> bool:
-    """
-    Three Inside Down: Bearish Harami + confirmation candle closing lower.
-    Strong bearish reversal pattern.
-    
-    Criteria:
-    - First candle: long bullish
-    - Second candle: small bearish, contained within first's body (Harami)
-    - Third candle: bearish, closes below first candle's open
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, h1, l1 = opens[idx - 2], closes[idx - 2], highs[idx - 2], lows[idx - 2]
-    o2, c2 = opens[idx - 1], closes[idx - 1]
-    o3, c3 = opens[idx], closes[idx]
-    
-    # First candle: bullish with substantial body
-    range1 = h1 - l1
-    body1 = abs(c1 - o1)
-    if c1 <= o1 or (range1 > 0 and body1 < 0.3 * range1):
-        return False
-    
-    # Second candle: bearish and contained within first's body
-    if c2 >= o2:  # must be bearish
-        return False
-    
-    body1_low = min(o1, c1)
-    body1_high = max(o1, c1)
-    if not (o2 <= body1_high and c2 >= body1_low):  # must be contained
-        return False
-    
-    # Third candle: bearish and closes below first's open
-    if c3 >= o3:  # must be bearish
-        return False
-    
-    return c3 < o1
-
-
-@njit(cache=True)
 def _is_three_outside_up_jit(opens: np.ndarray, closes: np.ndarray, idx: int) -> bool:
     """
     Three Outside Up: Bullish Engulfing + confirmation candle closing higher.
@@ -753,150 +535,6 @@ def _is_three_outside_down_jit(opens: np.ndarray, closes: np.ndarray, idx: int) 
         return False
     
     return c3 < c2
-
-
-@njit(cache=True)
-def _is_bullish_abandoned_baby_jit(opens: np.ndarray, closes: np.ndarray, 
-                                    highs: np.ndarray, lows: np.ndarray, idx: int) -> bool:
-    """
-    Bullish Abandoned Baby: Rare but powerful reversal pattern.
-    
-    Criteria:
-    - First candle: bearish
-    - Second candle: doji that gaps down (high < first's low)
-    - Third candle: bullish that gaps up (low > second's high)
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, l1 = opens[idx - 2], closes[idx - 2], lows[idx - 2]
-    o2, c2, h2, l2 = opens[idx - 1], closes[idx - 1], highs[idx - 1], lows[idx - 1]
-    o3, c3, l3 = opens[idx], closes[idx], lows[idx]
-    
-    # First candle: bearish
-    if c1 >= o1:
-        return False
-    
-    # Second candle: doji (small body)
-    range2 = h2 - l2
-    body2 = abs(c2 - o2)
-    if range2 == 0 or body2 / range2 > 0.1:
-        return False
-    
-    # Gap down: second's high < first's low
-    if h2 >= l1:
-        return False
-    
-    # Third candle: bullish
-    if c3 <= o3:
-        return False
-    
-    # Gap up: third's low > second's high
-    return l3 > h2
-
-
-@njit(cache=True)
-def _is_bearish_abandoned_baby_jit(opens: np.ndarray, closes: np.ndarray, 
-                                    highs: np.ndarray, lows: np.ndarray, idx: int) -> bool:
-    """
-    Bearish Abandoned Baby: Rare but powerful reversal pattern.
-    
-    Criteria:
-    - First candle: bullish
-    - Second candle: doji that gaps up (low > first's high)
-    - Third candle: bearish that gaps down (high < second's low)
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, h1 = opens[idx - 2], closes[idx - 2], highs[idx - 2]
-    o2, c2, h2, l2 = opens[idx - 1], closes[idx - 1], highs[idx - 1], lows[idx - 1]
-    o3, c3, h3 = opens[idx], closes[idx], highs[idx]
-    
-    # First candle: bullish
-    if c1 <= o1:
-        return False
-    
-    # Second candle: doji (small body)
-    range2 = h2 - l2
-    body2 = abs(c2 - o2)
-    if range2 == 0 or body2 / range2 > 0.1:
-        return False
-    
-    # Gap up: second's low > first's high
-    if l2 <= h1:
-        return False
-    
-    # Third candle: bearish
-    if c3 >= o3:
-        return False
-    
-    # Gap down: third's high < second's low
-    return h3 < l2
-
-
-@njit(cache=True)
-def _is_three_white_soldiers_jit(opens: np.ndarray, closes: np.ndarray, 
-                                  highs: np.ndarray, idx: int) -> bool:
-    """
-    Three White Soldiers: Three consecutive bullish candles, each closing higher,
-    with small upper shadows.
-    Bullish reversal pattern.
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, h1 = opens[idx - 2], closes[idx - 2], highs[idx - 2]
-    o2, c2, h2 = opens[idx - 1], closes[idx - 1], highs[idx - 1]
-    o3, c3, h3 = opens[idx], closes[idx], highs[idx]
-    
-    # All must be bullish
-    if not (c1 > o1 and c2 > o2 and c3 > o3):
-        return False
-    
-    # Each closes higher than previous close
-    if not (c2 > c1 and c3 > c2):
-        return False
-    
-    # Small upper shadows (< 0.3 * body)
-    body1, body2, body3 = c1 - o1, c2 - o2, c3 - o3
-    wick1, wick2, wick3 = h1 - c1, h2 - c2, h3 - c3
-    
-    return (wick1 < 0.3 * body1 and 
-            wick2 < 0.3 * body2 and 
-            wick3 < 0.3 * body3)
-
-
-@njit(cache=True)
-def _is_three_black_crows_jit(opens: np.ndarray, closes: np.ndarray, 
-                               lows: np.ndarray, idx: int) -> bool:
-    """
-    Three Black Crows: Three consecutive bearish candles, each closing lower,
-    with small lower shadows.
-    Bearish reversal pattern.
-    """
-    if idx < 2:
-        return False
-    
-    o1, c1, l1 = opens[idx - 2], closes[idx - 2], lows[idx - 2]
-    o2, c2, l2 = opens[idx - 1], closes[idx - 1], lows[idx - 1]
-    o3, c3, l3 = opens[idx], closes[idx], lows[idx]
-    
-    # All must be bearish
-    if not (c1 < o1 and c2 < o2 and c3 < o3):
-        return False
-    
-    # Each closes lower than previous close
-    if not (c2 < c1 and c3 < c2):
-        return False
-    
-    # Small lower shadows (< 0.3 * body)
-    body1, body2, body3 = o1 - c1, o2 - c2, o3 - c3
-    wick1, wick2, wick3 = c1 - l1, c2 - l2, c3 - l3
-    
-    return (wick1 < 0.3 * body1 and 
-            wick2 < 0.3 * body2 and 
-            wick3 < 0.3 * body3)
 
 
 @njit(cache=True)
@@ -993,12 +631,12 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
     
     Patterns checked (OR logic):
     - Doji (always checked regardless of bias)
-    - Bullish: Hammer, Inverted Hammer, Dragonfly Doji, Belt Hold,
-               Bullish Engulfing, Piercing Line, Bullish Harami, Tweezer Bottom, Kicker,
-               Three White Soldiers, Morning Star, Three Inside Up, Three Outside Up, Abandoned Baby
-    - Bearish: Shooting Star, Hanging Man, Gravestone Doji, Belt Hold,
-               Bearish Engulfing, Dark Cloud Cover, Bearish Harami, Tweezer Top, Kicker,
-               Three Black Crows, Evening Star, Three Inside Down, Three Outside Down, Abandoned Baby
+    - Bullish: Hammer, Inverted Hammer, Belt Hold,
+               Bullish Engulfing, Piercing Line, Bullish Harami, Tweezer Bottom,
+               Morning Star, Three Outside Up
+    - Bearish: Shooting Star, Hanging Man, Belt Hold,
+               Bearish Engulfing, Dark Cloud Cover, Bearish Harami, Tweezer Top,
+               Evening Star, Three Outside Down
     """
     o_curr = opens[current_idx]
     c_curr = closes[current_idx]
@@ -1016,8 +654,6 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
         if _is_hammer_jit(o_curr, c_curr, h_curr, l_curr):
             return True
         if _is_inverted_hammer_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        if _is_dragonfly_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.1):
             return True
         if _is_bullish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
             return True
@@ -1038,20 +674,12 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
             if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev, 
                                       o_curr, c_curr, h_curr, l_curr, 0.001):
                 return True
-            if _is_bullish_kicker_jit(o_prev, c_prev, o_curr, c_curr):
-                return True
         
         # Three candle patterns (need 2 previous candles)
         if current_idx > 1:
-            if _is_three_white_soldiers_jit(opens, closes, highs, current_idx):
-                return True
             if _is_morning_star_jit(opens, closes, highs, lows, current_idx):
                 return True
-            if _is_three_inside_up_jit(opens, closes, highs, lows, current_idx):
-                return True
             if _is_three_outside_up_jit(opens, closes, current_idx):
-                return True
-            if _is_bullish_abandoned_baby_jit(opens, closes, highs, lows, current_idx):
                 return True
     
     else:
@@ -1061,8 +689,6 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
         if _is_shooting_star_jit(o_curr, c_curr, h_curr, l_curr):
             return True
         if _is_hanging_man_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        if _is_gravestone_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.1):
             return True
         if _is_bearish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
             return True
@@ -1083,20 +709,12 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
             if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
                                    o_curr, c_curr, h_curr, l_curr, 0.001):
                 return True
-            if _is_bearish_kicker_jit(o_prev, c_prev, o_curr, c_curr):
-                return True
         
         # Three candle patterns (need 2 previous candles)
         if current_idx > 1:
-            if _is_three_black_crows_jit(opens, closes, lows, current_idx):
-                return True
             if _is_evening_star_jit(opens, closes, highs, lows, current_idx):
                 return True
-            if _is_three_inside_down_jit(opens, closes, highs, lows, current_idx):
-                return True
             if _is_three_outside_down_jit(opens, closes, current_idx):
-                return True
-            if _is_bearish_abandoned_baby_jit(opens, closes, highs, lows, current_idx):
                 return True
     
     return False
@@ -1127,15 +745,10 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
         4  = bullish_engulfing / bearish_engulfing
         5  = piercing_line / dark_cloud_cover
         6  = bullish_harami / bearish_harami
-        7  = three_white_soldiers / three_black_crows
-        8  = morning_star / evening_star
-        9  = tweezer_bottom / tweezer_top
-        10 = three_inside_up / three_inside_down
-        11 = three_outside_up / three_outside_down
-        12 = bullish_abandoned_baby / bearish_abandoned_baby
-        13 = dragonfly_doji / gravestone_doji
-        14 = bullish_kicker / bearish_kicker
-        15 = bullish_belt_hold / bearish_belt_hold
+        7  = morning_star / evening_star
+        8  = tweezer_bottom / tweezer_top
+        9  = three_outside_up / three_outside_down
+        10 = bullish_belt_hold / bearish_belt_hold
     
     Returns:
         True if ANY pattern trong danh sách được phát hiện
@@ -1215,18 +828,8 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
                     if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr):
                         return True
         
-        # ID 7: Three White Soldiers (bullish) / Three Black Crows (bearish)
+        # ID 7: Morning Star (bullish) / Evening Star (bearish)
         elif pid == 7:
-            if current_idx > 1:
-                if is_bullish:
-                    if _is_three_white_soldiers_jit(opens, closes, highs, current_idx):
-                        return True
-                else:
-                    if _is_three_black_crows_jit(opens, closes, lows, current_idx):
-                        return True
-        
-        # ID 8: Morning Star (bullish) / Evening Star (bearish)
-        elif pid == 8:
             if current_idx > 1:
                 if is_bullish:
                     if _is_morning_star_jit(opens, closes, highs, lows, current_idx):
@@ -1235,8 +838,8 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
                     if _is_evening_star_jit(opens, closes, highs, lows, current_idx):
                         return True
         
-        # ID 9: Tweezer Bottom (bullish) / Tweezer Top (bearish)
-        elif pid == 9:
+        # ID 8: Tweezer Bottom (bullish) / Tweezer Top (bearish)
+        elif pid == 8:
             if has_prev:
                 if is_bullish:
                     if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev, 
@@ -1247,18 +850,8 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
                                            o_curr, c_curr, h_curr, l_curr, 0.001):
                         return True
         
-        # ID 10: Three Inside Up (bullish) / Three Inside Down (bearish)
-        elif pid == 10:
-            if current_idx > 1:
-                if is_bullish:
-                    if _is_three_inside_up_jit(opens, closes, highs, lows, current_idx):
-                        return True
-                else:
-                    if _is_three_inside_down_jit(opens, closes, highs, lows, current_idx):
-                        return True
-        
-        # ID 11: Three Outside Up (bullish) / Three Outside Down (bearish)
-        elif pid == 11:
+        # ID 9: Three Outside Up (bullish) / Three Outside Down (bearish)
+        elif pid == 9:
             if current_idx > 1:
                 if is_bullish:
                     if _is_three_outside_up_jit(opens, closes, current_idx):
@@ -1267,37 +860,8 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
                     if _is_three_outside_down_jit(opens, closes, current_idx):
                         return True
         
-        # ID 12: Bullish Abandoned Baby / Bearish Abandoned Baby
-        elif pid == 12:
-            if current_idx > 1:
-                if is_bullish:
-                    if _is_bullish_abandoned_baby_jit(opens, closes, highs, lows, current_idx):
-                        return True
-                else:
-                    if _is_bearish_abandoned_baby_jit(opens, closes, highs, lows, current_idx):
-                        return True
-        
-        # ID 13: Dragonfly Doji (bullish) / Gravestone Doji (bearish)
-        elif pid == 13:
-            if is_bullish:
-                if _is_dragonfly_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.1):
-                    return True
-            else:
-                if _is_gravestone_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.1):
-                    return True
-        
-        # ID 14: Bullish Kicker / Bearish Kicker
-        elif pid == 14:
-            if has_prev:
-                if is_bullish:
-                    if _is_bullish_kicker_jit(o_prev, c_prev, o_curr, c_curr):
-                        return True
-                else:
-                    if _is_bearish_kicker_jit(o_prev, c_prev, o_curr, c_curr):
-                        return True
-        
-        # ID 15: Bullish Belt Hold / Bearish Belt Hold
-        elif pid == 15:
+        # ID 10: Bullish Belt Hold / Bearish Belt Hold
+        elif pid == 10:
             if is_bullish:
                 if _is_bullish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
                     return True

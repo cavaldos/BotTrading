@@ -20,16 +20,16 @@ from tqdm import tqdm
 from src.strategy import Config, Strategy, STRATEGY_NAME
 from src.statistics import TradeSimulator, generate_summary_report
 from src.utils.get_data import load_config
-from reversal_patterns import PATTERN_PAIR_NAMES
+from src.reversal_patterns import PATTERN_PAIR_NAMES
 
 
 # ==============================================================================
 # CONFIGURATION
 # ==============================================================================
 
-# Danh sách pattern IDs cần test (0 = all, 1-15 = từng cặp)
+# Danh sách pattern IDs cần test (0 = all, 1-10 = từng cặp)
 # Thay đổi mảng này nếu chỉ muốn test một số pattern nhất định
-PATTERN_IDS_TO_TEST = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+PATTERN_IDS_TO_TEST = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 # Folders
 DEFAULT_DATA_FOLDER = "res/data"
