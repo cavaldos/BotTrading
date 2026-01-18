@@ -63,6 +63,10 @@ def send_entry_telegram(type, entry, stoploss, takeprofit, time, name_coin):
     sl_diff = entry - stoploss
     tp_diff = takeprofit - entry
     
+    # Tính chênh lệch theo phần trăm
+    sl_diff_percent = (abs(sl_diff) / entry) * 100
+    tp_diff_percent = (abs(tp_diff) / entry) * 100
+    
     # Tính R:R ratio
     risk = abs(sl_diff)
     reward = abs(tp_diff)
@@ -78,8 +82,8 @@ Date: {date_str}
 └ GMT+7: *{time_gmt7}*
 Price Levels
 ├ Entry:      `{entry:.2f}`
-├ SL:   `{stoploss:.2f}` ({sl_diff:+.2f})
-└ TP: `{takeprofit:.2f}` ({tp_diff:+.2f})
+├ SL:   `{stoploss:.2f}` (-{sl_diff_percent:.2f}%)
+└ TP: `{takeprofit:.2f}` (+{tp_diff_percent:.2f}%)
 Position
 ├ Volume:   `{required_margin:.2f}`
 ├ Leverage: `{leverage}x`

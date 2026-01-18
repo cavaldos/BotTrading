@@ -38,17 +38,28 @@ def create_config(DATA_FOLDER, OUTPUT_FOLDER) -> Config:
         output_folder=OUTPUT_FOLDER,
     )
 
-def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output"):
-    """Main execution function"""
+def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None):
+    """Main execution function
+    
+    Args:
+        DATA_FOLDER: Path to data folder containing CSV files
+        OUTPUT_FOLDER: Path to output folder for trade reports
+        timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h"). 
+                   If provided, only files matching *_{timeframe}.csv will be processed.
+                   If None, all CSV files will be processed.
+    """
     config = create_config(DATA_FOLDER, OUTPUT_FOLDER)
     
     # Create output folder if not exists
     output_dir = Path(config.output_folder)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Find all CSV files in data folder
+    # Find CSV files in data folder (filter by timeframe if specified)
     data_dir = Path(config.data_folder)
-    csv_files = list(data_dir.glob("*.csv"))
+    if timeframe:
+        csv_files = list(data_dir.glob(f"*_{timeframe}.csv"))
+    else:
+        csv_files = list(data_dir.glob("*.csv"))
     
     if not csv_files:
         return
