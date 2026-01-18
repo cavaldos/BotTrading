@@ -137,9 +137,8 @@ def generate_process2_panel(state, output_folder: str) -> Panel:
     return Panel(table, title="[yellow]Process 2: Watcher[/yellow]", border_style="yellow")
 
 
-def generate_stats_panel(output_folder: str, log_file: str) -> Panel:
+def generate_stats_panel(trades: list) -> Panel:
     """Generate stats panel - show Win/Loss/Passed/Open counts"""
-    trades = load_trades_for_sent_orders(output_folder, log_file)
     
     # Count by result
     win_count = sum(1 for t in trades if t.get("Result") == "Win")
@@ -323,9 +322,8 @@ def load_trades_for_sent_orders(output_folder: str, log_file: str) -> list:
     return trades
 
 
-def generate_orders_panel(output_folder: str, log_file: str) -> Panel:
+def generate_orders_panel(trades: list) -> Panel:
     """Generate orders log panel - display 10 most recent orders with status"""
-    trades = load_trades_for_sent_orders(output_folder, log_file)
     
     # Get 10 most recent trades
     recent_trades = trades[:10]
@@ -404,13 +402,16 @@ def update_dashboard(
     log_file: str
 ) -> Layout:
     """Update all panels in the dashboard"""
+    # Load trades once for both stats and orders panels
+    trades = load_trades_for_sent_orders(output_folder, log_file)
+    
     layout["header"].update(generate_header(state, timeframes, currencies))
     # Row 1
     layout["process1"].update(generate_process1_panel(state, timeframes, fetch_interval))
-    layout["stats"].update(generate_stats_panel(output_folder, log_file))
+    layout["stats"].update(generate_stats_panel(trades))
     # Row 2
     layout["process2"].update(generate_process2_panel(state, output_folder))
-    layout["errors"].update(generate_orders_panel(output_folder, log_file))
+    layout["errors"].update(generate_orders_panel(trades))
     # Row 3
     layout["logs"].update(generate_logs_panel(state, state_lock))
     layout["orders"].update(generate_errors_panel(state, state_lock))
