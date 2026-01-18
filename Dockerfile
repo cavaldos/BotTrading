@@ -1,9 +1,10 @@
-# Use official Python image with Python 3.9
-FROM python:3.9-slim
+# Use official Python image with Python 3.11
+FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies (git required for tvdatafeed from GitHub)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
@@ -15,15 +16,18 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy only the necessary application files
+# Copy project files
+COPY pyproject.toml .
 COPY src/ /app/src/
-COPY run.sh /app/
 
-# Create necessary directories
-RUN mkdir -p /app/src/data /app/src/results /app/src/sum
+# Install project as editable package to create src module structure
+RUN pip install -e .
 
-# Make the run script executable
-RUN chmod +x /app/run.sh
+# Create necessary directories for trading app
+RUN mkdir -p /app/res/logs/data /app/res/logs/output
 
-# Command to run the application
-CMD ["python", "src/main.py"]
+# Set environment variable for unbuffered Python output
+ENV PYTHONUNBUFFERED=1
+
+# Command to run the trading application
+CMD ["python", "-u", "src/trade/run.py"]

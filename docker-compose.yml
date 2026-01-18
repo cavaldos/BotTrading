@@ -6,11 +6,20 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: bot-trade
-    # Volumes removed - using container storage only
+    # Enable TTY for Rich dashboard display
+    tty: true
+    stdin_open: true
+    # Load environment variables from .env file
+    env_file:
+      - .env
     environment:
       - PYTHONUNBUFFERED=1
-      # Add any other environment variables your application needs
-      # - TELEGRAM_TOKEN=your_token_here
+    # Mount volumes for config and data persistence
+    volumes:
+      # Mount config file (read-only)
+      - ./src/trade/config.yaml:/app/src/trade/config.yaml:ro
+      # Mount logs directory for data persistence
+      - ./res/logs:/app/res/logs
     restart: unless-stopped
     logging:
       driver: "json-file"
