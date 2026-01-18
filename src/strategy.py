@@ -1019,6 +1019,7 @@ class Strategy:
                             ob=ob,
                             entry_time=current_time,
                             entry_price=closes[current_idx],
+                            current_open=opens[current_idx],
                             current_high=highs[current_idx],
                             current_low=lows[current_idx]
                         )
@@ -1123,8 +1124,8 @@ class Strategy:
                 return high > ob.high
     
     def _create_signal(self, symbol: str, ob: OrderBlock, entry_time: datetime,
-                       entry_price: float, current_high: float, 
-                       current_low: float) -> Optional[Signal]:
+                       entry_price: float, current_open: float,
+                       current_high: float, current_low: float) -> Optional[Signal]:
         """
         Create a trade signal with SL and TP.
         
@@ -1144,12 +1145,19 @@ class Strategy:
         if ob.bias == 'BULLISH':
             # LONG trade
             trade_type = 'LONG'
-            # Entry at OB top (more conservative) or current close
-            entry = min(ob.high, entry_price)
+            # Entry tại đáy body nến (tránh râu nến)
+            body_low = min(current_open, entry_price)
+            entry = min(ob.high, body_low)
+            
             # SL below OB with buffer, then apply multiplier
             base_sl = ob.low - buffer
             base_risk = entry - base_sl
             stop_loss = entry - (base_risk * self.config.sl_multiplier)
+            
+            # Nếu SL nằm trong râu nến entry, kéo SL xuống dưới low của nến
+            if stop_loss > current_low:
+                stop_loss = current_low - buffer
+            
             # TP based on actual risk to maintain RR ratio
             actual_risk = entry - stop_loss
             take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
@@ -1157,12 +1165,19 @@ class Strategy:
         else:  # BEARISH
             # SHORT trade
             trade_type = 'SHORT'
-            # Entry at OB bottom (more conservative) or current close
-            entry = max(ob.low, entry_price)
+            # Entry tại đỉnh body nến (tránh râu nến)
+            body_high = max(current_open, entry_price)
+            entry = max(ob.low, body_high)
+            
             # SL above OB with buffer, then apply multiplier
             base_sl = ob.high + buffer
             base_risk = base_sl - entry
             stop_loss = entry + (base_risk * self.config.sl_multiplier)
+            
+            # Nếu SL nằm trong râu nến entry, kéo SL lên trên high của nến
+            if stop_loss < current_high:
+                stop_loss = current_high + buffer
+            
             # TP based on actual risk to maintain RR ratio
             actual_risk = stop_loss - entry
             take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
