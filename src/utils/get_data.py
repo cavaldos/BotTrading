@@ -145,9 +145,16 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             print(f"Error connecting to Binance API: {e}")
             return all_candles if all_candles else []
 
-# Convert timestamp and save to CSV file
+# Convert timestamp and save to CSV file (atomic write)
 def save_to_csv(candles, filename):
-    with open(filename, 'w') as file:
+    """Save candles to CSV using atomic write to prevent race conditions.
+    
+    Writes to a temp file first, then atomically replaces the target file.
+    This ensures readers never see a partially written file.
+    """
+    temp_filename = filename + '.tmp'
+    
+    with open(temp_filename, 'w') as file:
         # Write header
         file.write("Time,Open,High,Low,Close,Volume\n")
 
@@ -162,6 +169,9 @@ def save_to_csv(candles, filename):
 
             # Write data to file in required format
             file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
+    
+    # Atomic replace - this is atomic on most OS (POSIX)
+    os.replace(temp_filename, filename)
 
 def get_and_save_data(symbol, start_date, filename, time_interval='1h'):
     # Convert start date to timestamp
@@ -222,10 +232,15 @@ def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
 
 
 def append_latest_candle(currencies, timeframes, folder_path):
-    """Fetch only the latest candle and append to existing files, removing the second row"""
+    """Fetch only the latest candle and append to existing files, removing the second row.
+    
+    Uses atomic write to prevent race conditions when multiple threads
+    read/write files concurrently.
+    """
     for currency in currencies:
         for timeframe in timeframes:
             filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+            temp_filename = filename + '.tmp'
             
             # Fetch only 1 latest candle
             latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
@@ -247,9 +262,10 @@ def append_latest_candle(currencies, timeframes, folder_path):
             # Check if file exists
             if not os.path.exists(filename):
                 # If file doesn't exist, create it with header and the new candle
-                with open(filename, 'w') as f:
+                with open(temp_filename, 'w') as f:
                     f.write("Time,Open,High,Low,Close,Volume\n")
                     f.write(new_row)
+                os.replace(temp_filename, filename)
             else:
                 # Read existing file
                 with open(filename, 'r') as f:
@@ -263,9 +279,12 @@ def append_latest_candle(currencies, timeframes, folder_path):
                 # Append new candle
                 lines.append(new_row)
                 
-                # Write back to file
-                with open(filename, 'w') as f:
+                # Write to temp file first (atomic write)
+                with open(temp_filename, 'w') as f:
                     f.writelines(lines)
+                
+                # Atomic replace
+                os.replace(temp_filename, filename)
 
 def getdata_by_date(config=None):
     if config is None:
