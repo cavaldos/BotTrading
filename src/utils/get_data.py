@@ -3,6 +3,7 @@ import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
 import yaml # pyright: ignore[reportMissingModuleSource]
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import shutil
 import time
@@ -231,6 +232,28 @@ def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
                 print(f"Failed to fetch data for {currency}_{timeframe}")
 
 
+def _fetch_single_currency(currency, timeframe, folder_path, limit):
+    """Fetch and save candles for a single currency/timeframe pair (for parallel execution)"""
+    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+    candles = get_latest_candles(currency, interval=timeframe, limit=limit)
+    if candles:
+        save_to_csv(candles, filename)
+        return (currency, timeframe, True)
+    return (currency, timeframe, False)
+
+
+def fetch_and_save_candles_parallel(currencies, timeframes, folder_path, limit, max_workers=5):
+    """Fetch and save candles for multiple currencies in parallel using ThreadPoolExecutor"""
+    tasks = [(c, tf, folder_path, limit) for c in currencies for tf in timeframes]
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(_fetch_single_currency, *task): task for task in tasks}
+        for future in as_completed(futures):
+            currency, timeframe, success = future.result()
+            if not success:
+                print(f"Failed to fetch data for {currency}_{timeframe}")
+
+
 def append_latest_candle(currencies, timeframes, folder_path):
     """Fetch only the latest candle and append to existing files, removing the second row.
     
@@ -239,52 +262,69 @@ def append_latest_candle(currencies, timeframes, folder_path):
     """
     for currency in currencies:
         for timeframe in timeframes:
-            filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-            temp_filename = filename + '.tmp'
-            
-            # Fetch only 1 latest candle
-            latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
-            
-            if not latest_candle:
-                print(f"Failed to fetch latest candle for {currency}_{timeframe}")
-                continue
-            
-            # Convert candle to CSV row format
-            candle = latest_candle[0]
-            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-            open_price = float(candle[1])
-            high_price = float(candle[2])
-            low_price = float(candle[3])
-            close_price = float(candle[4])
-            volume = float(candle[5])
-            new_row = f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n"
-            
-            # Check if file exists
-            if not os.path.exists(filename):
-                # If file doesn't exist, create it with header and the new candle
-                with open(temp_filename, 'w') as f:
-                    f.write("Time,Open,High,Low,Close,Volume\n")
-                    f.write(new_row)
-                os.replace(temp_filename, filename)
-            else:
-                # Read existing file
-                with open(filename, 'r') as f:
-                    lines = f.readlines()
-                
-                # Keep header and all data rows except the second row (index 1)
-                if len(lines) > 2:
-                    # Remove the second data row (index 1)
-                    lines = [lines[0]] + lines[2:]
-                
-                # Append new candle
-                lines.append(new_row)
-                
-                # Write to temp file first (atomic write)
-                with open(temp_filename, 'w') as f:
-                    f.writelines(lines)
-                
-                # Atomic replace
-                os.replace(temp_filename, filename)
+            _append_single_candle(currency, timeframe, folder_path)
+
+
+def _append_single_candle(currency, timeframe, folder_path):
+    """Append latest candle for a single currency/timeframe pair (for parallel execution)"""
+    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+    temp_filename = filename + '.tmp'
+    
+    # Fetch only 1 latest candle
+    latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
+    
+    if not latest_candle:
+        print(f"Failed to fetch latest candle for {currency}_{timeframe}")
+        return False
+    
+    # Convert candle to CSV row format
+    candle = latest_candle[0]
+    timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+    open_price = float(candle[1])
+    high_price = float(candle[2])
+    low_price = float(candle[3])
+    close_price = float(candle[4])
+    volume = float(candle[5])
+    new_row = f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n"
+    
+    # Check if file exists
+    if not os.path.exists(filename):
+        # If file doesn't exist, create it with header and the new candle
+        with open(temp_filename, 'w') as f:
+            f.write("Time,Open,High,Low,Close,Volume\n")
+            f.write(new_row)
+        os.replace(temp_filename, filename)
+    else:
+        # Read existing file
+        with open(filename, 'r') as f:
+            lines = f.readlines()
+        
+        # Keep header and all data rows except the second row (index 1)
+        if len(lines) > 2:
+            # Remove the second data row (index 1)
+            lines = [lines[0]] + lines[2:]
+        
+        # Append new candle
+        lines.append(new_row)
+        
+        # Write to temp file first (atomic write)
+        with open(temp_filename, 'w') as f:
+            f.writelines(lines)
+        
+        # Atomic replace
+        os.replace(temp_filename, filename)
+    
+    return True
+
+
+def append_latest_candle_parallel(currencies, timeframes, folder_path, max_workers=5):
+    """Append latest candle for multiple currencies in parallel using ThreadPoolExecutor"""
+    tasks = [(c, tf, folder_path) for c in currencies for tf in timeframes]
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(_append_single_candle, *task) for task in tasks]
+        for future in as_completed(futures):
+            future.result()  # Wait for completion, errors will be printed inside _append_single_candle
 
 def getdata_by_date(config=None):
     if config is None:
@@ -329,7 +369,25 @@ def getdata_by_candles(config=None):
     print("Done")
 
 
-def getdata(config_path=None):
+def _getdata_single(currency, timeframe, folder_path, mode, config):
+    """Fetch and save data for a single currency/timeframe pair (for parallel execution in getdata)"""
+    filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+    
+    if mode == 'by_date':
+        start_date = config.get('start_date', DEFAULT_CONFIG['start_date'])
+        get_and_save_data(currency, start_date, filename, time_interval=timeframe)
+    else:
+        candles_limit = config.get('candles_limit', DEFAULT_CONFIG['candles_limit'])
+        latest_candles = get_latest_candles(currency, interval=timeframe, limit=candles_limit)
+        if latest_candles:
+            save_to_csv(latest_candles, filename)
+            return (currency, timeframe, True)
+        else:
+            return (currency, timeframe, False)
+    return (currency, timeframe, True)
+
+
+def getdata(config_path=None, max_workers=5):
     from tqdm import tqdm  # pyright: ignore[reportMissingModuleSource]
     
     config = load_config(config_path)
@@ -344,24 +402,22 @@ def getdata(config_path=None):
         os.makedirs(folder_path)
     
     total_tasks = len(currencies) * len(timeframes)
+    tasks = [(c, tf, folder_path, mode, config) for c in currencies for tf in timeframes]
     
+    completed = 0
     with tqdm(total=total_tasks, desc="Downloading data") as pbar:
-        for currency in currencies:
-            for timeframe in timeframes:
-                filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-                pbar.set_description(f"Downloading {currency}_{timeframe}")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_getdata_single, *task): task for task in tasks}
+            for future in as_completed(futures):
+                task = futures[future]
+                currency, timeframe = task[0], task[1]
+                pbar.set_description(f"Downloaded {currency}_{timeframe}")
                 
-                if mode == 'by_date':
-                    start_date = config.get('start_date', DEFAULT_CONFIG['start_date'])
-                    get_and_save_data(currency, start_date, filename, time_interval=timeframe)
-                else:
-                    candles_limit = config.get('candles_limit', DEFAULT_CONFIG['candles_limit'])
-                    latest_candles = get_latest_candles(currency, interval=timeframe, limit=candles_limit)
-                    if latest_candles:
-                        save_to_csv(latest_candles, filename)
-                    else:
-                        tqdm.write(f"Failed to fetch data for {currency}_{timeframe}")
+                result = future.result()
+                if result and not result[2]:
+                    tqdm.write(f"Failed to fetch data for {currency}_{timeframe}")
                 
+                completed += 1
                 pbar.update(1)
     
     print("Done!")

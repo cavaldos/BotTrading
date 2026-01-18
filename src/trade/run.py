@@ -11,7 +11,7 @@ from watchdog.events import FileSystemEventHandler
 from rich.console import Console
 from rich.live import Live
 
-from src.utils.get_data import (remove_all_files, fetch_and_save_candles, append_latest_candle)
+from src.utils.get_data import (remove_all_files, fetch_and_save_candles_parallel, append_latest_candle_parallel)
 from src.trade.dashboard import create_dashboard, update_dashboard
 from src.trade.execute import execute
 from src.trade.send import check_and_send_open_orders
@@ -132,6 +132,9 @@ class AppState:
          # App state
          self.running = True
          self.start_time = datetime.now()
+         
+         # Shutdown event for clean thread termination
+         self.shutdown_event = threading.Event()
 
      def add_log(self, process: str, message: str):
          timestamp = datetime.now().strftime("%H:%M:%S")
@@ -209,11 +212,11 @@ def getdata(timeframe: str):
       )
       
       if not has_data_files:
-          # First run: remove old data and fetch all candles
-          fetch_and_save_candles(CURRENCIES, [timeframe], DATA_FOLDER, CANDLES_LIMIT)
+          # First run: remove old data and fetch all candles (parallel)
+          fetch_and_save_candles_parallel(CURRENCIES, [timeframe], DATA_FOLDER, CANDLES_LIMIT)
       else:
-          # Subsequent runs: only append latest candle and remove second row
-          append_latest_candle(CURRENCIES, [timeframe], DATA_FOLDER)
+          # Subsequent runs: only append latest candle and remove second row (parallel)
+          append_latest_candle_parallel(CURRENCIES, [timeframe], DATA_FOLDER)
 
 
 def run_cycle(timeframe: str):
@@ -260,11 +263,13 @@ def process_1_data_and_execute(timeframe: str):
          tf_state.next_fetch = next_fetch_time.strftime("%H:%M:%S")
          tf_state.status = "Waiting"
          
-         # Wait for next interval with countdown
+         # Wait for next interval with countdown (using Event for clean shutdown)
          wait_remaining = FETCH_INTERVAL
-         while state.running and wait_remaining > 0:
+         while wait_remaining > 0:
              tf_state.countdown = format_countdown(wait_remaining)
-             time.sleep(1)
+             # Wait 1 second or until shutdown signal
+             if state.shutdown_event.wait(timeout=1):
+                 break
              wait_remaining -= 1
          
          tf_state.countdown = "00:00"
@@ -286,8 +291,8 @@ def process_2_watch_output():
     state.add_log("Process 2", f"Watching: {OUTPUT_FOLDER}")
     
     try:
-        while state.running:
-            time.sleep(1)
+        # Wait for shutdown signal instead of busy-wait loop
+        state.shutdown_event.wait()
     finally:
         observer.stop()
         observer.join()
@@ -351,8 +356,9 @@ def main():
                     time.sleep(1.0 / REFRESH_RATE)
      except KeyboardInterrupt:
          state.running = False
+         state.shutdown_event.set()  # Signal all threads to stop immediately
          console.print("\n[bold red]Shutting down...[/bold red]")
-         time.sleep(1)
+         time.sleep(0.5)  # Brief wait for threads to respond
          console.print("[bold green]Application terminated.[/bold green]")
 
 
