@@ -314,68 +314,148 @@ def generate_logs_panel() -> Panel:
     return Panel(log_text, title="[bold]Recent Logs[/bold]", border_style="dim")
 
 
-def load_orders_from_log() -> list:
-    """Load orders from log file"""
-    log_path = Path(LOG_FILE)
-    if not log_path.exists():
-        return []
-    
-    try:
-        with open(log_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            orders = data.get("sent_orders", [])
-            # Chỉ lấy format mới (list of dicts)
-            if orders and isinstance(orders[0], dict):
-                return orders
-            return []
-    except:
-        return []
+def load_sent_orders() -> list:
+     """Load sent orders from JSON log"""
+     log_path = Path(LOG_FILE)
+     if not log_path.exists():
+         return []
+     
+     try:
+         with open(log_path, 'r', encoding='utf-8') as f:
+             data = json.load(f)
+             orders = data.get("sent_orders", [])
+             return orders if isinstance(orders, list) else []
+     except:
+         return []
+
+
+def load_trades_for_sent_orders() -> list:
+     """Load trades from CSV that match sent orders, mark as Passed if not in CSV"""
+     sent_orders = load_sent_orders()
+     if not sent_orders:
+         return []
+     
+     trades = []
+     found_keys = set()
+     output_path = Path(OUTPUT_FOLDER)
+     
+     # First, load all trades from CSV
+     try:
+         import csv
+         if output_path.exists():
+             trade_files = output_path.glob("*_trades.csv")
+             
+             for trade_file in trade_files:
+                 try:
+                     with open(trade_file, 'r', encoding='utf-8') as f:
+                         reader = csv.DictReader(f)
+                         for row in reader:
+                             # Build key from trade: "SYMBOL|TYPE|ENTRY_TIME"
+                             symbol = row.get("Symbol", "")
+                             trade_type = row.get("Type", "")
+                             entry_time = row.get("Entry_Time", "")
+                             
+                             trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                             
+                             # Check if this trade was sent
+                             for order in sent_orders:
+                                 if order.get("key", "") == trade_key:
+                                     trades.append(row)
+                                     found_keys.add(trade_key)
+                                     break
+                 except Exception as e:
+                     continue
+     except:
+         pass
+     
+     # Second, add sent orders not found in CSV with Result = "Passed"
+     for order in sent_orders:
+         key = order.get("key", "")
+         if key and key not in found_keys:
+             # Parse the key to get symbol, type, entry_time
+             parts = key.split("|")
+             if len(parts) >= 3:
+                 symbol = parts[0]
+                 trade_type = parts[1]
+                 entry_time = parts[2]
+                 
+                 trades.append({
+                     "Symbol": symbol,
+                     "Type": trade_type,
+                     "Entry_Time": entry_time,
+                     "Entry_Price": str(order.get("entry_price", "-")),
+                     "Result": "Passed"
+                 })
+     
+     # Sort by Entry_Time in descending order (newest first)
+     trades.sort(key=lambda x: x.get("Entry_Time", ""), reverse=True)
+     return trades
 
 
 def generate_orders_panel() -> Panel:
-    """Generate orders log panel - hiển thị 10 lệnh mới nhất"""
-    orders = load_orders_from_log()
-    
-    # Lấy 10 lệnh mới nhất (reverse để mới nhất lên đầu)
-    recent_orders = orders[-10:][::-1]
-    
-    table = Table(show_header=True, box=None, padding=(0, 1), expand=True)
-    table.add_column("Time", style="dim", width=8)
-    table.add_column("Symbol", style="green")
-    table.add_column("Type", width=5)
-    
-    for order in recent_orders:
-        # Chỉ lấy giờ (không lấy ngày)
-        sent_at = order.get("sent_at", "")
-        if sent_at:
-            try:
-                time_only = sent_at.split(" ")[1] if " " in sent_at else sent_at
-            except:
-                time_only = sent_at
-        else:
-            time_only = "-"
-        
-        # Parse symbol và type từ key (format: "SYMBOL|TYPE|ENTRY_TIME")
-        key = order.get("key", "")
-        parts = key.split("|")
-        symbol = parts[0] if len(parts) > 0 else "-"
-        order_type = parts[1] if len(parts) > 1 else "-"
-        
-        # Style cho type
-        type_style = "green" if order_type.upper() == "BUY" else "red"
-        
-        table.add_row(
-            time_only,
-            symbol,
-            Text(order_type, style=type_style)
-        )
-    
-    if not recent_orders:
-        return Panel(Text("No orders sent yet...", style="dim"), 
-                    title="[bold magenta]Orders Log[/bold magenta]", 
-                    border_style="magenta")
-    
-    return Panel(table, title="[bold magenta]Orders Log[/bold magenta]", border_style="magenta")
+     """Generate orders log panel - hiển thị 10 lệnh mới nhất với status"""
+     trades = load_trades_for_sent_orders()
+     
+     # Lấy 10 lệnh mới nhất
+     recent_trades = trades[:10]
+     
+     table = Table(show_header=True, box=None, padding=(0, 1), expand=True)
+     table.add_column("Entry Time", style="dim", width=9)
+     table.add_column("Symbol", style="cyan", width=10)
+     table.add_column("Type", style="dim", width=5)
+     table.add_column("Entry Price", style="green", width=11)
+     table.add_column("Result", style="dim", width=8)
+     
+     for trade in recent_trades:
+         # Extract time from Entry_Time (format: "2026-01-15 17:40:00")
+         entry_time = trade.get("Entry_Time", "")
+         if entry_time:
+             try:
+                 time_only = entry_time.split(" ")[1] if " " in entry_time else entry_time
+             except:
+                 time_only = entry_time
+         else:
+             time_only = "-"
+         
+         symbol = trade.get("Symbol", "-")
+         order_type = trade.get("Type", "-").upper()
+         entry_price = trade.get("Entry_Price", "-")
+         result = trade.get("Result", "Open")
+         
+         # Style for type
+         type_style = "green" if order_type == "LONG" else "red" if order_type == "SHORT" else "white"
+         
+         # Style for result
+         if result == "Win":
+             result_style = "green bold"
+         elif result == "Loss":
+             result_style = "red bold"
+         elif result == "Passed":
+             result_style = "blue bold"
+         else:  # Open
+             result_style = "yellow bold"
+         
+         # Format entry price
+         try:
+             entry_price_float = float(entry_price)
+             entry_price_str = f"{entry_price_float:,.2f}"
+         except:
+             entry_price_str = entry_price
+         
+         table.add_row(
+             time_only,
+             Text(symbol, style="cyan"),
+             Text(order_type, style=type_style),
+             Text(entry_price_str, style="green"),
+             Text(result, style=result_style)
+         )
+     
+     if not recent_trades:
+         return Panel(Text("No trades yet...", style="dim"), 
+                     title="[bold magenta]Trades Log[/bold magenta]", 
+                     border_style="magenta")
+     
+     return Panel(table, title="[bold magenta]Trades Log[/bold magenta]", border_style="magenta")
 
 
 def update_dashboard(layout: Layout) -> Layout:

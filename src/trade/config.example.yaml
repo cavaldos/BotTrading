@@ -14,7 +14,7 @@ output:
 
 # Timeframe settings - supports single timeframe or list of timeframes
 timeframe:
-  value: ["5m", "1h"]   # Timeframe(s) to use: 1m, 5m, 15m, 30m, 1h, 4h, 1d. Can be string or list
+  value: ["5m", "15m","30m"]   # Timeframe(s) to use: 1m, 5m, 15m, 30m, 1h, 4h, 1d. Can be string or list
   delay_seconds: 2      # Delay after candle close before fetching data
   run_on_start: true    # Run immediately when app starts
 
