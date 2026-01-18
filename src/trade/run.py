@@ -16,7 +16,7 @@ from rich.layout import Layout
 from rich.panel import Panel
 from rich.text import Text
 
-from src.utils.get_data import (remove_all_files, fetch_and_save_candles)
+from src.utils.get_data import (remove_all_files, fetch_and_save_candles, append_latest_candle)
 from src.trade.execute import execute
 from src.trade.send import check_and_send_open_orders
 
@@ -61,11 +61,16 @@ CANDLES_LIMIT = CONFIG["data"]["candles_limit"]
 OUTPUT_FOLDER = CONFIG["output"]["folder"]
 LOG_FILE = CONFIG["output"]["log_file"]
 
-# Timeframe settings
-TIMEFRAME = CONFIG["timeframe"]["value"]
-TIMEFRAME_MINUTES = parse_timeframe(TIMEFRAME)
-DELAY_SECONDS = CONFIG["timeframe"]["delay_seconds"]
-RUN_ON_START = CONFIG["timeframe"]["run_on_start"]
+# Timeframe settings - support multiple timeframes
+TIMEFRAMES_CONFIG = CONFIG["timeframe"]
+if isinstance(TIMEFRAMES_CONFIG.get("value"), list):
+    TIMEFRAMES = TIMEFRAMES_CONFIG["value"]
+else:
+    TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
+
+TIMEFRAME_MINUTES_MAP = {tf: parse_timeframe(tf) for tf in TIMEFRAMES}
+DELAY_SECONDS = TIMEFRAMES_CONFIG["delay_seconds"]
+RUN_ON_START = TIMEFRAMES_CONFIG["run_on_start"]
 
 # Dashboard settings
 REFRESH_RATE = CONFIG["dashboard"]["refresh_rate"]
@@ -141,34 +146,41 @@ send_lock = threading.Lock()
 state_lock = threading.Lock()
 
 
-class AppState:
-    """Shared state for UI"""
-    def __init__(self):
-        # Process 1 state
-        self.p1_status = "Starting..."
-        self.p1_last_run = "-"
-        self.p1_next_candle = "-"
-        self.p1_countdown = "-"
-        self.p1_cycles = 0
-        self.p1_errors = 0
-        
-        # Process 2 state
-        self.p2_status = "Starting..."
-        self.p2_last_event = "-"
-        self.p2_orders_sent = 0
-        self.p2_events = 0
-        
-        # Logs
-        self.logs = deque(maxlen=MAX_LOGS)
-        
-        # App state
-        self.running = True
-        self.start_time = datetime.now()
+class TimeframeState:
+     """State for a single timeframe"""
+     def __init__(self, timeframe: str):
+         self.timeframe = timeframe
+         self.status = "Starting..."
+         self.last_run = "-"
+         self.next_candle = "-"
+         self.countdown = "-"
+         self.cycles = 0
+         self.errors = 0
 
-    def add_log(self, process: str, message: str):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        with state_lock:
-            self.logs.appendleft(f"[{timestamp}] [{process}] {message}")
+
+class AppState:
+     """Shared state for UI"""
+     def __init__(self):
+         # Timeframe states
+         self.timeframe_states = {tf: TimeframeState(tf) for tf in TIMEFRAMES}
+         
+         # Process 2 state
+         self.p2_status = "Starting..."
+         self.p2_last_event = "-"
+         self.p2_orders_sent = 0
+         self.p2_events = 0
+         
+         # Logs
+         self.logs = deque(maxlen=MAX_LOGS)
+         
+         # App state
+         self.running = True
+         self.start_time = datetime.now()
+
+     def add_log(self, process: str, message: str):
+         timestamp = datetime.now().strftime("%H:%M:%S")
+         with state_lock:
+             self.logs.appendleft(f"[{timestamp}] [{process}] {message}")
 
 
 state = AppState()
@@ -210,48 +222,56 @@ def format_currencies(currencies: list) -> str:
 
 
 def generate_header() -> Panel:
-    """Generate header panel"""
-    uptime = datetime.now() - state.start_time
-    hours, remainder = divmod(int(uptime.total_seconds()), 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    
-    header_text = Text()
-    header_text.append("TRADE APPLICATION", style="bold white")
-    header_text.append(f"  |  TF: {TIMEFRAME}", style="bold magenta")
-    header_text.append(f"  |  Coins: {format_currencies(CURRENCIES)}", style="bold green")
-    header_text.append(f"  |  Uptime: {uptime_str}", style="dim")
-    header_text.append(f"  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
-    
-    return Panel(header_text, style="bold blue")
+     """Generate header panel"""
+     uptime = datetime.now() - state.start_time
+     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
+     minutes, seconds = divmod(remainder, 60)
+     uptime_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+     
+     timeframes_str = ", ".join(TIMEFRAMES)
+     
+     header_text = Text()
+     header_text.append("TRADE APPLICATION", style="bold white")
+     header_text.append(f"  |  TF: {timeframes_str}", style="bold magenta")
+     header_text.append(f"  |  Coins: {format_currencies(CURRENCIES)}", style="bold green")
+     header_text.append(f"  |  Uptime: {uptime_str}", style="dim")
+     header_text.append(f"  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
+     
+     return Panel(header_text, style="bold blue")
 
 
 def generate_process1_panel() -> Panel:
-    """Generate Process 1 status panel"""
-    table = Table(show_header=False, box=None, padding=(0, 1))
-    table.add_column("Key", style="dim")
-    table.add_column("Value")
-    
-    if state.p1_status == "Waiting":
-        status_style = "yellow"
-    elif "Fetching" in state.p1_status or "Executing" in state.p1_status:
-        status_style = "cyan"
-    else:
-        status_style = "green"
-    
-    # Format coins display
-    coins_display = ", ".join(CURRENCIES) if len(CURRENCIES) <= 2 else f"{len(CURRENCIES)} coins"
-    
-    table.add_row("Status", Text(state.p1_status, style=status_style))
-    table.add_row("Coins", Text(coins_display, style="green"))
-    table.add_row("Timeframe", Text(TIMEFRAME, style="magenta"))
-    table.add_row("Next Candle", state.p1_next_candle)
-    table.add_row("Countdown", Text(state.p1_countdown, style="bold yellow"))
-    table.add_row("Last Run", state.p1_last_run)
-    table.add_row("Cycles", str(state.p1_cycles))
-    table.add_row("Errors", Text(str(state.p1_errors), style="red" if state.p1_errors > 0 else "green"))
-    
-    return Panel(table, title="[cyan]Process 1: Data & Execute[/cyan]", border_style="cyan")
+     """Generate Process 1 status panel for all timeframes"""
+     table = Table(show_header=True, box=None, padding=(0, 1))
+     table.add_column("TF", style="magenta", width=5)
+     table.add_column("Status", style="dim", width=12)
+     table.add_column("Next Candle", style="cyan", width=10)
+     table.add_column("Countdown", style="yellow", width=10)
+     table.add_column("Cycles", style="green", width=6)
+     table.add_column("Errors", style="red", width=6)
+     
+     for tf in TIMEFRAMES:
+         tf_state = state.timeframe_states[tf]
+         
+         if tf_state.status == "Waiting":
+             status_style = "yellow"
+         elif "Fetching" in tf_state.status or "Executing" in tf_state.status:
+             status_style = "cyan"
+         else:
+             status_style = "green"
+         
+         errors_style = "red" if tf_state.errors > 0 else "green"
+         
+         table.add_row(
+             Text(tf, style="magenta"),
+             Text(tf_state.status, style=status_style),
+             tf_state.next_candle,
+             Text(tf_state.countdown, style="bold yellow"),
+             str(tf_state.cycles),
+             Text(str(tf_state.errors), style=errors_style)
+         )
+     
+     return Panel(table, title="[cyan]Process 1: Data & Execute[/cyan]", border_style="cyan")
 
 
 def generate_process2_panel() -> Panel:
@@ -412,77 +432,89 @@ class OutputFolderHandler(FileSystemEventHandler):
 # PROCESSES
 # =============================================================================
 
-def getdata():
-    """Fetch data from API"""
-    remove_all_files(DATA_FOLDER)
-    remove_all_files(OUTPUT_FOLDER)
-    
-    if not os.path.exists(DATA_FOLDER):
-        os.makedirs(DATA_FOLDER)
-    
-    fetch_and_save_candles(CURRENCIES, [TIMEFRAME], DATA_FOLDER, CANDLES_LIMIT)
+def getdata(timeframe: str):
+      """Fetch data from API for a specific timeframe"""
+      if not os.path.exists(DATA_FOLDER):
+          os.makedirs(DATA_FOLDER)
+      
+      # Check if data files exist (first run vs subsequent runs)
+      has_data_files = any(
+          os.path.isfile(os.path.join(DATA_FOLDER, f"{curr}_{timeframe}.csv"))
+          for curr in CURRENCIES
+      )
+      
+      if not has_data_files:
+          # First run: remove old data and fetch all candles
+          fetch_and_save_candles(CURRENCIES, [timeframe], DATA_FOLDER, CANDLES_LIMIT)
+      else:
+          # Subsequent runs: only append latest candle and remove second row
+          append_latest_candle(CURRENCIES, [timeframe], DATA_FOLDER)
 
 
-def run_cycle():
-    """Run one cycle of data fetch and execute"""
-    try:
-        state.p1_status = "Fetching data..."
-        state.add_log("Process 1", f"Fetching data ({TIMEFRAME})...")
-        getdata()
-        
-        state.p1_status = "Executing..."
-        state.add_log("Process 1", "Running execute...")
-        execute(DATA_FOLDER, OUTPUT_FOLDER)
-        
-        state.p1_cycles += 1
-        state.p1_last_run = datetime.now().strftime("%H:%M:%S")
-        state.add_log("Process 1", "Cycle completed")
-        return True
-        
-    except Exception as e:
-        state.p1_errors += 1
-        state.add_log("Process 1", f"ERROR: {str(e)}")
-        return False
+def run_cycle(timeframe: str):
+     """Run one cycle of data fetch and execute for a specific timeframe"""
+     tf_state = state.timeframe_states[timeframe]
+     try:
+         tf_state.status = "Fetching data..."
+         state.add_log(f"TF[{timeframe}]", f"Fetching data...")
+         getdata(timeframe)
+         
+         tf_state.status = "Executing..."
+         state.add_log(f"TF[{timeframe}]", "Running execute...")
+         execute(DATA_FOLDER, OUTPUT_FOLDER)
+         
+         tf_state.cycles += 1
+         tf_state.last_run = datetime.now().strftime("%H:%M:%S")
+         state.add_log(f"TF[{timeframe}]", "Cycle completed")
+         return True
+         
+     except Exception as e:
+         tf_state.errors += 1
+         state.add_log(f"TF[{timeframe}]", f"ERROR: {str(e)}")
+         return False
 
 
-def process_1_data_and_execute():
-    """Process 1: Fetch data and run execute at candle close times"""
-    state.add_log("Process 1", f"Started (TF: {TIMEFRAME}, Delay: {DELAY_SECONDS}s)")
-    
-    # Run immediately on start if configured
-    if RUN_ON_START:
-        state.add_log("Process 1", "Running initial cycle...")
-        run_cycle()
-    
-    while state.running:
-        # Calculate next candle close time
-        next_candle = get_next_candle_close_time(TIMEFRAME_MINUTES)
-        target_time = next_candle + timedelta(seconds=DELAY_SECONDS)
-        
-        state.p1_next_candle = next_candle.strftime("%H:%M:%S")
-        state.p1_status = "Waiting"
-        state.add_log("Process 1", f"Waiting for next candle: {next_candle.strftime('%H:%M:%S')}")
-        
-        # Wait until target time (candle close + delay)
-        while state.running:
-            now = datetime.now()
-            if now >= target_time:
-                break
-            
-            wait_seconds = (target_time - now).total_seconds()
-            state.p1_countdown = format_countdown(wait_seconds)
-            time.sleep(0.5)
-        
-        if not state.running:
-            break
-        
-        # Run the cycle
-        state.add_log("Process 1", f"Candle closed, running cycle...")
-        run_cycle()
-        
-        # Wait until we're past this candle period to avoid re-triggering
-        # Sleep at least 2 seconds to ensure we're in the next candle period
-        time.sleep(2)
+def process_1_data_and_execute(timeframe: str):
+     """Process 1: Fetch data and run execute at candle close times for a specific timeframe"""
+     tf_state = state.timeframe_states[timeframe]
+     timeframe_minutes = TIMEFRAME_MINUTES_MAP[timeframe]
+     
+     state.add_log(f"TF[{timeframe}]", f"Started (Delay: {DELAY_SECONDS}s)")
+     
+     # Run immediately on start if configured
+     if RUN_ON_START:
+         state.add_log(f"TF[{timeframe}]", "Running initial cycle...")
+         run_cycle(timeframe)
+     
+     while state.running:
+         # Calculate next candle close time
+         next_candle = get_next_candle_close_time(timeframe_minutes)
+         target_time = next_candle + timedelta(seconds=DELAY_SECONDS)
+         
+         tf_state.next_candle = next_candle.strftime("%H:%M:%S")
+         tf_state.status = "Waiting"
+         state.add_log(f"TF[{timeframe}]", f"Waiting for next candle: {next_candle.strftime('%H:%M:%S')}")
+         
+         # Wait until target time (candle close + delay)
+         while state.running:
+             now = datetime.now()
+             if now >= target_time:
+                 break
+             
+             wait_seconds = (target_time - now).total_seconds()
+             tf_state.countdown = format_countdown(wait_seconds)
+             time.sleep(0.5)
+         
+         if not state.running:
+             break
+         
+         # Run the cycle
+         state.add_log(f"TF[{timeframe}]", f"Candle closed, running cycle...")
+         run_cycle(timeframe)
+         
+         # Wait until we're past this candle period to avoid re-triggering
+         # Sleep at least 2 seconds to ensure we're in the next candle period
+         time.sleep(2)
 
 
 def process_2_watch_output():
@@ -513,43 +545,52 @@ def process_2_watch_output():
 # =============================================================================
 
 def main():
-    # Ensure required folders exist
-    for folder in [DATA_FOLDER, OUTPUT_FOLDER, os.path.dirname(LOG_FILE)]:
-        if folder and not os.path.exists(folder):
-            os.makedirs(folder)
-    
-    # Create threads
-    thread_1 = threading.Thread(
-        target=process_1_data_and_execute,
-        daemon=True,
-        name="DataExecuteThread"
-    )
-    
-    thread_2 = threading.Thread(
-        target=process_2_watch_output,
-        daemon=True,
-        name="OutputWatcherThread"
-    )
-    
-    # Start threads
-    thread_1.start()
-    thread_2.start()
-    
-    state.add_log("Main", f"Application started (Config: {TIMEFRAME})")
-    
-    # Create dashboard
-    layout = create_dashboard()
-    
-    try:
-        with Live(layout, refresh_per_second=REFRESH_RATE, screen=True) as live:
-            while True:
-                update_dashboard(layout)
-                time.sleep(1.0 / REFRESH_RATE)
-    except KeyboardInterrupt:
-        state.running = False
-        console.print("\n[bold red]Shutting down...[/bold red]")
-        time.sleep(1)
-        console.print("[bold green]Application terminated.[/bold green]")
+     # Ensure required folders exist
+     for folder in [DATA_FOLDER, OUTPUT_FOLDER, os.path.dirname(LOG_FILE)]:
+         if folder and not os.path.exists(folder):
+             os.makedirs(folder)
+     
+     remove_all_files(OUTPUT_FOLDER)
+     
+     # Create threads for each timeframe
+     tf_threads = []
+     for timeframe in TIMEFRAMES:
+         thread = threading.Thread(
+             target=process_1_data_and_execute,
+             args=(timeframe,),
+             daemon=True,
+             name=f"DataExecuteThread-{timeframe}"
+         )
+         tf_threads.append(thread)
+     
+     # Create watcher thread
+     thread_2 = threading.Thread(
+         target=process_2_watch_output,
+         daemon=True,
+         name="OutputWatcherThread"
+     )
+     
+     # Start all threads
+     for thread in tf_threads:
+         thread.start()
+     thread_2.start()
+     
+     timeframes_str = ", ".join(TIMEFRAMES)
+     state.add_log("Main", f"Application started (TF: {timeframes_str})")
+     
+     # Create dashboard
+     layout = create_dashboard()
+     
+     try:
+         with Live(layout, refresh_per_second=REFRESH_RATE, screen=True) as live:
+             while True:
+                 update_dashboard(layout)
+                 time.sleep(1.0 / REFRESH_RATE)
+     except KeyboardInterrupt:
+         state.running = False
+         console.print("\n[bold red]Shutting down...[/bold red]")
+         time.sleep(1)
+         console.print("[bold green]Application terminated.[/bold green]")
 
 
 if __name__ == "__main__":

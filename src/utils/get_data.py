@@ -220,6 +220,53 @@ def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
             else:
                 print(f"Failed to fetch data for {currency}_{timeframe}")
 
+
+def append_latest_candle(currencies, timeframes, folder_path):
+    """Fetch only the latest candle and append to existing files, removing the second row"""
+    for currency in currencies:
+        for timeframe in timeframes:
+            filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+            
+            # Fetch only 1 latest candle
+            latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
+            
+            if not latest_candle:
+                print(f"Failed to fetch latest candle for {currency}_{timeframe}")
+                continue
+            
+            # Convert candle to CSV row format
+            candle = latest_candle[0]
+            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            open_price = float(candle[1])
+            high_price = float(candle[2])
+            low_price = float(candle[3])
+            close_price = float(candle[4])
+            volume = float(candle[5])
+            new_row = f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n"
+            
+            # Check if file exists
+            if not os.path.exists(filename):
+                # If file doesn't exist, create it with header and the new candle
+                with open(filename, 'w') as f:
+                    f.write("Time,Open,High,Low,Close,Volume\n")
+                    f.write(new_row)
+            else:
+                # Read existing file
+                with open(filename, 'r') as f:
+                    lines = f.readlines()
+                
+                # Keep header and all data rows except the second row (index 1)
+                if len(lines) > 2:
+                    # Remove the second data row (index 1)
+                    lines = [lines[0]] + lines[2:]
+                
+                # Append new candle
+                lines.append(new_row)
+                
+                # Write back to file
+                with open(filename, 'w') as f:
+                    f.writelines(lines)
+
 def getdata_by_date(config=None):
     if config is None:
         config = load_config()
