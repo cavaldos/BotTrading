@@ -457,24 +457,32 @@ def process_1_data_and_execute():
     while state.running:
         # Calculate next candle close time
         next_candle = get_next_candle_close_time(TIMEFRAME_MINUTES)
+        target_time = next_candle + timedelta(seconds=DELAY_SECONDS)
+        
         state.p1_next_candle = next_candle.strftime("%H:%M:%S")
         state.p1_status = "Waiting"
+        state.add_log("Process 1", f"Waiting for next candle: {next_candle.strftime('%H:%M:%S')}")
         
-        # Wait until candle close + delay
+        # Wait until target time (candle close + delay)
         while state.running:
-            wait_seconds = get_seconds_until_next_candle(TIMEFRAME_MINUTES, DELAY_SECONDS)
-            state.p1_countdown = format_countdown(wait_seconds)
-            
-            if wait_seconds <= 0:
+            now = datetime.now()
+            if now >= target_time:
                 break
             
+            wait_seconds = (target_time - now).total_seconds()
+            state.p1_countdown = format_countdown(wait_seconds)
             time.sleep(0.5)
         
         if not state.running:
             break
         
         # Run the cycle
+        state.add_log("Process 1", f"Candle closed, running cycle...")
         run_cycle()
+        
+        # Wait until we're past this candle period to avoid re-triggering
+        # Sleep at least 2 seconds to ensure we're in the next candle period
+        time.sleep(2)
 
 
 def process_2_watch_output():
