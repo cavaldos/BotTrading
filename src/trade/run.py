@@ -279,8 +279,6 @@ def process_2_watch_output():
     """Process 2: Watch output folder"""
     state.add_log("Process 2", "Started")
     
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
     
     event_handler = OutputFolderHandler(OUTPUT_FOLDER, LOG_FILE)
     observer = Observer()
@@ -303,10 +301,6 @@ def process_2_watch_output():
 # =============================================================================
 
 def main():
-     # Ensure required folders exist
-     for folder in [DATA_FOLDER, OUTPUT_FOLDER, os.path.dirname(LOG_FILE)]:
-         if folder and not os.path.exists(folder):
-             os.makedirs(folder)
      
      remove_all_files(OUTPUT_FOLDER)
      remove_all_files(DATA_FOLDER)
