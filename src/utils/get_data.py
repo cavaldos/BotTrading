@@ -147,32 +147,75 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             return all_candles if all_candles else []
 
 # Convert timestamp and save to CSV file (atomic write)
-def save_to_csv(candles, filename):
+def save_to_csv(candles, filename, max_retries=3):
     """Save candles to CSV using atomic write to prevent race conditions.
     
     Writes to a temp file first, then atomically replaces the target file.
     This ensures readers never see a partially written file.
+    Includes retry logic and validation for robustness.
     """
     temp_filename = filename + '.tmp'
+    folder_path = os.path.dirname(filename)
     
-    with open(temp_filename, 'w') as file:
-        # Write header
-        file.write("Time,Open,High,Low,Close,Volume\n")
+    for attempt in range(max_retries):
+        try:
+            # Ensure folder exists
+            if folder_path and not os.path.exists(folder_path):
+                os.makedirs(folder_path, exist_ok=True)
+            
+            with open(temp_filename, 'w') as file:
+                # Write header
+                file.write("Time,Open,High,Low,Close,Volume\n")
 
-        # Write each data row
-        for candle in candles:
-            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-            open_price = float(candle[1])
-            high_price = float(candle[2])
-            low_price = float(candle[3])
-            close_price = float(candle[4])
-            volume = float(candle[5])
+                # Write each data row
+                for candle in candles:
+                    timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                    open_price = float(candle[1])
+                    high_price = float(candle[2])
+                    low_price = float(candle[3])
+                    close_price = float(candle[4])
+                    volume = float(candle[5])
 
-            # Write data to file in required format
-            file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
+                    # Write data to file in required format
+                    file.write(f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n")
+            
+            # Validate temp file exists before replace
+            if not os.path.exists(temp_filename):
+                raise FileNotFoundError(f"Temp file {temp_filename} was not created")
+            
+            # Ensure folder still exists before atomic replace
+            if folder_path and not os.path.exists(folder_path):
+                os.makedirs(folder_path, exist_ok=True)
+            
+            # Atomic replace - this is atomic on most OS (POSIX)
+            os.replace(temp_filename, filename)
+            return True
+            
+        except (FileNotFoundError, OSError) as e:
+            # Cleanup temp file if exists
+            try:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except Exception:
+                pass
+            
+            if attempt < max_retries - 1:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            else:
+                print(f"Failed to save {filename} after {max_retries} attempts: {e}")
+                return False
+        except Exception as e:
+            # Cleanup temp file for unexpected errors
+            try:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except Exception:
+                pass
+            print(f"Unexpected error saving {filename}: {e}")
+            return False
     
-    # Atomic replace - this is atomic on most OS (POSIX)
-    os.replace(temp_filename, filename)
+    return False
 
 def get_and_save_data(symbol, start_date, filename, time_interval='1h'):
     # Convert start date to timestamp
@@ -265,56 +308,99 @@ def append_latest_candle(currencies, timeframes, folder_path):
             _append_single_candle(currency, timeframe, folder_path)
 
 
-def _append_single_candle(currency, timeframe, folder_path):
-    """Append latest candle for a single currency/timeframe pair (for parallel execution)"""
+def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
+    """Append latest candle for a single currency/timeframe pair (for parallel execution).
+    
+    Includes retry logic and proper error handling to handle race conditions
+    when files/folders may be deleted or modified by other threads.
+    """
     filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
     temp_filename = filename + '.tmp'
     
-    # Fetch only 1 latest candle
-    latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
+    for attempt in range(max_retries):
+        try:
+            # Ensure folder exists before any file operations
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path, exist_ok=True)
+            
+            # Fetch only 1 latest candle
+            latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
+            
+            if not latest_candle:
+                print(f"Failed to fetch latest candle for {currency}_{timeframe}")
+                return False
+            
+            # Convert candle to CSV row format
+            candle = latest_candle[0]
+            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            open_price = float(candle[1])
+            high_price = float(candle[2])
+            low_price = float(candle[3])
+            close_price = float(candle[4])
+            volume = float(candle[5])
+            new_row = f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n"
+            
+            # Check if file exists
+            if not os.path.exists(filename):
+                # If file doesn't exist, create it with header and the new candle
+                with open(temp_filename, 'w') as f:
+                    f.write("Time,Open,High,Low,Close,Volume\n")
+                    f.write(new_row)
+            else:
+                # Read existing file
+                with open(filename, 'r') as f:
+                    lines = f.readlines()
+                
+                # Keep header and all data rows except the second row (index 1)
+                if len(lines) > 2:
+                    # Remove the second data row (index 1)
+                    lines = [lines[0]] + lines[2:]
+                
+                # Append new candle
+                lines.append(new_row)
+                
+                # Write to temp file first (atomic write)
+                with open(temp_filename, 'w') as f:
+                    f.writelines(lines)
+            
+            # Validate temp file exists before replace
+            if not os.path.exists(temp_filename):
+                raise FileNotFoundError(f"Temp file {temp_filename} was not created")
+            
+            # Ensure folder still exists before atomic replace
+            if not os.path.exists(folder_path):
+                os.makedirs(folder_path, exist_ok=True)
+            
+            # Atomic replace
+            os.replace(temp_filename, filename)
+            return True
+            
+        except (FileNotFoundError, OSError) as e:
+            # Cleanup temp file if exists
+            try:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except Exception:
+                pass
+            
+            if attempt < max_retries - 1:
+                # Exponential backoff before retry
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            else:
+                print(f"Failed after {max_retries} attempts for {currency}_{timeframe}: {e}")
+                return False
+        except Exception as e:
+            # Cleanup temp file for unexpected errors
+            try:
+                if os.path.exists(temp_filename):
+                    os.remove(temp_filename)
+            except Exception:
+                pass
+            print(f"Unexpected error for {currency}_{timeframe}: {e}")
+            return False
     
-    if not latest_candle:
-        print(f"Failed to fetch latest candle for {currency}_{timeframe}")
-        return False
-    
-    # Convert candle to CSV row format
-    candle = latest_candle[0]
-    timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
-    open_price = float(candle[1])
-    high_price = float(candle[2])
-    low_price = float(candle[3])
-    close_price = float(candle[4])
-    volume = float(candle[5])
-    new_row = f"{timestamp}, {open_price}, {high_price}, {low_price}, {close_price}, {volume}\n"
-    
-    # Check if file exists
-    if not os.path.exists(filename):
-        # If file doesn't exist, create it with header and the new candle
-        with open(temp_filename, 'w') as f:
-            f.write("Time,Open,High,Low,Close,Volume\n")
-            f.write(new_row)
-        os.replace(temp_filename, filename)
-    else:
-        # Read existing file
-        with open(filename, 'r') as f:
-            lines = f.readlines()
-        
-        # Keep header and all data rows except the second row (index 1)
-        if len(lines) > 2:
-            # Remove the second data row (index 1)
-            lines = [lines[0]] + lines[2:]
-        
-        # Append new candle
-        lines.append(new_row)
-        
-        # Write to temp file first (atomic write)
-        with open(temp_filename, 'w') as f:
-            f.writelines(lines)
-        
-        # Atomic replace
-        os.replace(temp_filename, filename)
-    
-    return True
+    return False
 
 
 def append_latest_candle_parallel(currencies, timeframes, folder_path, max_workers=5):
