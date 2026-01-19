@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 
-from notify import send_entry_telegram
+from .notify import send_entry_telegram
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:

@@ -13,8 +13,8 @@ from rich.live import Live
 
 from src.utils.get_data import (remove_all_files, fetch_and_save_candles_parallel, append_latest_candle_parallel)
 from src.trade.dashboard import create_dashboard, update_dashboard
-from src.trade.execute import execute
-from src.trade.send import check_and_send_open_orders
+from src.trade.core.execute import execute
+from src.trade.core.send import check_and_send_open_orders
 
 
 # =============================================================================

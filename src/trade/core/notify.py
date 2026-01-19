@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 # Add the src directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from calculate import calculate_trade_size
+from .calculate import calculate_trade_size
 
 # Tải biến môi trường từ file .env
 load_dotenv()
