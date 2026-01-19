@@ -138,13 +138,12 @@ def generate_process2_panel(state, output_folder: str) -> Panel:
 
 
 def generate_stats_panel(trades: list) -> Panel:
-    """Generate stats panel - show Win/Loss/Passed/Open counts"""
+    """Generate stats panel - show Win/Loss/Open counts"""
     
     # Count by result
-    win_count = sum(1 for t in trades if t.get("Result") == "Win")
-    loss_count = sum(1 for t in trades if t.get("Result") == "Loss")
-    passed_count = sum(1 for t in trades if t.get("Result") == "Passed")
-    open_count = sum(1 for t in trades if t.get("Result", "Open") == "Open" or t.get("Result") == "")
+    win_count = sum(1 for t in trades if t.get("Result") == "WIN")
+    loss_count = sum(1 for t in trades if t.get("Result") == "LOSS")
+    open_count = sum(1 for t in trades if t.get("Result") == "OPEN")
     total = len(trades)
     
     # Calculate win rate
@@ -162,10 +161,6 @@ def generate_stats_panel(trades: list) -> Panel:
     table.add_row(
         Text("Loss", style="red bold"),
         Text(str(loss_count), style="red bold")
-    )
-    table.add_row(
-        Text("Passed", style="blue bold"),
-        Text(str(passed_count), style="blue bold")
     )
     table.add_row(
         Text("Open", style="yellow bold"),
@@ -260,62 +255,38 @@ def load_sent_orders(log_file: str) -> list:
 
 
 def load_trades_for_sent_orders(output_folder: str, log_file: str) -> list:
-    """Load trades from CSV that match sent orders, mark as Passed if not in CSV"""
+    """Load trades from sent_orders.json with status (WIN/LOSS/OPEN)"""
     sent_orders = load_sent_orders(log_file)
     if not sent_orders:
         return []
     
     trades = []
-    found_keys = set()
-    output_path = Path(output_folder)
     
-    # First, load all trades from CSV
-    try:
-        import csv
-        if output_path.exists():
-            trade_files = output_path.glob("*_trades.csv")
-            
-            for trade_file in trade_files:
-                try:
-                    with open(trade_file, 'r', encoding='utf-8') as f:
-                        reader = csv.DictReader(f)
-                        for row in reader:
-                            # Build key from trade: "SYMBOL|TYPE|ENTRY_TIME"
-                            symbol = row.get("Symbol", "")
-                            trade_type = row.get("Type", "")
-                            entry_time = row.get("Entry_Time", "")
-                            
-                            trade_key = f"{symbol}|{trade_type}|{entry_time}"
-                            
-                            # Check if this trade was sent
-                            for order in sent_orders:
-                                if order.get("key", "") == trade_key:
-                                    trades.append(row)
-                                    found_keys.add(trade_key)
-                                    break
-                except Exception as e:
-                    continue
-    except:
-        pass
-    
-    # Second, add sent orders not found in CSV with Result = "Passed"
+    # Parse each sent order to create trade dict
     for order in sent_orders:
         key = order.get("key", "")
-        if key and key not in found_keys:
-            # Parse the key to get symbol, type, entry_time
-            parts = key.split("|")
-            if len(parts) >= 3:
-                symbol = parts[0]
-                trade_type = parts[1]
-                entry_time = parts[2]
-                
-                trades.append({
-                    "Symbol": symbol,
-                    "Type": trade_type,
-                    "Entry_Time": entry_time,
-                    "Entry_Price": str(order.get("entry_price", "-")),
-                    "Result": "Passed"
-                })
+        if not key:
+            continue
+        
+        # Parse key: "SYMBOL|TYPE|ENTRY_TIME"
+        parts = key.split("|")
+        if len(parts) < 3:
+            continue
+        
+        symbol = parts[0]
+        trade_type = parts[1]
+        entry_time = parts[2]
+        
+        # Get status from sent_orders.json (WIN/LOSS/OPEN)
+        status = order.get("status", "OPEN").upper()
+        
+        trades.append({
+            "Symbol": symbol,
+            "Type": trade_type,
+            "Entry_Time": entry_time,
+            "Entry_Price": str(order.get("entry_price", "-")),
+            "Result": status
+        })
     
     # Sort by Entry_Time in descending order (newest first)
     trades.sort(key=lambda x: x.get("Entry_Time", ""), reverse=True)
@@ -354,14 +325,12 @@ def generate_orders_panel(trades: list) -> Panel:
         # Style for type
         type_style = "green" if order_type == "LONG" else "red" if order_type == "SHORT" else "white"
         
-        # Style for result
-        if result == "Win":
+        # Style for result (WIN/LOSS/OPEN)
+        if result == "WIN":
             result_style = "green bold"
-        elif result == "Loss":
+        elif result == "LOSS":
             result_style = "red bold"
-        elif result == "Passed":
-            result_style = "blue bold"
-        else:  # Open
+        else:  # OPEN
             result_style = "yellow bold"
         
         # Format entry price

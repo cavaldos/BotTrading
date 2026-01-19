@@ -47,6 +47,75 @@ def save_sent_orders(log_file: Path, sent_orders: list) -> None:
         pass
 
 
+def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
+    """
+    Cập nhật status các orders trong sent_orders.json từ kết quả trong CSV.
+    Status có thể là: WIN, LOSS, OPEN
+    
+    Args:
+        output_dir: Đường dẫn đến thư mục chứa các file CSV
+        log_file: Đường dẫn đến file sent_orders.json
+    
+    Returns: Số orders được cập nhật
+    """
+    output_path = Path(output_dir)
+    log_path = Path(log_file)
+    
+    # Load sent_orders từ file log
+    sent_keys, sent_orders = load_sent_orders(log_path)
+    
+    if not sent_orders:
+        return 0
+    
+    # Load tất cả trades từ CSV
+    trades_from_csv = {}
+    
+    if output_path.exists():
+        csv_files = list(output_path.glob("*.csv"))
+        
+        for csv_file in csv_files:
+            try:
+                df = pd.read_csv(csv_file)
+                
+                if 'Result' not in df.columns:
+                    continue
+                
+                for _, row in df.iterrows():
+                    symbol = str(row.get('Symbol', '')).strip()
+                    trade_type = str(row.get('Type', '')).strip().upper()
+                    entry_time = str(row.get('Entry_Time', '')).strip()
+                    result = str(row.get('Result', '')).strip().upper()
+                    
+                    # Create key: {SYMBOL}|{TYPE}|{ENTRY_TIME}
+                    trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                    
+                    # Lưu kết quả vào dict
+                    if result in ('WIN', 'LOSS', 'OPEN'):
+                        trades_from_csv[trade_key] = result
+                    
+            except Exception:
+                continue
+    
+    # Cập nhật status cho các orders
+    updated_count = 0
+    
+    for order in sent_orders:
+        key = order.get("key", "")
+        if key in trades_from_csv:
+            new_status = trades_from_csv[key]
+            current_status = order.get("status", "")
+            
+            if new_status != current_status:
+                order["status"] = new_status
+                updated_count += 1
+    
+    # Lưu lại nếu có cập nhật
+    if updated_count > 0:
+        save_sent_orders(log_path, sent_orders)
+    
+    return updated_count
+
+
 def generate_order_key(row: pd.Series) -> str:
     """Tạo unique key cho mỗi lệnh để kiểm tra trùng (không bao gồm giá)"""
     return f"{row['Symbol']}|{row['Type']}|{row['Entry_Time']}"
@@ -90,6 +159,9 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
     output_path = Path(output_dir)
     log_path = Path(log_file)
     
+    # Cập nhật status từ CSV trước khi xử lý
+    updated_status_count = update_order_status_from_csv(output_dir, log_file)
+    
     sent_keys, sent_orders = load_sent_orders(log_path)
     open_orders = scan_open_orders(output_path)
     
@@ -117,7 +189,8 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
                 "take_profit": float(row['Take_Profit']),
-                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "status": "OPEN"
             }
             sent_orders.append(order_detail)
             sent_keys.add(order_key)
