@@ -8,6 +8,7 @@ from pathlib import Path
 
 
 from .notify import send_entry_telegram
+from .discord_notify import send_entry_discord
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -175,6 +176,14 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
         
         try:
             send_entry_telegram(
+                type=row['Type'],
+                entry=float(row['Entry_Price']),
+                stoploss=float(row['Stop_Loss']),
+                takeprofit=float(row['Take_Profit']),
+                time=row['Entry_Time'],
+                name_coin=row['Symbol']
+            )
+            send_entry_discord(
                 type=row['Type'],
                 entry=float(row['Entry_Price']),
                 stoploss=float(row['Stop_Loss']),
