@@ -312,6 +312,7 @@ def generate_orders_panel(trades: list) -> Panel:
         if entry_time:
             try:
                 time_only = entry_time.split(" ")[1] if " " in entry_time else entry_time
+                time_only = time_only.rsplit(":", 1)[0]  # Remove seconds
             except:
                 time_only = entry_time
         else:
