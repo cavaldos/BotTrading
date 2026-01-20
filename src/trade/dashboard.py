@@ -351,10 +351,10 @@ def generate_orders_panel(trades: list) -> Panel:
     
     if not recent_trades:
         return Panel(Text("No trades yet...", style="dim"), 
-                    title="[bold magenta]Trades Log[/bold magenta]", 
+                    title="[bold magenta]Trades Log GMT+0[/bold magenta]", 
                     border_style="magenta")
     
-    return Panel(table, title="[bold magenta]Trades Log[/bold magenta]", border_style="magenta")
+    return Panel(table, title="[bold magenta]Trades Log GMT+0[/bold magenta]", border_style="magenta")
 
 
 # =============================================================================
