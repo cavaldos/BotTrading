@@ -153,16 +153,17 @@ def calculate_statistics(trades: list[dict], coins: list[str], timeframes: list[
 # DATA LOADING & PROCESSING - SENT ORDERS (Telegram)
 # =============================================================================
 
-def load_sent_order_keys(log_file: str) -> set[str]:
+def load_all_sent_orders(log_file: str) -> list[dict]:
     """
-    Load các key của lệnh đã gửi Telegram từ sent_orders.json.
-    Returns: Set of order keys (format: {SYMBOL}|{TYPE}|{ENTRY_TIME})
+    Load tất cả các lệnh đã gửi Telegram từ sent_orders.json.
+    Parse key format: {SYMBOL_TIMEFRAME}|{TYPE}|{ENTRY_TIME}
+    Returns: List of trade dictionaries với coin, timeframe, result info.
     """
-    keys = set()
+    trades = []
     log_path = Path(log_file)
     
     if not log_path.exists():
-        return keys
+        return trades
     
     try:
         with open(log_path, 'r', encoding='utf-8') as f:
@@ -171,67 +172,47 @@ def load_sent_order_keys(log_file: str) -> set[str]:
             
             for order in sent_orders:
                 key = order.get("key", "")
-                if key:
-                    keys.add(key)
+                status = order.get("status", "")
+                
+                if not key:
+                    continue
+                
+                # Parse key: "BNBUSDT_15m|LONG|2026-01-19 12:15:00"
+                parts = key.split('|')
+                if len(parts) != 3:
+                    continue
+                
+                symbol_timeframe = parts[0].split('_')
+                if len(symbol_timeframe) != 2:
+                    continue
+                
+                coin = symbol_timeframe[0]
+                timeframe = symbol_timeframe[1]
+                trade_type = parts[1]
+                entry_time = parts[2]
+                entry_price = order.get("entry_price", 0)
+                
+                # Map status to result format
+                result = str(status).strip().upper()
+                if result not in ["WIN", "LOSS", "OPEN"]:
+                    result = "OPEN"
+                
+                trades.append({
+                    'coin': coin,
+                    'timeframe': timeframe,
+                    'result': result,
+                    'type': trade_type,
+                    'entry_time': entry_time,
+                    'entry_price': entry_price,
+                })
+                
     except Exception:
         pass
     
-    return keys
-
-
-def load_sent_trades_from_csv(output_folder: str, sent_keys: set[str]) -> list[dict]:
-    """
-    Load trades từ CSV và chỉ lấy những trades có trong sent_orders.
-    Match bằng key format: {SYMBOL}|{TYPE}|{ENTRY_TIME}
-    Returns: List of sent trade dictionaries.
-    """
-    trades = []
-    output_path = Path(output_folder)
-    
-    if not output_path.exists():
-        return trades
-    
-    csv_files = list(output_path.glob("*.csv"))
-    
-    for csv_file in csv_files:
-        try:
-            df = pd.read_csv(csv_file)
-            
-            if df.empty or 'Result' not in df.columns:
-                continue
-            
-            for _, row in df.iterrows():
-                symbol = str(row.get('Symbol', '')).strip()
-                trade_type = str(row.get('Type', '')).strip().upper()
-                entry_time = str(row.get('Entry_Time', '')).strip()
-                result = str(row.get('Result', '')).strip().upper()
-                
-                # Create key to match with sent_orders
-                trade_key = f"{symbol}|{trade_type}|{entry_time}"
-                
-                if trade_key in sent_keys:
-                    # Parse coin and timeframe from symbol (e.g., BTCUSDT_5m)
-                    parts = symbol.split('_')
-                    if len(parts) >= 2:
-                        coin = parts[0]
-                        timeframe = parts[1]
-                    else:
-                        coin = symbol
-                        timeframe = "unknown"
-                    
-                    trades.append({
-                        'coin': coin,
-                        'timeframe': timeframe,
-                        'result': result,
-                        'type': trade_type,
-                        'entry_time': entry_time,
-                        'entry_price': row.get('Entry_Price', 0),
-                    })
-                
-        except Exception:
-            continue
-    
     return trades
+
+
+
 
 
 # =============================================================================
@@ -545,19 +526,15 @@ def main():
     # ===========================================
     # TABLE 2: Sent Orders (Telegram)
     # ===========================================
-    sent_keys = load_sent_order_keys(LOG_FILE)
+    sent_trades = load_all_sent_orders(LOG_FILE)
     
-    if sent_keys:
-        sent_trades = load_sent_trades_from_csv(OUTPUT_FOLDER, sent_keys)
-        if sent_trades:
-            sent_stats = calculate_statistics(sent_trades, CURRENCIES, TIMEFRAMES)
-            table2 = create_sent_orders_table(sent_stats, CURRENCIES, TIMEFRAMES)
-            console.print(table2)
-            console.print()
-            console.print(create_sent_orders_legend())
-            console.print(f"[dim]Total sent orders: {len(sent_trades)}[/dim]")
-        else:
-            console.print("[yellow]No matching trades found for sent orders.[/yellow]")
+    if sent_trades:
+        sent_stats = calculate_statistics(sent_trades, CURRENCIES, TIMEFRAMES)
+        table2 = create_sent_orders_table(sent_stats, CURRENCIES, TIMEFRAMES)
+        console.print(table2)
+        console.print()
+        console.print(create_sent_orders_legend())
+        console.print(f"[dim]Total sent orders: {len(sent_trades)}[/dim]")
     else:
         console.print("[yellow]No sent orders found.[/yellow]")
     
