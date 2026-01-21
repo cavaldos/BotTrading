@@ -176,7 +176,7 @@ class TradeSimulator:
 
 
 # ==================== REPORT FUNCTIONS ====================
-def generate_trade_report(trades: List[Trade], output_dir: str, symbol: str) -> pd.DataFrame:
+def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> pd.DataFrame:
     """Generate CSV report of trades for a single symbol"""
     if not trades:
         return pd.DataFrame()

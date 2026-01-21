@@ -1,10 +1,12 @@
-# Trade Application Configuration
+# Trade Application Configuration TRADE
 
 # Data settings
 data:
   folder: "res/logs/data"
   currencies:
     - "BTCUSDT"
+    - "BNBUSDT"
+
   candles_limit: 2000
 
 # Output settings
@@ -14,11 +16,15 @@ output:
 
 # Timeframe settings
 timeframe:
-  value: ["1m", "5m" ,"15m"]          # Timeframe to use: 1m, 5m, 15m, 30m, 1h, 4h, 1d
+  value: ["5m" ,"15m"]          # Timeframe to use: 1m, 5m, 15m, 30m, 1h, 4h, 1d
   fetch_interval: 60   # Interval in seconds between each fetch cycle
 
 # Dashboard settings
 dashboard:
   refresh_rate: 2       # Refresh rate per second
   max_logs: 10           # Maximum number of logs to display
+
+# Strategy settings
+strategy:
+  risk_reward_ratio: 2.0  # RR ratio for take profit calculation
 

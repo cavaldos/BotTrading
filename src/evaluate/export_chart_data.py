@@ -18,6 +18,7 @@ import os
 from glob import glob
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
+from src.config import load_config
 
 # Add project root to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -31,8 +32,9 @@ from src.strategy import (
 )
 
 # ==================== CONFIGURATION ====================
-DATA_DIR = 'res/data'
-TRADES_DIR = 'res/output'
+config = load_config()
+DATA_DIR = config.get('folder_path', 'res/data')
+TRADES_DIR = config.get('output_folder', 'res/output')
 OUTPUT_DIR = 'chart/public/data'
 
 # Colors configuration (matching TradingView style)

@@ -19,8 +19,8 @@ from tqdm import tqdm
 # Import strategy components
 from src.strategy import Config, Strategy, STRATEGY_NAME
 from src.statistics import TradeSimulator, generate_summary_report
-from src.utils.get_data import load_config
-from src.reversal_patterns import PATTERN_PAIR_NAMES
+from src.config import load_config
+from src.utils.reversal_patterns import PATTERN_PAIR_NAMES
 
 
 # ==============================================================================

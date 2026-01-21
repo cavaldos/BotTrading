@@ -1,7 +1,7 @@
 import requests # pyright: ignore[reportMissingModuleSource]
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
-import yaml # pyright: ignore[reportMissingModuleSource]
+from src.config import load_config
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
@@ -18,27 +18,6 @@ DEFAULT_CONFIG = {
     'start_date': '2026-01-01',
     'mode': 'by_candles'
 }
-
-
-def load_config(config_path=None):
-    if config_path is None:
-        config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
-    
-    if not os.path.exists(config_path):
-        print(f"Config file not found at {config_path}. Using default config.")
-        return DEFAULT_CONFIG.copy()
-    
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-            # Merge with default config to ensure all keys are present
-            merged_config = DEFAULT_CONFIG.copy()
-            if config:
-                merged_config.update(config)
-            return merged_config
-    except Exception as e:
-        print(f"Error reading config file: {e}. Using default config.")
-        return DEFAULT_CONFIG.copy()
 
 
 # Fetch candlestick data from Binance
@@ -475,7 +454,7 @@ def _getdata_single(currency, timeframe, folder_path, mode, config):
 
 def getdata(config_path=None, max_workers=5):
     from tqdm import tqdm  # pyright: ignore[reportMissingModuleSource]
-    
+    config_path = 'src/config/dev.yaml'
     config = load_config(config_path)
     mode = config.get('mode', 'by_candles')
     

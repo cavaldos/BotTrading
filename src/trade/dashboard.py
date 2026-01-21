@@ -67,7 +67,7 @@ def format_currencies(currencies: list) -> str:
 # PANEL GENERATORS
 # =============================================================================
 
-def generate_header(state, timeframes: list, currencies: list) -> Panel:
+def generate_header(state, timeframes: list, currencies: list, risk_reward_ratio: float) -> Panel:
     """Generate header panel"""
     uptime = datetime.now() - state.start_time
     hours, remainder = divmod(int(uptime.total_seconds()), 3600)
@@ -80,6 +80,7 @@ def generate_header(state, timeframes: list, currencies: list) -> Panel:
     header_text.append("TRADE APPLICATION", style="bold white")
     header_text.append(f"  |  TF: {timeframes_str}", style="bold magenta")
     header_text.append(f"  |  Coins: {format_currencies(currencies)}", style="bold green")
+    header_text.append(f"  |  RR: {risk_reward_ratio}", style="bold yellow")
     header_text.append(f"  |  Uptime: {uptime_str}", style="dim")
     header_text.append(f"  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="dim")
     
@@ -369,13 +370,14 @@ def update_dashboard(
     currencies: list,
     fetch_interval: int,
     output_folder: str,
-    log_file: str
+    log_file: str,
+    risk_reward_ratio: float
 ) -> Layout:
     """Update all panels in the dashboard"""
     # Load trades once for both stats and orders panels
     trades = load_trades_for_sent_orders(output_folder, log_file)
     
-    layout["header"].update(generate_header(state, timeframes, currencies))
+    layout["header"].update(generate_header(state, timeframes, currencies, risk_reward_ratio))
     # Row 1
     layout["process1"].update(generate_process1_panel(state, timeframes, fetch_interval))
     layout["stats"].update(generate_stats_panel(trades))

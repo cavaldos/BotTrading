@@ -1,6 +1,6 @@
 
 # ===================================================================
-## Data Configuration
+## Data Configuration DEV
 # ===================================================================
 currencies:
   - "BTCUSDT"
@@ -14,7 +14,6 @@ timeframes:
 
 # Directory path to save data
 folder_path: "res/data"
-
 # Number of candles to fetch (for mode: by_candles)
 candles_limit: 2000
 
@@ -28,6 +27,10 @@ mode: "by_candles"
 # ===================================================================
 ## Run Configuration
 # ===================================================================
+
+# Strategy settings
+strategy:
+  risk_reward_ratio: 2.0  # RR ratio for take profit calculation
 
 # Output folder for trade reports
 output_folder: "res/output"

@@ -15,7 +15,7 @@ import pandas as pd
 from src.strategy import Config, Strategy, STRATEGY_NAME
 
 # Import trade simulation and report generation
-from src.statistics import TradeSimulator, generate_trade_report
+from src.statistics import TradeSimulator, generate_trade_orders
 
 
 def load_data(file_path: str) -> pd.DataFrame:
@@ -31,14 +31,16 @@ def get_symbol_from_filename(filename: str) -> str:
     return filename.replace('.csv', '')
 
 
-def create_config(DATA_FOLDER, OUTPUT_FOLDER) -> Config:
-    """Create Config with system paths."""
+def create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio: float = 2.0) -> Config:
+    """Create Config with system paths and risk management settings."""
     return Config(
         data_folder=DATA_FOLDER,
         output_folder=OUTPUT_FOLDER,
+        risk_reward_ratio=risk_reward_ratio,
     )
 
-def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None):
+
+def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None, risk_reward_ratio: float = 2.0):
     """Main execution function
     
     Args:
@@ -47,8 +49,9 @@ def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str =
         timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h"). 
                    If provided, only files matching *_{timeframe}.csv will be processed.
                    If None, all CSV files will be processed.
+        risk_reward_ratio: Risk/reward ratio for take profit calculation (default: 2.0)
     """
-    config = create_config(DATA_FOLDER, OUTPUT_FOLDER)
+    config = create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio)
     
     # Create output folder if not exists
     output_dir = Path(config.output_folder)
@@ -82,7 +85,7 @@ def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str =
         trades = simulator.simulate(signals, df)
         
         # Save trades to CSV
-        generate_trade_report(trades, str(output_dir), symbol)
+        generate_trade_orders(trades, str(output_dir), symbol)
 
 
 if __name__ == "__main__":

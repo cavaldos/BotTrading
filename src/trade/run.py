@@ -72,6 +72,9 @@ FETCH_INTERVAL = TIMEFRAMES_CONFIG.get("fetch_interval", 60)  # Default 60 secon
 REFRESH_RATE = CONFIG["dashboard"]["refresh_rate"]
 MAX_LOGS = CONFIG["dashboard"]["max_logs"]
 
+# Strategy settings
+RISK_REWARD_RATIO = CONFIG["strategy"]["risk_reward_ratio"]
+
 
 # =============================================================================
 # TIMEFRAME UTILITIES
@@ -229,7 +232,7 @@ def run_cycle(timeframe: str):
          
          tf_state.status = "Executing..."
          state.add_log(f"TF[{timeframe}]", "Running execute...")
-         execute(DATA_FOLDER, OUTPUT_FOLDER, timeframe)
+         execute(DATA_FOLDER, OUTPUT_FOLDER, timeframe, RISK_REWARD_RATIO)
          
          tf_state.cycles += 1
          tf_state.last_run = datetime.now().strftime("%H:%M:%S")
@@ -345,7 +348,8 @@ def main():
                          CURRENCIES,
                          FETCH_INTERVAL,
                          OUTPUT_FOLDER,
-                         LOG_FILE
+                         LOG_FILE,
+                         RISK_REWARD_RATIO
                     )
                     time.sleep(1.0 / REFRESH_RATE)
      except KeyboardInterrupt:

@@ -41,7 +41,7 @@ from datetime import datetime
 from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 from numba import njit
-from src.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
+from src.utils.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
 
 
 # ==================== STRATEGY NAME ====================
@@ -57,6 +57,7 @@ class Config:
     # === SYSTEM SETTINGS (set by main.py) ===
     data_folder: str = "src/data"
     output_folder: str = "src/output"
+    risk_reward_ratio: float = 2.0  # Loaded from YAML config
     
     # === STRUCTURE DETECTION ===
     swing_length: int = 10          # Lookback for swing structure (adjusted for 15m/30m)
@@ -69,15 +70,13 @@ class Config:
     # === ORDER BLOCK ===
     ob_mitigation: str = "high_low" # "close" or "high_low"
     ob_body_ratio: float = 0.5      # Minimum body/range ratio for OB (filter weak candles like doji)
-    ob_body_ratio: float = 0.5      # Minimum body/range ratio for OB (filter weak candles like doji)
     
     # === FVG ===
     fvg_atr_filter: bool = True     # Filter small FVGs using ATR
     
     # === RISK MANAGEMENT ===
     sl_buffer_pct: float = 0.1      # Buffer SL (% of OB range)
-    sl_multiplier: float = 1.05   # Hệ số mở rộng SL (1.0 = bình thường, 1.1 = mở rộng 10% tránh stop hunt)
-    risk_reward_ratio: float = 2.0  # Fixed RR = 1:2
+    sl_multiplier: float = 1.05     # Hệ số mở rộng SL (1.0 = bình thường, 1.1 = mở rộng 10% tránh stop hunt)
     risk_per_trade: float = 10.0    # USD
     
     # === REVERSAL PATTERN FILTER ===
@@ -763,6 +762,10 @@ class Strategy:
         confirmed_internal_highs = []
         confirmed_internal_lows = []
         
+        # For O(1) EQH/EQL lookup: dict[price_rounded] = SwingPoint
+        internal_highs_by_price = {}  # Cache để tìm EQH nhanh
+        internal_lows_by_price = {}   # Cache để tìm EQL nhanh
+        
         last_swing_high = None
         last_swing_low = None
         
@@ -999,16 +1002,18 @@ class Strategy:
                     ob.has_liquidity = self._check_liquidity_for_ob(ob, all_equal_hls, current_idx)
             
             # 7. Check for entry at CURRENT bar
-            obs_to_remove = []
+            # Use list comprehension instead of remove() for O(n) performance
+            remaining_obs = []
             
             for ob in active_obs:
-                if ob.entry_triggered:
-                    if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
-                        ob.is_mitigated = True
-                        obs_to_remove.append(ob)
-                    continue
+                is_mitigated = self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx])
                 
-                if self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
+                if is_mitigated:
+                    ob.is_mitigated = True
+                    continue  # Skip to next OB, don't add to remaining_obs
+                
+                # Only check entry if not yet triggered
+                if not ob.entry_triggered and self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
                     # Check if current candle is a reversal pattern
                     is_reversal = self._is_reversal_candle(opens, closes, highs, lows, 
                                                            current_idx, ob.bias)
@@ -1028,14 +1033,10 @@ class Strategy:
                             signals.append(signal)
                             ob.entry_triggered = True
                 
-                if self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx]):
-                    ob.is_mitigated = True
-                    obs_to_remove.append(ob)
+                remaining_obs.append(ob)
             
-            # Remove mitigated OBs
-            for ob in obs_to_remove:
-                if ob in active_obs:
-                    active_obs.remove(ob)
+            # Replace active_obs with filtered list
+            active_obs = remaining_obs
         
         return signals
     

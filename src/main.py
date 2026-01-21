@@ -25,7 +25,7 @@ from src.strategy import Config, Strategy, Signal, STRATEGY_NAME
 from src.statistics import (
     Trade,
     TradeSimulator,
-    generate_trade_report,
+    generate_trade_orders,
     generate_summary_report,
     generate_text_report,
     print_quick_stats,
@@ -33,7 +33,7 @@ from src.statistics import (
 )
 
 # Import config loader
-from src.utils.get_data import load_config
+from src.config import load_config
 
 
 # ==============================================================================
@@ -43,6 +43,7 @@ DEFAULT_DATA_FOLDER = "res/data"
 DEFAULT_OUTPUT_FOLDER = "res/output"
 DEFAULT_REPORT_FOLDER = "res/report"
 DEFAULT_BACKTEST_RESULTS_FILE = "backtest_results"
+DEFAULT_RISK_REWARD_RATIO = 2.0
 
 
 # ==============================================================================
@@ -65,20 +66,27 @@ def get_symbol_from_filename(filename: str) -> str:
 
 
 def create_config() -> Config:
-    """
-    Create Config with system paths from data_config.yaml.
-    Strategy-specific settings use defaults from strategy.py.
-    """
-    # Load paths from data_config.yaml
-    data_config = load_config()
-    
-    data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
-    output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
-    
-    return Config(
-        data_folder=data_folder,
-        output_folder=output_folder,
-    )
+     """
+     Create Config with system paths and risk settings from data_config.yaml.
+     Strategy-specific settings use defaults from strategy.py.
+     """
+     # Load paths from data_config.yaml
+     data_config = load_config()
+     
+     data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
+     output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
+     
+     # Support both top-level and nested strategy section
+     if 'strategy' in data_config and isinstance(data_config['strategy'], dict):
+         risk_reward_ratio = data_config['strategy'].get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
+     else:
+         risk_reward_ratio = data_config.get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
+     
+     return Config(
+         data_folder=data_folder,
+         output_folder=output_folder,
+         risk_reward_ratio=risk_reward_ratio,
+     )
 
 
 def get_report_folder() -> str:
@@ -164,7 +172,7 @@ def main():
         print_quick_stats(summary)
         
         # Generate trade CSV report for this symbol
-        generate_trade_report(trades, str(output_dir), symbol)
+        generate_trade_orders(trades, str(output_dir), symbol)
     
     print("\n" + "-" * 60)
     print("Generating summary report...")
