@@ -287,8 +287,27 @@ def append_latest_candle(currencies, timeframes, folder_path):
             _append_single_candle(currency, timeframe, folder_path)
 
 
+def _extract_timestamp_from_line(line):
+    """Extract timestamp string from a CSV data line.
+    
+    Returns the timestamp part (e.g., '2026-01-22 05:15:00') or None if invalid.
+    """
+    try:
+        # Format: "2026-01-22 05:15:00, 892.95, 892.95, 892.49, 892.49, 31.511"
+        parts = line.strip().split(',')
+        if len(parts) >= 1:
+            return parts[0].strip()
+    except Exception:
+        pass
+    return None
+
+
 def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
-    """Append latest candle for a single currency/timeframe pair (for parallel execution).
+    """Append or update latest candle for a single currency/timeframe pair.
+    
+    If the latest candle has the same timestamp as the last candle in the file,
+    it will UPDATE (replace) that candle instead of appending a new one.
+    This prevents duplicate entries when polling faster than the candle interval.
     
     Includes retry logic and proper error handling to handle race conditions
     when files/folders may be deleted or modified by other threads.
@@ -330,13 +349,25 @@ def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
                 with open(filename, 'r') as f:
                     lines = f.readlines()
                 
-                # Keep header and all data rows except the second row (index 1)
-                if len(lines) > 2:
-                    # Remove the second data row (index 1)
-                    lines = [lines[0]] + lines[2:]
-                
-                # Append new candle
-                lines.append(new_row)
+                # Check if file has data (more than just header)
+                if len(lines) > 1:
+                    # Get timestamp of the last candle in file
+                    last_line = lines[-1]
+                    last_timestamp = _extract_timestamp_from_line(last_line)
+                    
+                    if last_timestamp == timestamp:
+                        # Same timestamp: UPDATE the last candle (replace it)
+                        lines[-1] = new_row
+                    else:
+                        # Different timestamp: This is a NEW candle
+                        # Remove the oldest data row (index 1, after header) to maintain fixed size
+                        if len(lines) > 2:
+                            lines = [lines[0]] + lines[2:]
+                        # Append the new candle
+                        lines.append(new_row)
+                else:
+                    # Only header exists, just append the new candle
+                    lines.append(new_row)
                 
                 # Write to temp file first (atomic write)
                 with open(temp_filename, 'w') as f:
