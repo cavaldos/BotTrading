@@ -69,7 +69,7 @@ class Config:
     
     # === ORDER BLOCK ===
     ob_mitigation: str = "high_low" # "close" or "high_low"
-    ob_body_ratio: float = 0.5      # Minimum body/range ratio for OB (filter weak candles like doji)
+    # Note: body_ratio filter removed - using LuxAlgo extreme candle logic instead
     
     # === FVG ===
     fvg_atr_filter: bool = True     # Filter small FVGs using ATR
@@ -108,7 +108,7 @@ class Config:
             "internal_length": self.internal_length,
             "eqhl_length": self.eqhl_length,
             "eqhl_threshold": self.eqhl_threshold,
-            "ob_body_ratio": self.ob_body_ratio,
+            "ob_detection": "LuxAlgo extreme candle",  # Using LuxAlgo logic
             "sl_buffer_pct": self.sl_buffer_pct,
             "sl_multiplier": self.sl_multiplier,
             "risk_reward_ratio": self.risk_reward_ratio,
@@ -142,14 +142,13 @@ class Structure:
 
 @dataclass
 class OrderBlock:
-    """Represents an Order Block zone"""
+    """Represents an Order Block zone (LuxAlgo-style detection)"""
     high: float
     low: float
     time: datetime
     index: int
-    bias: str           # 'BULLISH' or 'BEARISH'
-    is_choch_ob: bool   # True if this OB created a CHoCH
-    body_ratio: float = 0.0     # Body to range ratio (for filtering weak candles)
+    bias: str               # 'BULLISH' or 'BEARISH'
+    structure_type: str     # 'CHoCH' or 'BOS' (type of structure break that created this OB)
     structure: Optional[Structure] = None  # Reference to CHoCH/BOS
     is_mitigated: bool = False
     has_fvg: bool = False       # True if FVG appeared with/after this OB
@@ -289,6 +288,76 @@ def _precompute_all_swings_jit(highs: np.ndarray, lows: np.ndarray, length: int)
             sl_count += 1
     
     return sh_indices[:sh_count].copy(), sl_indices[:sl_count].copy()
+
+
+@njit(cache=True)
+def _precompute_parsed_hl_jit(highs: np.ndarray, lows: np.ndarray, atr: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Pre-compute parsed high/low for high volatility bars (LuxAlgo logic).
+    
+    If candle range >= 2 * ATR, swap high/low:
+    - parsedHigh = low (for high volatility bar)
+    - parsedLow = high (for high volatility bar)
+    
+    This helps identify the "extreme" point of momentum candles.
+    """
+    n = len(highs)
+    parsed_highs = np.empty(n, dtype=np.float64)
+    parsed_lows = np.empty(n, dtype=np.float64)
+    
+    for i in range(n):
+        candle_range = highs[i] - lows[i]
+        if candle_range >= 2.0 * atr[i]:
+            # High volatility bar - swap
+            parsed_highs[i] = lows[i]
+            parsed_lows[i] = highs[i]
+        else:
+            parsed_highs[i] = highs[i]
+            parsed_lows[i] = lows[i]
+    
+    return parsed_highs, parsed_lows
+
+
+@njit(cache=True)
+def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray, 
+                       start_idx: int, end_idx: int, is_bullish: bool) -> int:
+    """
+    Find Order Block candle index using LuxAlgo logic.
+    
+    For Bullish OB: Find candle with LOWEST parsed_low in range
+    For Bearish OB: Find candle with HIGHEST parsed_high in range
+    
+    Args:
+        parsed_highs: Pre-computed parsed highs array
+        parsed_lows: Pre-computed parsed lows array
+        start_idx: Start of search range (pivot index)
+        end_idx: End of search range (break index)
+        is_bullish: True for Bullish OB, False for Bearish OB
+    
+    Returns:
+        Index of the OB candle, or -1 if invalid range
+    """
+    if start_idx >= end_idx or start_idx < 0:
+        return -1
+    
+    if is_bullish:
+        # Find candle with minimum parsed_low
+        min_val = parsed_lows[start_idx]
+        min_idx = start_idx
+        for i in range(start_idx + 1, end_idx):
+            if parsed_lows[i] < min_val:
+                min_val = parsed_lows[i]
+                min_idx = i
+        return min_idx
+    else:
+        # Find candle with maximum parsed_high
+        max_val = parsed_highs[start_idx]
+        max_idx = start_idx
+        for i in range(start_idx + 1, end_idx):
+            if parsed_highs[i] > max_val:
+                max_val = parsed_highs[i]
+                max_idx = i
+        return max_idx
 
 
 @njit(cache=True)
@@ -526,51 +595,45 @@ def detect_structure(df: pd.DataFrame, swing_points: List[SwingPoint]) -> List[S
     return structures
 
 
-def detect_order_blocks(df: pd.DataFrame, structures: List[Structure]) -> List[OrderBlock]:
+def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.Series) -> List[OrderBlock]:
     """
-    Detect Order Blocks from structure breaks.
+    Detect Order Blocks from structure breaks using LuxAlgo logic.
     
-    Order Block is the last opposite candle before the structure break:
-    - Bullish OB: Last bearish (red) candle before bullish break
-    - Bearish OB: Last bullish (green) candle before bearish break
+    LuxAlgo Order Block Detection:
+    - For Bullish OB: Find candle with LOWEST parsed_low in range from pivot to break
+    - For Bearish OB: Find candle with HIGHEST parsed_high in range from pivot to break
+    - High volatility bars (range >= 2*ATR) have their high/low swapped
+    
+    Creates OB for both CHoCH and BOS structure breaks.
     """
     order_blocks = []
     
-    opens = df['Open'].values
-    closes = df['Close'].values
-    highs = df['High'].values
-    lows = df['Low'].values
+    highs = df['High'].values.astype(np.float64)
+    lows = df['Low'].values.astype(np.float64)
     times = df['Time'].values
+    atr_values = atr.values.astype(np.float64)
+    
+    # Pre-compute parsed highs/lows for high volatility filter
+    parsed_highs, parsed_lows = _precompute_parsed_hl_jit(highs, lows, atr_values)
     
     for structure in structures:
-        # Find the last opposite candle before the break
-        ob_index = None
+        # Find OB using LuxAlgo logic - extreme candle in range
+        ob_index = _find_ob_index_jit(
+            parsed_highs, 
+            parsed_lows,
+            structure.pivot_index,
+            structure.break_index,
+            is_bullish=(structure.bias == 'BULLISH')
+        )
         
-        if structure.bias == 'BULLISH':
-            # Looking for last bearish candle before bullish break
-            for i in range(structure.break_index - 1, structure.pivot_index - 1, -1):
-                if i < 0:
-                    break
-                if closes[i] < opens[i]:  # Bearish candle
-                    ob_index = i
-                    break
-        else:  # BEARISH
-            # Looking for last bullish candle before bearish break
-            for i in range(structure.break_index - 1, structure.pivot_index - 1, -1):
-                if i < 0:
-                    break
-                if closes[i] > opens[i]:  # Bullish candle
-                    ob_index = i
-                    break
-        
-        if ob_index is not None:
+        if ob_index >= 0:
             ob = OrderBlock(
-                high=highs[ob_index],
-                low=lows[ob_index],
+                high=parsed_highs[ob_index],
+                low=parsed_lows[ob_index],
                 time=pd.to_datetime(times[ob_index]),
                 index=ob_index,
                 bias=structure.bias,
-                is_choch_ob=(structure.type == 'CHoCH'),
+                structure_type=structure.type,  # 'CHoCH' or 'BOS'
                 structure=structure
             )
             order_blocks.append(ob)
@@ -756,6 +819,9 @@ class Strategy:
             bias = 'BULLISH' if fvg_biases_arr[i] == 1 else 'BEARISH'
             fvg_by_index[idx] = (fvg_tops_arr[i], fvg_bottoms_arr[i], bias)
         
+        # ========== PRE-COMPUTE PARSED HIGHS/LOWS (LuxAlgo High Volatility Filter) ==========
+        parsed_highs, parsed_lows = _precompute_parsed_hl_jit(highs, lows, atr_values)
+        
         # ========== MAIN LOOP VARIABLES ==========
         confirmed_swing_highs = []  # List of SwingPoint
         confirmed_swing_lows = []   # List of SwingPoint
@@ -863,29 +929,26 @@ class Strategy:
                     current_trend = 'BULLISH'
                     last_broken_high_index = current_swing_high.index
                     
-                    # Create order block for CHoCH
-                    if structure_type == 'CHoCH':
-                        for i in range(current_idx - 1, structure.pivot_index - 1, -1):
-                            if i >= 0 and closes[i] < opens[i]:
-                                # Check body ratio - filter weak candles (doji, spinning top)
-                                candle_range = highs[i] - lows[i]
-                                body = abs(closes[i] - opens[i])
-                                body_ratio = body / candle_range if candle_range > 0 else 0
-                                
-                                if body_ratio >= self.config.ob_body_ratio:
-                                    ob = OrderBlock(
-                                        high=highs[i],
-                                        low=lows[i],
-                                        time=pd.to_datetime(times[i]),
-                                        index=i,
-                                        bias='BULLISH',
-                                        is_choch_ob=True,
-                                        body_ratio=body_ratio,
-                                        structure=structure
-                                    )
-                                    ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
-                                    active_obs.append(ob)
-                                    break
+                    # Create order block for CHoCH and BOS (LuxAlgo logic)
+                    # Find extreme candle in range using parsed highs/lows
+                    ob_index = _find_ob_index_jit(
+                        parsed_highs, parsed_lows,
+                        structure.pivot_index, current_idx,
+                        is_bullish=True
+                    )
+                    
+                    if ob_index >= 0:
+                        ob = OrderBlock(
+                            high=parsed_highs[ob_index],
+                            low=parsed_lows[ob_index],
+                            time=pd.to_datetime(times[ob_index]),
+                            index=ob_index,
+                            bias='BULLISH',
+                            structure_type=structure_type,
+                            structure=structure
+                        )
+                        ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                        active_obs.append(ob)
                 
                 # Check for break of swing low
                 if current_swing_low and closes[current_idx] < current_swing_low.price:
@@ -906,29 +969,26 @@ class Strategy:
                     current_trend = 'BEARISH'
                     last_broken_low_index = current_swing_low.index
                     
-                    # Create order block for CHoCH
-                    if structure_type == 'CHoCH':
-                        for i in range(current_idx - 1, structure.pivot_index - 1, -1):
-                            if i >= 0 and closes[i] > opens[i]:
-                                # Check body ratio - filter weak candles (doji, spinning top)
-                                candle_range = highs[i] - lows[i]
-                                body = abs(closes[i] - opens[i])
-                                body_ratio = body / candle_range if candle_range > 0 else 0
-                                
-                                if body_ratio >= self.config.ob_body_ratio:
-                                    ob = OrderBlock(
-                                        high=highs[i],
-                                        low=lows[i],
-                                        time=pd.to_datetime(times[i]),
-                                        index=i,
-                                        bias='BEARISH',
-                                        is_choch_ob=True,
-                                        body_ratio=body_ratio,
-                                        structure=structure
-                                    )
-                                    ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
-                                    active_obs.append(ob)
-                                    break
+                    # Create order block for CHoCH and BOS (LuxAlgo logic)
+                    # Find extreme candle in range using parsed highs/lows
+                    ob_index = _find_ob_index_jit(
+                        parsed_highs, parsed_lows,
+                        structure.pivot_index, current_idx,
+                        is_bullish=False
+                    )
+                    
+                    if ob_index >= 0:
+                        ob = OrderBlock(
+                            high=parsed_highs[ob_index],
+                            low=parsed_lows[ob_index],
+                            time=pd.to_datetime(times[ob_index]),
+                            index=ob_index,
+                            bias='BEARISH',
+                            structure_type=structure_type,
+                            structure=structure
+                        )
+                        ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
+                        active_obs.append(ob)
             
             # 4. Detect FVG at current bar using pre-computed data
             if current_idx in fvg_by_index:
