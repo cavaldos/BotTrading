@@ -118,8 +118,8 @@ def detect_smc_patterns(df: pd.DataFrame) -> dict:
     # Detect structures (BOS/CHoCH)
     structures = detect_structure(df, swing_points)
     
-    # Detect order blocks
-    order_blocks = detect_order_blocks(df, structures)
+    # Detect order blocks (requires atr parameter now)
+    order_blocks = detect_order_blocks(df, structures, atr)
     
     return {
         'order_blocks': order_blocks,
@@ -227,7 +227,7 @@ def export_order_blocks(df: pd.DataFrame, order_blocks: list, max_obs: int = 100
             'high': float(ob.high),
             'low': float(ob.low),
             'bias': ob.bias,
-            'isChochOB': ob.is_choch_ob,
+            'structureType': ob.structure_type,  # 'CHoCH' or 'BOS'
             'color': COLORS['bullish_ob'] if ob.bias == 'BULLISH' else COLORS['bearish_ob'],
         })
     

@@ -77,6 +77,7 @@ class Config:
     # === RISK MANAGEMENT ===
     sl_buffer_pct: float = 0.1      # Buffer SL (% of OB range)
     sl_multiplier: float = 1.05     # Hệ số mở rộng SL (1.0 = bình thường, 1.1 = mở rộng 10% tránh stop hunt)
+    min_sl_pct: float = 0.0         # Minimum SL % - không đặt lệnh nếu SL < x% giá entry
     risk_per_trade: float = 10.0    # USD
     
     # === REVERSAL PATTERN FILTER ===
@@ -111,6 +112,7 @@ class Config:
             "ob_detection": "LuxAlgo extreme candle",  # Using LuxAlgo logic
             "sl_buffer_pct": self.sl_buffer_pct,
             "sl_multiplier": self.sl_multiplier,
+            "min_sl_pct": self.min_sl_pct,
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
             "reversal_pattern_ids": self.reversal_pattern_ids,
@@ -1248,6 +1250,11 @@ class Strategy:
             return None
         if trade_type == 'SHORT' and stop_loss <= entry:
             return None
+        
+        # # Check minimum SL percentage - skip trade if SL is too small
+        # sl_pct = abs(entry - stop_loss) / entry * 100
+        # if sl_pct < self.config.min_sl_pct:
+        #     return None
         
         return Signal(
             symbol=symbol,
