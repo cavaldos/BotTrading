@@ -6,6 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 
+from src.trade.bybit.order_executor import validate_and_place_order
 
 from .notify import send_entry_telegram
 from .discord_notify import send_entry_discord
@@ -147,71 +148,112 @@ def scan_open_orders(output_dir: Path) -> list:
             continue
     
     return open_orders
+def place_order(
+    symbol: str,
+    order_type: str,
+    entry_price: float,
+    stop_loss: float,
+    take_profit: float,
+    entry_time: str,
+    leverage: int = 20,
+    risk_usd: float = 5,
+) -> dict:
+    order_type = order_type.strip().upper()
+    side = 'buy' if order_type == 'LONG' else 'sell'
+    
+    # Đặt lệnh trên Bybit
+    order_result = validate_and_place_order(
+        symbol=symbol,
+        side=side,
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        leverage=leverage,
+        risk_usd=risk_usd,
+    )
+    
+    if not order_result['success']:
+        return order_result
+    
+    # Lấy giá fill thực tế
+    actual_entry = order_result.get('entry_price', entry_price)
+    return order_result
 
 
 def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
-    """
-    Kiểm tra các lệnh Open và gửi Telegram nếu chưa gửi.
-    Args:
-        output_dir: Đường dẫn đến thư mục chứa các file CSV (vd: "src/output")
-        log_file: Đường dẫn đến file log (vd: "trade/logs/sent_orders.json")
-    Returns: Số lệnh đã gửi mới
-    """
-    output_path = Path(output_dir)
-    log_path = Path(log_file)
-    
-    # Cập nhật status từ CSV trước khi xử lý
-    updated_status_count = update_order_status_from_csv(output_dir, log_file)
-    
-    sent_keys, sent_orders = load_sent_orders(log_path)
-    open_orders = scan_open_orders(output_path)
-    
-    new_sent_count = 0
-    
-    for row in open_orders:
-        order_key = generate_order_key(row)
-        
-        if order_key in sent_keys:
-            continue
-        
-        try:
-            send_entry_telegram(
-                type=row['Type'],
-                entry=float(row['Entry_Price']),
-                stoploss=float(row['Stop_Loss']),
-                takeprofit=float(row['Take_Profit']),
-                time=row['Entry_Time'],
-                name_coin=row['Symbol']
-            )
-            send_entry_discord(
-                type=row['Type'],
-                entry=float(row['Entry_Price']),
-                stoploss=float(row['Stop_Loss']),
-                takeprofit=float(row['Take_Profit']),
-                time=row['Entry_Time'],
-                name_coin=row['Symbol']
-            )
-            
-            # Thêm order với thông tin chi tiết
-            order_detail = {
-                "key": order_key,
-                "entry_price": float(row['Entry_Price']),
-                "stop_loss": float(row['Stop_Loss']),
-                "take_profit": float(row['Take_Profit']),
-                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "status": "OPEN"
-            }
-            sent_orders.append(order_detail)
-            sent_keys.add(order_key)
-            new_sent_count += 1
-            
-        except:
-            continue
-    
-    if new_sent_count > 0:
-        save_sent_orders(log_path, sent_orders)
-    
-    return new_sent_count
+     """
+     Kiểm tra các lệnh Open, đặt lệnh trên Bybit, sau đó gửi Telegram/Discord nếu chưa gửi.
+     Args:
+         output_dir: Đường dẫn đến thư mục chứa các file CSV (vd: "src/output")
+         log_file: Đường dẫn đến file log (vd: "trade/logs/sent_orders.json")
+     Returns: Số lệnh đã gửi mới
+     """
+     output_path = Path(output_dir)
+     log_path = Path(log_file)
+     
+     # Cập nhật status từ CSV trước khi xử lý
+     updated_status_count = update_order_status_from_csv(output_dir, log_file)
+     
+     sent_keys, sent_orders = load_sent_orders(log_path)
+     open_orders = scan_open_orders(output_path)
+     
+     new_sent_count = 0
+     
+     for row in open_orders:
+         order_key = generate_order_key(row)
+         
+         if order_key in sent_keys:
+             continue
+         
+         try:
+             # Bước 1: Đặt lệnh trên Bybit trước
+             order_result = place_order(
+                 symbol=row['Symbol'],
+                 order_type=row['Type'],
+                 entry_price=float(row['Entry_Price']),
+                 stop_loss=float(row['Stop_Loss']),
+                 take_profit=float(row['Take_Profit']),
+                 entry_time=row['Entry_Time']
+             )
+             
+             # Bước 2: Gửi thông báo (dù đặt lệnh thành công hay thất bại)
+             send_entry_telegram(
+                 type=row['Type'],
+                 entry=float(row['Entry_Price']),
+                 stoploss=float(row['Stop_Loss']),
+                 takeprofit=float(row['Take_Profit']),
+                 time=row['Entry_Time'],
+                 name_coin=row['Symbol']
+             )
+             send_entry_discord(
+                 type=row['Type'],
+                 entry=float(row['Entry_Price']),
+                 stoploss=float(row['Stop_Loss']),
+                 takeprofit=float(row['Take_Profit']),
+                 time=row['Entry_Time'],
+                 name_coin=row['Symbol']
+             )
+             
+             # Thêm order với thông tin chi tiết
+             order_detail = {
+                 "key": order_key,
+                 "entry_price": float(row['Entry_Price']),
+                 "stop_loss": float(row['Stop_Loss']),
+                 "take_profit": float(row['Take_Profit']),
+                 "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                 "status": "OPEN"
+             }
+             sent_orders.append(order_detail)
+             sent_keys.add(order_key)
+             new_sent_count += 1
+             
+         except:
+             continue
+     
+     if new_sent_count > 0:
+         save_sent_orders(log_path, sent_orders)
+     
+     return new_sent_count
 
 
 if __name__ == "__main__":
