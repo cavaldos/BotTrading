@@ -231,7 +231,8 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                  stoploss=float(row['Stop_Loss']),
                  takeprofit=float(row['Take_Profit']),
                  time=row['Entry_Time'],
-                 name_coin=row['Symbol']
+                 name_coin=row['Symbol'],
+                 result=order_result
              )
              
              # Thêm order với thông tin chi tiết

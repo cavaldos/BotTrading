@@ -29,7 +29,7 @@ def send_custom_message(message: str) -> None:
         print(f"✗ Lỗi gửi tin nhắn: {e}")
 
 
-def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin):
+def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None):
     """
     Gửi thông tin entry lệnh giao dịch đến Discord
     """
@@ -80,6 +80,7 @@ Leverage:   {leverage}x
 Risk:       ${risk_per_trade}
 
 R:R Ratio:  1:{rr_ratio:.2f}
+{f'INFO: {result}' if result else ''}
 ```"""
 
     send_custom_message(message)

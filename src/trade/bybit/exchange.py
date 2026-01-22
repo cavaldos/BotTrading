@@ -25,33 +25,42 @@ def create_bybit_demo_exchange(api_key: str, secret: str) -> ccxt.bybit:
     return exchange
 
 
-def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_usd: float = 5) -> dict:
+def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_usd: float = 5, side: str = 'buy') -> dict:
     """
-    Formula: 
-    - price_diff = entry_price - stop_loss
-    - quantity = risk_usd / price_diff  (số lượng để risk = risk_usd USD)
+    Calculate position size and margin for a trade.
+
+    Formula:
+    - price_diff = abs(entry_price - stop_loss)
+    - quantity = risk_usd / price_diff  (quantity such that risk = risk_usd USD)
     - notional = quantity × entry_price
     - margin = notional / leverage
-    
+
     Args:
-        entry_price: Giá entry (USDT)
-        stop_loss: Giá stop loss (USDT)
-        leverage: Đòn bẩy (ví dụ: 20)
-        risk_usd: Rủi ro tối đa (USD)
-    
+        entry_price: Entry price (USDT)
+        stop_loss: Stop loss price (USDT)
+        leverage: Leverage (e.g., 20)
+        risk_usd: Maximum risk in USD
+        side: 'buy' for LONG, 'sell' for SHORT
+
     Returns:
-        dict: Thông tin vị trí (quantity, margin, notional_value)
+        dict: Position information (quantity, margin, notional_value)
     """
-    if entry_price <= stop_loss:
-        raise ValueError("Entry price phải cao hơn stop loss")
-    
     if leverage <= 0:
         raise ValueError("Leverage phải > 0")
     
-    price_diff = entry_price - stop_loss
+    # Validate stop loss theo side
+    if side.lower() == 'buy':  # LONG
+        if entry_price <= stop_loss:
+            raise ValueError("LONG: Entry price phải cao hơn stop loss")
+    else:  # SHORT
+        if entry_price >= stop_loss:
+            raise ValueError("SHORT: Stop loss phải cao hơn entry price")
+    
+    # Tính price diff (luôn dương)
+    price_diff = abs(entry_price - stop_loss)
     
     # quantity = risk_usd / price_diff
-    # Nếu giá drop từ entry đến stop_loss, lỗ = price_diff * quantity = risk_usd
+    # Nếu giá chạm stop_loss, lỗ = price_diff * quantity = risk_usd
     quantity = risk_usd / price_diff
     
     # Margin = notional_value / leverage
@@ -68,6 +77,7 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
         'actual_risk': round(actual_risk, 2),
         'price_diff': round(price_diff, 2),
         'leverage': leverage,
+        'side': side.lower(),
     }
 
 
@@ -141,30 +151,80 @@ def format_symbol(symbol: str) -> str:
     return f"{symbol}/USDT:USDT"
 
 
-def get_position_mode(exchange: ccxt.bybit, symbol: str = None) -> dict:
+def enable_hedge_mode(exchange: ccxt.bybit, symbol: str = None) -> dict:
     """
-    Detect Position Mode (One-Way vs Hedge Mode) từ tài khoản Bybit
+    Enable Hedge Mode on the Bybit account (allow long and short simultaneously).
+
     Args:
-        exchange: CCXT exchange instance (bybit)
-        symbol: Symbol để kiểm tra (optional, nếu không có sẽ dùng BTCUSDT)
-    
+        exchange: CCXT bybit instance
+        symbol: Symbol (optional, default 'BTCUSDT')
+
     Returns:
-        dict: {
-            'mode': 'one_way' hoặc 'hedge',
-            'position_idx_long': 0 hoặc 1,
-            'position_idx_short': 0 hoặc 2,
-        }
+        dict: Result of enabling hedge mode
     """
     try:
-        # Sử dụng API v5 để lấy position mode
-        # Endpoint: GET /v5/position/switch-mode hoặc check từ position info
-        
         api_symbol = 'BTCUSDT'
         if symbol:
             formatted = format_symbol(symbol)
             api_symbol = formatted.replace('/', '').replace(':USDT', '')
         
-        # Gọi API v5 để lấy thông tin position mode
+        # Call API v5 to switch to Hedge Mode
+        # Endpoint: POST /v5/position/switch-mode
+        result = exchange.privatePostV5PositionSwitchMode({
+            'category': 'linear',
+            'symbol': api_symbol,
+            'mode': 3,  # 0 = One-Way, 3 = Hedge Mode
+        })
+        
+        ret_code = result.get('retCode', -1)
+        ret_msg = result.get('retMsg', 'Unknown error')
+        
+        if ret_code == 0:
+            return {
+                'success': True,
+                'message': 'Hedge mode enabled',
+                'symbol': api_symbol,
+            }
+        elif ret_code == 110025:  # Already in hedge mode
+            return {
+                'success': True,
+                'message': 'Already in hedge mode',
+                'symbol': api_symbol,
+            }
+        else:
+            return {
+                'success': False,
+                'error': f'{ret_msg} (code: {ret_code})',
+            }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+        }
+
+
+def get_position_mode(exchange: ccxt.bybit, symbol: str = None) -> dict:
+    """
+    Detect the account Position Mode (One-Way vs Hedge Mode) on Bybit.
+
+    Args:
+        exchange: CCXT bybit instance
+        symbol: Symbol to check (optional, default 'BTCUSDT')
+
+    Returns:
+        dict: {
+            'mode': 'one_way' or 'hedge',
+            'position_idx_long': 0 or 1,
+            'position_idx_short': 0 or 2,
+        }
+    """
+    try:
+        # Sử dụng API v5 để lấy position mode
+        api_symbol = 'BTCUSDT'
+        if symbol:
+            formatted = format_symbol(symbol)
+            api_symbol = formatted.replace('/', '').replace(':USDT', '')
+        
         # Method 1: Fetch positions và check positionIdx
         positions = exchange.fetch_positions()
         
@@ -173,32 +233,31 @@ def get_position_mode(exchange: ccxt.bybit, symbol: str = None) -> dict:
             info = pos.get('info', {})
             position_idx = int(info.get('positionIdx', 0))
             if position_idx in [1, 2]:
-                print(f"  Detected Hedge Mode (positionIdx={position_idx})")
                 return {
                     'mode': 'hedge',
                     'position_idx_long': 1,
                     'position_idx_short': 2,
                 }
         
-        # Method 2: Thử gọi API switch-mode để check current mode
+        # Method 2: Call API để check account setting
         try:
-            result = exchange.privateGetV5PositionSwitchMode({
-                'category': 'linear',
-                'symbol': api_symbol,
-            })
-            # Nếu không lỗi, parse kết quả
-            mode_value = result.get('result', {}).get('mode', 0)
-            if mode_value == 3:  # Hedge Mode
-                return {
-                    'mode': 'hedge',
-                    'position_idx_long': 1,
-                    'position_idx_short': 2,
-                }
+            # Fetch account info hoặc positions với symbol cụ thể
+            symbol_positions = exchange.fetch_positions([format_symbol(api_symbol)])
+            for pos in symbol_positions:
+                info = pos.get('info', {})
+                position_idx = int(info.get('positionIdx', 0))
+                # Bybit trả về 2 positions (long & short) khi ở Hedge Mode
+                # Ngay cả khi size = 0
+                if position_idx in [1, 2]:
+                    return {
+                        'mode': 'hedge',
+                        'position_idx_long': 1,
+                        'position_idx_short': 2,
+                    }
         except Exception:
             pass
         
-        # Default: One-Way Mode
-        print(f"  Using One-Way Mode (default)")
+        # Default: Assume One-Way Mode nếu không detect được
         return {
             'mode': 'one_way',
             'position_idx_long': 0,
@@ -206,12 +265,11 @@ def get_position_mode(exchange: ccxt.bybit, symbol: str = None) -> dict:
         }
         
     except Exception as e:
-        print(f"  Warning: Could not detect position mode: {e}")
-        # Default to Hedge Mode (safer cho user đang dùng Hedge)
+        # Default to One-Way Mode để tránh lỗi
         return {
-            'mode': 'hedge',
-            'position_idx_long': 1,
-            'position_idx_short': 2,
+            'mode': 'one_way',
+            'position_idx_long': 0,
+            'position_idx_short': 0,
         }
 
 
@@ -223,39 +281,30 @@ def set_position_sl_tp(
     take_profit: float = None,
 ) -> dict:
     """
-    Đặt Stop Loss và Take Profit trực tiếp cho position bằng Bybit API v5
-    Tự động detect Position Mode (One-Way vs Hedge)
-    
+    Set Stop Loss and Take Profit for a position using Bybit v5 API.
+    Automatically detects Position Mode (One-Way vs Hedge).
+
     Args:
-        exchange: CCXT exchange instance (bybit)
-        symbol: Symbol (ví dụ: 'BTC' hoặc 'BTC/USDT:USDT')
-        side: 'buy' cho long, 'sell' cho short
-        stop_loss: Giá stop loss
-        take_profit: Giá take profit (optional)
-    
+        exchange: CCXT bybit instance
+        symbol: Symbol (e.g., 'BTC' or 'BTC/USDT:USDT')
+        side: 'buy' for long, 'sell' for short
+        stop_loss: Stop loss price
+        take_profit: Take profit price (optional)
+
     Returns:
-        dict: Kết quả đặt SL/TP
+        dict: Result of setting SL/TP
     """
     try:
         formatted_symbol = format_symbol(symbol)
         
-        print(f"\n⚙️  Setting SL/TP for {formatted_symbol}:")
-        print(f"  • Stop Loss: {stop_loss:,.2f}")
-        if take_profit:
-            print(f"  • Take Profit: {take_profit:,.2f}")
-        
         # Detect Position Mode (One-Way vs Hedge)
-        print(f"  • Detecting Position Mode...")
         position_mode = get_position_mode(exchange, symbol)
-        print(f"  • Position Mode: {position_mode['mode'].upper()}")
         
         # Xác định positionIdx dựa trên mode và side
         if side.lower() == 'buy':
             position_idx = position_mode['position_idx_long']
         else:
             position_idx = position_mode['position_idx_short']
-        
-        print(f"  • Position Index: {position_idx}")
         
         # Kiểm tra xem position đã mở chưa
         positions = exchange.fetch_positions([formatted_symbol])
@@ -285,13 +334,10 @@ def set_position_sl_tp(
                     break
         
         if not position or position_size == 0:
-            print(f"⚠️  Position chưa được mở cho {formatted_symbol} (side={side}, positionIdx={position_idx})")
             return {
                 'success': False,
                 'error': f'Position not found for {side} (positionIdx={position_idx})',
             }
-        
-        print(f"  • Position Size: {position_size} contracts")
         
         # Lấy symbol name cho API v5 (BTC/USDT:USDT -> BTCUSDT)
         api_symbol = formatted_symbol.replace('/', '').replace(':USDT', '')
@@ -310,8 +356,6 @@ def set_position_sl_tp(
             params['takeProfit'] = str(take_profit)
             params['tpTriggerBy'] = 'LastPrice'
         
-        print(f"  • Calling API v5 with params: {params}")
-        
         # Sử dụng API v5 endpoint
         result = exchange.privatePostV5PositionTradingStop(params)
         
@@ -320,19 +364,12 @@ def set_position_sl_tp(
         ret_msg = result.get('retMsg', 'Unknown error')
         
         if ret_code != 0:
-            print(f"✗ API Error: {ret_msg} (code: {ret_code})")
             return {
                 'success': False,
                 'error': f'{ret_msg} (code: {ret_code})',
                 'result': result,
             }
         
-        print(f"  ✓ API Response: retCode={ret_code}, retMsg={ret_msg}")
-        print(f"  ✓ Stop Loss: {stop_loss:,.2f}")
-        if take_profit:
-            print(f"  ✓ Take Profit: {take_profit:,.2f}")
-        
-        print(f"✓ SL/TP đã được đặt thành công!")
         return {
             'success': True,
             'stop_loss': stop_loss,
@@ -344,9 +381,6 @@ def set_position_sl_tp(
         }
         
     except Exception as e:
-        print(f"✗ Lỗi khi đặt SL/TP: {e}")
-        import traceback
-        traceback.print_exc()
         return {
             'success': False,
             'error': str(e),
@@ -362,18 +396,18 @@ def place_market_order_with_sl(
     risk_usd: float = 5,
 ) -> dict:
     """
-    Đặt lệnh market order với stop loss
-    
+    Place a market order with a stop loss.
+
     Args:
-        exchange: CCXT exchange instance
-        symbol: Symbol (ví dụ: 'BTCUSDT' hoặc 'BTC/USDT:USDT')
-        side: 'buy' cho long, 'sell' cho short
-        leverage: Đòn bẩy (mặc định 20)
-        stop_loss: Giá stop loss (bắt buộc)
-        risk_usd: Rủi ro (mặc định 5 USD)
-    
+        exchange: CCXT bybit instance
+        symbol: Symbol (e.g., 'BTCUSDT' or 'BTC/USDT:USDT')
+        side: 'buy' for long, 'sell' for short
+        leverage: Leverage (default 20)
+        stop_loss: Stop loss price (required)
+        risk_usd: Risk amount in USD (default 5)
+
     Returns:
-        dict: Thông tin lệnh đặt
+        dict: Order information
     """
     if not stop_loss:
         raise ValueError("Phải nhập stop_loss")
@@ -381,54 +415,50 @@ def place_market_order_with_sl(
     # Format symbol
     symbol = format_symbol(symbol)
     
+    # Bật Hedge Mode để có thể long và short cùng lúc
+    hedge_result = enable_hedge_mode(exchange, symbol)
+    if not hedge_result['success'] and 'Already in hedge mode' not in hedge_result.get('message', ''):
+        print(f"⚠️  Warning: Could not enable hedge mode - {hedge_result.get('error', 'Unknown')}")
+    
+    # Detect Position Mode sau khi enable
+    position_mode = get_position_mode(exchange, symbol)
+    
+    # Xác định positionIdx cho lệnh
+    if side.lower() == 'buy':
+        position_idx = position_mode['position_idx_long']
+    else:
+        position_idx = position_mode['position_idx_short']
+    
     # Lấy giá hiện tại
     ticker = exchange.fetch_ticker(symbol)
     current_price = ticker['last']
-    
-    print(f"\n📊 Symbol: {symbol}")
-    print(f"💰 Giá hiện tại: {current_price:,.2f}")
-    print(f"🎯 Stop Loss: {stop_loss:,.2f}")
-    print(f"📈 Leverage: {leverage}x")
     
     # Tính kích thước vị trí
     position_info = calculate_position_size(
         entry_price=current_price,
         stop_loss=stop_loss,
         leverage=leverage,
-        risk_usd=risk_usd
+        risk_usd=risk_usd,
+        side=side
     )
-    
-    print(f"\n📋 Position Calculation:")
-    print(f"  • Quantity: {position_info['quantity']} BTC")
-    print(f"  • Notional Value: ${position_info['notional_value']:,.2f}")
-    print(f"  • Margin Required: ${position_info['margin_required']:,.2f}")
-    print(f"  • Price Distance SL: ${position_info['price_diff']:,.2f}")
-    print(f"  • Actual Risk: ${position_info['actual_risk']:.2f}")
     
     # Đặt lệnh market order
     try:
         # Set leverage trước (nếu cần)
         try:
             exchange.set_leverage(leverage, symbol)
-            print(f"\n✓ Đã set leverage {leverage}x")
-        except Exception as le:
-            print(f"\nℹ️  Leverage đã được set: {le}")
+        except Exception:
+            pass
         
-        # Đặt lệnh market
+        # Đặt lệnh market với positionIdx
         order = exchange.create_market_order(
             symbol=symbol,
             side=side,
             amount=position_info['quantity'],
             params={
-                'takeProfit': None,  # Có thể thêm later
+                'positionIdx': position_idx,  # Quan trọng: Chỉ định position index
             }
         )
-        
-        print(f"\n✓ Lệnh Market Order đã được đặt!")
-        print(f"  • Order ID: {order['id']}")
-        print(f"  • Status: {order['status']}")
-        print(f"  • Amount: {order['amount']}")
-        print(f"  • Average Price: {order.get('average', current_price)}")
         
         return {
             'success': True,
@@ -436,10 +466,11 @@ def place_market_order_with_sl(
             'position_info': position_info,
             'entry_price': current_price,
             'stop_loss': stop_loss,
+            'position_mode': position_mode['mode'],
+            'position_idx': position_idx,
         }
         
     except Exception as e:
-        print(f"\n✗ Lỗi khi đặt lệnh: {e}")
         return {
             'success': False,
             'error': str(e),
@@ -464,7 +495,7 @@ if __name__ == '__main__':
         leverage = 20
         risk = 5
         
-        pos_info = calculate_position_size(entry_price, stop_loss, leverage, risk)
+        pos_info = calculate_position_size(entry_price, stop_loss, leverage, risk, side='buy')
         print(f"  Entry: ${entry_price:,.2f}")
         print(f"  Stop Loss: ${stop_loss:,.2f}")
         print(f"  Leverage: {leverage}x")

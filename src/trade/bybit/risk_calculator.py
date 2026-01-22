@@ -10,14 +10,14 @@ import re
 
 def clean_symbol(symbol: str) -> str:
     """
-    Loại bỏ timeframe suffix
-    Ví dụ: BTCUSDT_1m -> BTCUSDT, BTC/USDT:USDT_5m -> BTC/USDT:USDT
-    
+    Remove timeframe suffix from a symbol.
+    Examples: 'BTCUSDT_1m' -> 'BTCUSDT', 'BTC/USDT:USDT_5m' -> 'BTC/USDT:USDT'
+
     Args:
-        symbol: Symbol với hoặc không có timeframe suffix
-    
+        symbol: Symbol with or without a timeframe suffix
+
     Returns:
-        Symbol đã được làm sạch
+        The cleaned symbol
     """
     symbol = re.sub(r'_\d+[mhd]$', '', symbol.strip())
     return symbol
@@ -31,17 +31,17 @@ def adjust_levels_for_slippage(
     side: str = 'buy',
 ) -> dict:
     """
-    Điều chỉnh SL/TP dựa trên giá fill thực tế so với giá entry dự tính
-    
+    Adjust SL/TP based on the actual fill price compared to the expected entry.
+
     Args:
-        expected_entry: Giá entry dự tính ban đầu
-        actual_entry: Giá fill thực tế từ market order
-        expected_sl: SL dự tính ban đầu
-        expected_tp: TP dự tính ban đầu
-        side: 'buy' hoặc 'sell'
-    
+        expected_entry: Original expected entry price
+        actual_entry: Actual fill price from the market order
+        expected_sl: Original expected stop loss
+        expected_tp: Original expected take profit
+        side: 'buy' or 'sell'
+
     Returns:
-        dict: Adjusted SL, TP và slippage info
+        dict: Adjusted SL, TP and slippage information
     """
     if side.lower() == 'buy':
         # LONG: entry tăng = lỗ tiền hơn, phải tính lại
@@ -82,13 +82,13 @@ def adjust_levels_for_slippage(
 
 def validate_slippage(slippage_pct: float, max_slippage_pct: float = 0.5) -> bool:
     """
-    Kiểm tra slippage có chấp nhận được không
-    
+    Check whether slippage is within acceptable bounds.
+
     Args:
-        slippage_pct: Phần trăm slippage
-        max_slippage_pct: Mức slippage tối đa cho phép (mặc định 0.5%)
-    
+        slippage_pct: Slippage percentage
+        max_slippage_pct: Maximum allowed slippage percentage (default 0.5%)
+
     Returns:
-        True nếu slippage chấp nhận được, False nếu vượt quá
+        True if slippage is acceptable, False otherwise
     """
     return abs(slippage_pct) <= max_slippage_pct
