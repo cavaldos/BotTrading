@@ -33,7 +33,121 @@ class BybitDashboard:
         self.orders_data = []
         self.positions_data = []
         self.update_time = datetime.now()
-        
+        # Simple cache for tickers or special balances to reduce rate limits
+        self._ticker_cache = {}
+
+    def _get_unified_margin_balance(self) -> dict:
+        """Try multiple v5/private endpoints and fallbacks to obtain unified margin balance
+
+        Returns:
+            dict: {'total': float or None, 'available': float or None}
+        """
+        margin_total = None
+        margin_available = None
+
+        # 1) Try common private V5 endpoints exposed by CCXT (best effort)
+        candidates = [
+            'privateGetV5AccountQueryBalance',
+            'privateGetV5AccountWalletBalance',
+            'privateGetAccountWalletBalance',
+            'privateGetWalletBalance',
+            'privateGetV2PrivateWalletBalance',
+        ]
+
+        for method_name in candidates:
+            try:
+                method = getattr(self.exchange, method_name, None)
+                if method is None:
+                    continue
+                resp = method({})
+                if not isinstance(resp, dict):
+                    continue
+
+                # Try to find list of coins in common keys
+                for key in ('result', 'data', 'balances', 'list', 'rows'):
+                    items = resp.get(key)
+                    if isinstance(items, list):
+                        for itm in items:
+                            if not isinstance(itm, dict):
+                                continue
+                            coin = (itm.get('coin') or itm.get('currency') or itm.get('asset') or '').upper()
+                            # Bybit v5 often uses 'equity' or 'availableBalance'
+                            equity = itm.get('equity') or itm.get('totalEquity') or itm.get('balance') or itm.get('walletBalance') or itm.get('amount') or itm.get('availableBalance')
+                            available = itm.get('availableBalance') or itm.get('free')
+                            if coin in ('USDT', 'USDC') and equity is not None:
+                                margin_total = float(equity)
+                                if available is not None:
+                                    margin_available = float(available)
+                                return {'total': margin_total, 'available': margin_available}
+
+                # If resp itself is a dict keyed by coin
+                for k, v in resp.items():
+                    if isinstance(v, dict):
+                        coin = k.upper()
+                        equity = v.get('equity') or v.get('total') or v.get('balance')
+                        available = v.get('free') or v.get('available')
+                        if coin in ('USDT', 'USDC') and equity is not None:
+                            return {'total': float(equity), 'available': float(available) if available is not None else None}
+
+            except Exception:
+                continue
+
+        # 2) Try fetch_balance with possible types (margin / future / funding)
+        try_types = [{'type': 'margin'}, {'type': 'future'}, {'type': 'swap'}, {}]
+        for params in try_types:
+            try:
+                fb = self.exchange.fetch_balance(params)
+                # Check typical structure
+                for coin in ('USDT', 'USDC'):
+                    data = fb.get(coin)
+                    if isinstance(data, dict):
+                        total = data.get('total') or data.get('equity') or data.get('balance')
+                        free = data.get('free') or data.get('available')
+                        if total is not None:
+                            return {'total': float(total), 'available': float(free) if free is not None else None}
+                # Also check fb['info'] for unified wallet
+                info = fb.get('info') or {}
+                if isinstance(info, dict):
+                    # scan for totals
+                    for v in info.values():
+                        if isinstance(v, dict) and ('equity' in v or 'availableBalance' in v):
+                            if v.get('coin', '').upper() in ('USDT', 'USDC'):
+                                return {'total': float(v.get('equity') or v.get('balance') or 0), 'available': float(v.get('availableBalance') or 0)}
+            except Exception:
+                continue
+
+        return {'total': margin_total, 'available': margin_available}
+
+    def _get_btc_prices(self) -> dict:
+        """Fetch BTC mark/index/last prices using available symbols."""
+        symbols_to_try = ['BTC/USDC', 'BTC/USDT', 'BTC/USDT:USDT', 'BTC/USDC:USDC']
+        for s in symbols_to_try:
+            try:
+                ticker = self.exchange.fetch_ticker(s)
+                info = ticker.get('info') or {}
+                last = float(ticker.get('last') or ticker.get('close') or 0)
+                mark = info.get('markPrice') or info.get('mark_price') or info.get('mark')
+                index = info.get('indexPrice') or info.get('index_price') or info.get('index')
+                # convert to float when possible
+                try:
+                    mark = float(mark) if mark is not None else None
+                except Exception:
+                    mark = None
+                try:
+                    index = float(index) if index is not None else None
+                except Exception:
+                    index = None
+                return {'symbol': s, 'last': last, 'mark': mark, 'index': index}
+            except Exception:
+                continue
+
+        # fallback: try generic BTC/USDT ticker
+        try:
+            ticker = self.exchange.fetch_ticker('BTC/USDT')
+            return {'symbol': 'BTC/USDT', 'last': float(ticker.get('last') or 0), 'mark': None, 'index': None}
+        except Exception:
+            return {'symbol': None, 'last': None, 'mark': None, 'index': None}
+
     def _create_balance_panel(self) -> Panel:
         """Create panel displaying account balance"""
         try:
@@ -47,44 +161,88 @@ class BybitDashboard:
             # Fetch balance info
             balance = self.exchange.fetch_balance()
             
-            # Safely get USDT balance
-            usdt_data = balance.get('USDT', {})
-            if isinstance(usdt_data, dict):
-                total_usdt = usdt_data.get('total', 0)
-                free_usdt = usdt_data.get('free', 0)
-                used_usdt = usdt_data.get('used', 0)
-            else:
-                total_usdt = 0
-                free_usdt = 0
-                used_usdt = 0
+            # Determine stablecoin keys (USDT and USDC)
+            stable_keys = ['USDT', 'USDC']
+            total_stable = 0.0
+            free_stable = 0.0
+            used_stable = 0.0
+            for k in stable_keys:
+                data = balance.get(k)
+                if isinstance(data, dict):
+                    total_stable += float(data.get('total', 0) or 0)
+                    free_stable += float(data.get('free', 0) or 0)
+                    used_stable += float(data.get('used', 0) or 0)
             
             # Create balance table
             balance_table = Table(show_header=True, header_style="bold magenta", box=None)
             balance_table.add_column("Type", style="cyan", width=15)
             balance_table.add_column("Value (USDT)", justify="right", style="green", width=20)
             
-            balance_table.add_row("Total", f"${total_usdt:,.2f}")
-            balance_table.add_row("Available", f"${free_usdt:,.2f}")
-            balance_table.add_row("In Use", f"${used_usdt:,.2f}")
+            balance_table.add_row("Total (stable)", f"${total_stable:,.2f}")
+            balance_table.add_row("Available", f"${free_stable:,.2f}")
+            balance_table.add_row("In Use", f"${used_stable:,.2f}")
             
-            # Display other tokens if available
+            # Estimate USD value of other tokens (convert to stable using ticker)
+            estimated_total = total_stable
             other_tokens = []
             for k, v in balance.items():
-                if k != 'USDT' and isinstance(v, dict):
-                    total = v.get('total', 0)
+                if k in stable_keys:
+                    continue
+                if isinstance(v, dict):
+                    total = float(v.get('total', 0) or 0)
                     if total and total > 0:
-                        other_tokens.append((k, v))
+                        # attempt to fetch price in USDT then USDC
+                        price = 0.0
+                        for quote in ['USDT', 'USDC']:
+                            symbol = f"{k}/{quote}"
+                            try:
+                                ticker = self.exchange.fetch_ticker(symbol)
+                                price = float(ticker.get('last') or ticker.get('close') or 0)
+                                if price:
+                                    break
+                            except Exception:
+                                price = 0.0
+                        usd_value = total * price
+                        estimated_total += usd_value
+                        other_tokens.append((k, total, price, usd_value))
             
+            # Show estimated total account value (stable + crypto converted)
+            balance_table.add_row("", "")  # empty spacer
+            balance_table.add_row("Estimated Total (USD)", f"${estimated_total:,.2f}", style="bold")
+
+            # Attempt to fetch unified margin balance (matches UI 'Unified Trading Account' values)
+            try:
+                margin = self._get_unified_margin_balance()
+                if margin and margin.get('total') is not None:
+                    balance_table.add_row("", "")
+                    balance_table.add_row("Margin Balance (Unified)", f"${margin.get('total'):,.2f}")
+                    if margin.get('available') is not None:
+                        balance_table.add_row("Margin Available", f"${margin.get('available'):,.2f}")
+            except Exception:
+                pass
+
+            # Attempt to fetch BTC mark/index/last prices for quick comparison
+            try:
+                btc = self._get_btc_prices()
+                if btc and btc.get('symbol'):
+                    balance_table.add_row("", "")
+                    balance_table.add_row("BTC Symbol", f"{btc.get('symbol')}")
+                    if btc.get('last'):
+                        balance_table.add_row("BTC Last", f"${btc.get('last'):,.2f}")
+                    if btc.get('mark'):
+                        balance_table.add_row("BTC Mark", f"${btc.get('mark'):,.2f}")
+                    if btc.get('index'):
+                        balance_table.add_row("BTC Index", f"${btc.get('index'):,.2f}")
+            except Exception:
+                pass
+
             if other_tokens:
-                balance_table.add_row("")  # Empty row
-                for token, data in other_tokens[:5]:  # Max 5 tokens
-                    total = data.get('total', 0)
-                    if total > 0:
-                        balance_table.add_row(
-                            token,
-                            f"{total:,.8f}",
-                            style="dim"
-                        )
+                for token, total, price, usd_value in other_tokens[:5]:
+                    balance_table.add_row(
+                        f"{token}",
+                        f"{total:,.8f}  (${usd_value:,.2f})",
+                        style="dim"
+                    )
             
             # Add update info
             update_text = Text(
