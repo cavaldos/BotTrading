@@ -1,0 +1,239 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
+// © LuxAlgo (Modified - Order Blocks Only)
+
+//@version=5
+indicator('Order Blocks Only', 'Order Blocks', overlay = true, max_boxes_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//CONSTANTS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH                         = +1
+BEARISH                         = -1
+BULLISH_LEG                     = 1
+BEARISH_LEG                     = 0
+
+ATR                             = 'Atr'
+RANGE                           = 'Cumulative Mean Range'
+CLOSE                           = 'Close'
+HIGHLOW                         = 'High/Low'
+
+BLOCKS_GROUP                    = 'Order Blocks'
+
+showInternalOrderBlocksInput    = input(        true,       'Internal Order Blocks',    group = BLOCKS_GROUP,   inline = 'iob')
+internalOrderBlocksSizeInput    = input.int(    5,          '',                         group = BLOCKS_GROUP,   minval = 1, maxval = 20, inline = 'iob')
+showSwingOrderBlocksInput       = input(        true,       'Swing Order Blocks',       group = BLOCKS_GROUP,   inline = 'ob')
+swingOrderBlocksSizeInput       = input.int(    5,          '',                         group = BLOCKS_GROUP,   minval = 1, maxval = 20, inline = 'ob') 
+orderBlockFilterInput           = input.string( ATR,        'Order Block Filter',       group = BLOCKS_GROUP,   options = [ATR, RANGE])
+orderBlockMitigationInput       = input.string( HIGHLOW,    'Order Block Mitigation',   group = BLOCKS_GROUP,   options = [CLOSE, HIGHLOW])
+swingsLengthInput               = input.int(    50,         'Swing Length',             group = BLOCKS_GROUP,   minval = 10)
+
+internalBullishOrderBlockColor  = input.color(color.new(#3179f5, 80), 'Internal Bullish OB',    group = BLOCKS_GROUP)
+internalBearishOrderBlockColor  = input.color(color.new(#f77c80, 80), 'Internal Bearish OB',    group = BLOCKS_GROUP)
+swingBullishOrderBlockColor     = input.color(color.new(#1848cc, 80), 'Swing Bullish OB',       group = BLOCKS_GROUP)
+swingBearishOrderBlockColor     = input.color(color.new(#b22833, 80), 'Swing Bearish OB',       group = BLOCKS_GROUP)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//DATA STRUCTURES & VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+// @type                            UDT representing a pivot point
+type pivot
+    float currentLevel
+    float lastLevel
+    bool crossed
+    int barTime     = time
+    int barIndex    = bar_index
+
+// @type                            UDT representing trend bias
+type trend
+    int bias    
+
+// @type                            UDT representing an order block
+type orderBlock
+    float barHigh
+    float barLow
+    int barTime    
+    int bias
+
+var pivot swingHigh                 = pivot.new(na, na, false)
+var pivot swingLow                  = pivot.new(na, na, false)
+var pivot internalHigh              = pivot.new(na, na, false)
+var pivot internalLow               = pivot.new(na, na, false)
+var trend swingTrend                = trend.new(0)
+var trend internalTrend             = trend.new(0)
+
+var array<float> parsedHighs        = array.new<float>()
+var array<float> parsedLows         = array.new<float>()
+var array<int> times                = array.new<int>()
+
+var array<orderBlock> swingOrderBlocks      = array.new<orderBlock>()
+var array<orderBlock> internalOrderBlocks   = array.new<orderBlock>()
+var array<box> swingOrderBlocksBoxes        = array.new<box>()
+var array<box> internalOrderBlocksBoxes     = array.new<box>()
+
+// Khởi tạo boxes
+if barstate.isfirst
+    if showSwingOrderBlocksInput
+        for index = 1 to swingOrderBlocksSizeInput
+            swingOrderBlocksBoxes.push(box.new(na, na, na, na, xloc = xloc.bar_time, extend = extend.right))
+    if showInternalOrderBlocksInput
+        for index = 1 to internalOrderBlocksSizeInput
+            internalOrderBlocksBoxes.push(box.new(na, na, na, na, xloc = xloc.bar_time, extend = extend.right))
+
+bearishOrderBlockMitigationSource   = orderBlockMitigationInput == CLOSE ? close : high
+bullishOrderBlockMitigationSource   = orderBlockMitigationInput == CLOSE ? close : low
+atrMeasure                          = ta.atr(200)
+volatilityMeasure                   = orderBlockFilterInput == ATR ? atrMeasure : ta.cum(ta.tr) / bar_index
+highVolatilityBar                   = (high - low) >= (2 * volatilityMeasure)
+parsedHigh                          = highVolatilityBar ? low : high
+parsedLow                           = highVolatilityBar ? high : low
+
+parsedHighs.push(parsedHigh)
+parsedLows.push(parsedLow)
+times.push(time)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//USER-DEFINED FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+leg(int size) =>
+    var leg     = 0    
+    newLegHigh  = high[size] > ta.highest(size)
+    newLegLow   = low[size]  < ta.lowest(size)
+    
+    if newLegHigh
+        leg := BEARISH_LEG
+    else if newLegLow
+        leg := BULLISH_LEG
+    leg
+
+startOfNewLeg(int leg)      => ta.change(leg) != 0
+startOfBearishLeg(int leg)  => ta.change(leg) == -1
+startOfBullishLeg(int leg)  => ta.change(leg) == +1
+
+// Lấy cấu trúc pivot hiện tại
+getCurrentStructure(int size, bool internal = false) =>        
+    currentLeg  = leg(size)
+    newPivot    = startOfNewLeg(currentLeg)
+    pivotLow    = startOfBullishLeg(currentLeg)
+    pivotHigh   = startOfBearishLeg(currentLeg)
+
+    if newPivot
+        if pivotLow
+            pivot p_ivot        = internal ? internalLow : swingLow    
+            p_ivot.lastLevel    := p_ivot.currentLevel
+            p_ivot.currentLevel := low[size]
+            p_ivot.crossed      := false
+            p_ivot.barTime      := time[size]
+            p_ivot.barIndex     := bar_index[size]
+        else
+            pivot p_ivot        = internal ? internalHigh : swingHigh
+            p_ivot.lastLevel    := p_ivot.currentLevel
+            p_ivot.currentLevel := high[size]
+            p_ivot.crossed      := false
+            p_ivot.barTime      := time[size]
+            p_ivot.barIndex     := bar_index[size]
+
+// Xóa order blocks đã bị mitigation
+deleteOrderBlocks(bool internal = false) =>
+    array<orderBlock> orderBlocks = internal ? internalOrderBlocks : swingOrderBlocks
+
+    for [index, eachOrderBlock] in orderBlocks
+        bool crossedOrderBlock = false
+        
+        if bearishOrderBlockMitigationSource > eachOrderBlock.barHigh and eachOrderBlock.bias == BEARISH
+            crossedOrderBlock := true
+        else if bullishOrderBlockMitigationSource < eachOrderBlock.barLow and eachOrderBlock.bias == BULLISH
+            crossedOrderBlock := true
+            
+        if crossedOrderBlock                    
+            orderBlocks.remove(index)            
+
+// Lưu trữ order block
+storeOrderBlock(pivot p_ivot, bool internal = false, int bias) =>
+    if (not internal and showSwingOrderBlocksInput) or (internal and showInternalOrderBlocksInput)
+        array<float> a_rray = na
+        int parsedIndex = na
+
+        if bias == BEARISH
+            a_rray      := parsedHighs.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.max())  
+        else
+            a_rray      := parsedLows.slice(p_ivot.barIndex, bar_index)
+            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.min())                        
+
+        orderBlock o_rderBlock          = orderBlock.new(parsedHighs.get(parsedIndex), parsedLows.get(parsedIndex), times.get(parsedIndex), bias)
+        array<orderBlock> orderBlocks   = internal ? internalOrderBlocks : swingOrderBlocks
+        
+        if orderBlocks.size() >= 100
+            orderBlocks.pop()
+        orderBlocks.unshift(o_rderBlock)
+
+// Vẽ order blocks
+drawOrderBlocks(bool internal = false) =>        
+    array<orderBlock> orderBlocks = internal ? internalOrderBlocks : swingOrderBlocks
+    orderBlocksSize = orderBlocks.size()
+
+    if orderBlocksSize > 0        
+        maxOrderBlocks                      = internal ? internalOrderBlocksSizeInput : swingOrderBlocksSizeInput
+        array<orderBlock> parsedOrderBlocks = orderBlocks.slice(0, math.min(maxOrderBlocks, orderBlocksSize))
+        array<box> b_oxes                   = internal ? internalOrderBlocksBoxes : swingOrderBlocksBoxes        
+
+        for [index, eachOrderBlock] in parsedOrderBlocks
+            orderBlockColor = internal ? (eachOrderBlock.bias == BEARISH ? internalBearishOrderBlockColor : internalBullishOrderBlockColor) : (eachOrderBlock.bias == BEARISH ? swingBearishOrderBlockColor : swingBullishOrderBlockColor)
+
+            box b_ox = b_oxes.get(index)
+            b_ox.set_top_left_point(    chart.point.new(eachOrderBlock.barTime, na, eachOrderBlock.barHigh))
+            b_ox.set_bottom_right_point(chart.point.new(last_bar_time, na, eachOrderBlock.barLow))        
+            b_ox.set_border_color(      internal ? na : orderBlockColor)
+            b_ox.set_bgcolor(           orderBlockColor)
+
+// Phát hiện cấu trúc và lưu order blocks
+detectStructure(bool internal = false) =>
+    pivot p_ivot    = internal ? internalHigh : swingHigh
+    trend t_rend    = internal ? internalTrend : swingTrend
+
+    // Bullish breakout
+    if ta.crossover(close, p_ivot.currentLevel) and not p_ivot.crossed
+        p_ivot.crossed  := true
+        t_rend.bias     := BULLISH
+        storeOrderBlock(p_ivot, internal, BULLISH)
+
+    // Bearish breakout
+    p_ivot := internal ? internalLow : swingLow
+
+    if ta.crossunder(close, p_ivot.currentLevel) and not p_ivot.crossed
+        p_ivot.crossed  := true
+        t_rend.bias     := BEARISH
+        storeOrderBlock(p_ivot, internal, BEARISH)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+// Lấy cấu trúc swing và internal
+getCurrentStructure(swingsLengthInput, false)
+getCurrentStructure(5, true)
+
+// Phát hiện và lưu order blocks
+if showInternalOrderBlocksInput
+    detectStructure(true)
+    deleteOrderBlocks(true)
+
+if showSwingOrderBlocksInput
+    detectStructure(false)
+    deleteOrderBlocks(false)
+
+// Vẽ order blocks
+if barstate.islastconfirmedhistory or barstate.islast
+    if showInternalOrderBlocksInput        
+        drawOrderBlocks(true)
+        
+    if showSwingOrderBlocksInput        
+        drawOrderBlocks(false)
+
+//---------------------------------------------------------------------------------------------------------------------}
+//ALERTS
+//---------------------------------------------------------------------------------------------------------------------{
+alertcondition(ta.crossover(close, swingHigh.currentLevel),  'Bullish Swing OB',    'Bullish Swing Order Block formed')
+alertcondition(ta.crossunder(close, swingLow.currentLevel),  'Bearish Swing OB',    'Bearish Swing Order Block formed')
+alertcondition(ta.crossover(close, internalHigh.currentLevel), 'Bullish Internal OB', 'Bullish Internal Order Block formed')
+alertcondition(ta.crossunder(close, internalLow.currentLevel), 'Bearish Internal OB', 'Bearish Internal Order Block formed')
+//---------------------------------------------------------------------------------------------------------------------}
