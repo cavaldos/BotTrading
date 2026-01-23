@@ -269,7 +269,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     """
     Generate report with all results.
     Uses markdown table format that looks good both raw and rendered.
-    Appends new results to existing file with timestamp.
+    Groups results by timeframe and appends new results to existing file with timestamp.
     """
     # Get current timestamp
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -286,34 +286,50 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     rr_ratio = config.risk_reward_ratio
     sl_multiplier = config.sl_multiplier
     
+    # Group summaries by timeframe
+    timeframe_groups = {}
+    for summary in all_summaries:
+        # Extract timeframe from symbol (e.g., "LTCUSDT_1m" -> "1m")
+        symbol = summary['symbol']
+        timeframe = symbol.split('_')[-1] if '_' in symbol else 'unknown'
+        if timeframe not in timeframe_groups:
+            timeframe_groups[timeframe] = []
+        timeframe_groups[timeframe].append(summary)
+    
+    # Sort timeframes by order: 1m, 5m, 15m, 30m, 1h, 4h, 1d
+    timeframe_order = ['1m', '5m', '15m', '30m', '1h', '4h', '1d']
+    sorted_timeframes = sorted(timeframe_groups.keys(), 
+                              key=lambda x: timeframe_order.index(x) if x in timeframe_order else 999)
+    
     # Build report with aligned markdown table
     lines = [
         "",
         f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
         "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
+            "Symbol", "**Total**", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
         ),
         "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", ""),
     ]
     
-    # Add individual symbol results
-    for summary in all_summaries:
-        # ROE = (Wins * RR Ratio) - Losses
-        roe = (summary['wins'] * rr_ratio) - summary['losses']
-        row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-            summary['symbol'],
-            summary['total_trades'],
-            summary['wins'],
-            summary['losses'],
-            summary['open_trades'],
-            f"*{summary['win_rate']}%*",
-            f"{rr_ratio}",
-            f"{sl_multiplier}",
-            f"{round(roe, 2)}",
-            summary['longest_win_streak'],
-            summary['longest_loss_streak']
-        )
-        lines.append(row)
+    # Add results grouped by timeframe
+    for timeframe in sorted_timeframes:
+        for summary in timeframe_groups[timeframe]:
+            # ROE = (Wins * RR Ratio) - Losses
+            roe = (summary['wins'] * rr_ratio) - summary['losses']
+            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+                summary['symbol'],
+                summary['total_trades'],
+                summary['wins'],
+                summary['losses'],
+                summary['open_trades'],
+                f"*{summary['win_rate']}%*",
+                f"{rr_ratio}",
+                f"{sl_multiplier}",
+                f"{round(roe, 2)}",
+                summary['longest_win_streak'],
+                summary['longest_loss_streak']
+            )
+            lines.append(row)
     
     # Add overall summary
     # ROE = (Total Wins * RR Ratio) - Total Losses
