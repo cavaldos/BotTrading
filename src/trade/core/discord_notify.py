@@ -70,9 +70,9 @@ Date: {date_str}
 Time: {time_gmt0} (GMT+0) / {time_gmt7} (GMT+7)
 
 PRICE LEVELS
-Entry:      {entry:.2f}
-SL:         {stoploss:.2f}  (-{sl_diff_percent:.2f}%)
-TP:         {takeprofit:.2f}  (+{tp_diff_percent:.2f}%)
+Entry:      {entry:.4f}
+SL:         {stoploss:.4f}  (-{sl_diff_percent:.2f}%)
+TP:         {takeprofit:.4f}  (+{tp_diff_percent:.2f}%)
 
 POSITION
 Volume:     {required_margin:.2f}

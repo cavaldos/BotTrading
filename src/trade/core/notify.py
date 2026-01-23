@@ -81,9 +81,9 @@ Date: {date_str}
 ├ GMT+0: *{time_gmt0}*
 └ GMT+7: *{time_gmt7}*
 Price Levels
-├ Entry:      `{entry:.2f}`
-├ SL:   `{stoploss:.2f}` (-{sl_diff_percent:.2f}%)
-└ TP: `{takeprofit:.2f}` (+{tp_diff_percent:.2f}%)
+├ Entry:      `{entry:.4f}`
+├ SL:   `{stoploss:.4f}` (-{sl_diff_percent:.2f}%)
+└ TP: `{takeprofit:.4f}` (+{tp_diff_percent:.2f}%)
 Position
 ├ Volume:   `{required_margin:.2f}`
 ├ Leverage: `{leverage}x`

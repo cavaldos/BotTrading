@@ -338,7 +338,7 @@ def generate_orders_panel(trades: list) -> Panel:
         # Format entry price
         try:
             entry_price_float = float(entry_price)
-            entry_price_str = f"{entry_price_float:,.2f}"
+            entry_price_str = f"{entry_price_float:,.4f}"
         except:
             entry_price_str = entry_price
         
