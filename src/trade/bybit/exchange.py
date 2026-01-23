@@ -3,6 +3,7 @@ from typing import Optional
 
 import ccxt
 from dotenv import load_dotenv
+from src.utils.rounding import round_price
 
 load_dotenv()
 
@@ -73,10 +74,10 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
     
     return {
         'quantity': round(quantity, 4),
-        'margin_required': round(margin_required, 2),
-        'notional_value': round(notional_value, 2),
-        'actual_risk': round(actual_risk, 2),
-        'price_diff': round(price_diff, 2),
+        'margin_required': round_price(margin_required),
+        'notional_value': round_price(notional_value),
+        'actual_risk': round_price(actual_risk),
+        'price_diff': round_price(price_diff),
         'leverage': leverage,
         'side': side.lower(),
     }

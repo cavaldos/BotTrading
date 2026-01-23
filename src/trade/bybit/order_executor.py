@@ -15,6 +15,7 @@ from src.trade.bybit.exchange import (
     set_position_sl_tp,
 )
 from src.trade.bybit.risk_calculator import clean_symbol
+from src.utils.rounding import round_price
 
 
 def validate_and_place_order(
@@ -70,7 +71,7 @@ def validate_and_place_order(
                 reward = risk * risk_reward_ratio
                 take_profit = entry_price - reward
             
-            take_profit = round(take_profit, 2)
+            take_profit = round_price(take_profit)
         
         # Đặt lệnh market order
         result = place_market_order_with_sl(

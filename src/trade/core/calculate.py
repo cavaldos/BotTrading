@@ -1,3 +1,6 @@
+from src.utils.rounding import round_price
+
+
 def calculate_trade_size(entry: float, stoploss: float, takeprofit: float, leverage=50, risk_per_trade=5):
     entry = float(entry)
     stoploss = float(stoploss)
@@ -15,7 +18,7 @@ def calculate_trade_size(entry: float, stoploss: float, takeprofit: float, lever
     # Tính toán margin cần thiết với đòn bẩy cố định là 50
     required_margin = (position_size * entry) / leverage
 
-    return round(required_margin, 2)*leverage, leverage, risk_per_trade 
+    return round_price(required_margin)*leverage, leverage, risk_per_trade 
 
 
 if __name__ == '__main__':

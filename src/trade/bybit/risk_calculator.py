@@ -6,6 +6,7 @@ Risk management utilities
 """
 
 import re
+from src.utils.rounding import round_price
 
 
 def clean_symbol(symbol: str) -> str:
@@ -68,14 +69,14 @@ def adjust_levels_for_slippage(
         adjusted_tp = actual_entry - distance_tp
     
     return {
-        'expected_entry': round(expected_entry, 2),
-        'actual_entry': round(actual_entry, 2),
-        'slippage': round(slippage, 2),
+        'expected_entry': round_price(expected_entry),
+        'actual_entry': round_price(actual_entry),
+        'slippage': round_price(slippage),
         'slippage_pct': round((slippage / expected_entry) * 100, 3),
-        'expected_sl': round(expected_sl, 2),
-        'adjusted_sl': round(adjusted_sl, 2),
-        'expected_tp': round(expected_tp, 2),
-        'adjusted_tp': round(adjusted_tp, 2),
+        'expected_sl': round_price(expected_sl),
+        'adjusted_sl': round_price(adjusted_sl),
+        'expected_tp': round_price(expected_tp),
+        'adjusted_tp': round_price(adjusted_tp),
         'side': side.upper(),
     }
 
