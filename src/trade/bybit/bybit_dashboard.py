@@ -307,9 +307,20 @@ class BybitDashboard:
                     symbol = order.get('symbol', 'N/A')
                     side = order.get('side', 'N/A').upper()
                     order_type = order.get('type', 'N/A').upper()
-                    amount = order.get('amount', 0)
-                    price = order.get('price', 0)
+                    amount = order.get('amount') or 0
+                    price = order.get('price') or 0
                     status = order.get('status', 'N/A').upper()
+                    
+                    # Format amount and price safely
+                    try:
+                        amount_str = f"{float(amount):,.4f}" if amount else "0"
+                    except (ValueError, TypeError):
+                        amount_str = "N/A"
+                    
+                    try:
+                        price_str = f"${float(price):,.2f}" if price else "$0"
+                    except (ValueError, TypeError):
+                        price_str = "N/A"
                     
                     # Format time
                     timestamp = order.get('timestamp', 0)
@@ -326,8 +337,8 @@ class BybitDashboard:
                         symbol,
                         f"[{side_color}]{side}[/{side_color}]",
                         order_type,
-                        f"{amount:,.4f}",
-                        f"${price:,.2f}",
+                        amount_str,
+                        price_str,
                         f"[{status_color}]{status}[/{status_color}]",
                         order_time
                     )
@@ -396,11 +407,13 @@ class BybitDashboard:
             orders_table.add_column("Amount", justify="right", width=12)
             orders_table.add_column("Price", justify="right", style="green", width=12)
             orders_table.add_column("Status", style="yellow", width=10)
+            orders_table.add_column("P&L", justify="right", width=12)
             orders_table.add_column("Time", style="dim", width=10)
             
             if not closed_orders:
                 orders_table.add_row(
                     "[dim]No order history[/dim]",
+                    "",
                     "",
                     "",
                     "",
@@ -414,9 +427,52 @@ class BybitDashboard:
                     symbol = order.get('symbol', 'N/A')
                     side = order.get('side', 'N/A').upper()
                     order_type = order.get('type', 'N/A').upper()
-                    amount = order.get('amount', 0)
-                    price = order.get('price', 0)
+                    amount = order.get('amount') or 0
+                    price = order.get('price') or 0
                     status = order.get('status', 'N/A').upper()
+                    
+                    # Format amount and price safely
+                    try:
+                        amount_str = f"{float(amount):,.4f}" if amount else "0"
+                    except (ValueError, TypeError):
+                        amount_str = "N/A"
+                    
+                    try:
+                        price_str = f"${float(price):,.2f}" if price else "$0"
+                    except (ValueError, TypeError):
+                        price_str = "N/A"
+                    
+                    # Calculate P&L
+                    pnl_value = None
+                    pnl_display = "N/A"
+                    pnl_color = "dim"
+                    
+                    # Try to get cost and filled values from order
+                    cost = order.get('cost', 0) or 0
+                    filled = order.get('filled', 0) or 0
+                    
+                    # For closed orders, try to calculate P&L
+                    try:
+                        amount_float = float(amount) if amount else 0
+                        price_float = float(price) if price else 0
+                        cost_float = float(cost) if cost else 0
+                        filled_float = float(filled) if filled else 0
+                        
+                        if cost_float > 0 and amount_float > 0:
+                            if side == "BUY":
+                                # For BUY orders, cost is what we spent
+                                avg_price = cost_float / amount_float
+                                pnl_value = (price_float - avg_price) * filled_float
+                            else:
+                                # For SELL orders, cost is what we received
+                                pnl_value = (cost_float - (price_float * amount_float))
+                            
+                            if pnl_value is not None:
+                                pnl_color = "green" if pnl_value >= 0 else "red"
+                                pnl_symbol = "+" if pnl_value >= 0 else ""
+                                pnl_display = f"[{pnl_color}]{pnl_symbol}${pnl_value:,.2f}[/{pnl_color}]"
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        pnl_display = "N/A"
                     
                     # Format time
                     timestamp = order.get('timestamp', 0)
@@ -433,9 +489,10 @@ class BybitDashboard:
                         symbol,
                         f"[{side_color}]{side}[/{side_color}]",
                         order_type,
-                        f"{amount:,.4f}",
-                        f"${price:,.2f}",
+                        amount_str,
+                        price_str,
                         f"[{status_color}]{status}[/{status_color}]",
+                        pnl_display,
                         order_time
                     )
             
