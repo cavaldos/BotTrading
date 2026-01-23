@@ -27,4 +27,6 @@ dashboard:
 # Strategy settings
 strategy:
   risk_reward_ratio: 2.0  # RR ratio for take profit calculation
+  min_sl_pct: 0.05  # Minimum SL % - don't place order if SL < x% of entry price
+  ob_body_ratio: 0.35  # Order Block body ratio filter (body size / candle range)
 

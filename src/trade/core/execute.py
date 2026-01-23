@@ -31,27 +31,33 @@ def get_symbol_from_filename(filename: str) -> str:
     return filename.replace('.csv', '')
 
 
-def create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio: float = 2.0) -> Config:
-    """Create Config with system paths and risk management settings."""
-    return Config(
-        data_folder=DATA_FOLDER,
-        output_folder=OUTPUT_FOLDER,
-        risk_reward_ratio=risk_reward_ratio,
-    )
+def create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio: float = 2.0, 
+                  min_sl_pct: float = 0.05, ob_body_ratio: float = 0.35) -> Config:
+     """Create Config with system paths and risk management settings."""
+     return Config(
+         data_folder=DATA_FOLDER,
+         output_folder=OUTPUT_FOLDER,
+         risk_reward_ratio=risk_reward_ratio,
+         min_sl_pct=min_sl_pct,
+         ob_body_ratio=ob_body_ratio,
+     )
 
 
-def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None, risk_reward_ratio: float = 2.0):
-    """Main execution function
-    
-    Args:
-        DATA_FOLDER: Path to data folder containing CSV files
-        OUTPUT_FOLDER: Path to output folder for trade reports
-        timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h"). 
-                   If provided, only files matching *_{timeframe}.csv will be processed.
-                   If None, all CSV files will be processed.
-        risk_reward_ratio: Risk/reward ratio for take profit calculation (default: 2.0)
-    """
-    config = create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio)
+def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None, 
+            risk_reward_ratio: float = 2.0, min_sl_pct: float = 0.05, ob_body_ratio: float = 0.35):
+     """Main execution function
+     
+     Args:
+         DATA_FOLDER: Path to data folder containing CSV files
+         OUTPUT_FOLDER: Path to output folder for trade reports
+         timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h"). 
+                    If provided, only files matching *_{timeframe}.csv will be processed.
+                    If None, all CSV files will be processed.
+         risk_reward_ratio: Risk/reward ratio for take profit calculation (default: 2.0)
+         min_sl_pct: Minimum SL percentage (default: 0.05)
+         ob_body_ratio: Order Block body ratio filter (default: 0.35)
+     """
+     config = create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio, min_sl_pct, ob_body_ratio)
     
     # Create output folder if not exists
     output_dir = Path(config.output_folder)

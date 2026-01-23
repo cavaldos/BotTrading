@@ -44,6 +44,8 @@ DEFAULT_OUTPUT_FOLDER = "res/output"
 DEFAULT_REPORT_FOLDER = "res/report"
 DEFAULT_BACKTEST_RESULTS_FILE = "backtest_results"
 DEFAULT_RISK_REWARD_RATIO = 2.0
+DEFAULT_MIN_SL_PCT = 0.05
+DEFAULT_OB_BODY_RATIO = 0.35
 
 
 # ==============================================================================
@@ -79,13 +81,19 @@ def create_config() -> Config:
      # Support both top-level and nested strategy section
      if 'strategy' in data_config and isinstance(data_config['strategy'], dict):
          risk_reward_ratio = data_config['strategy'].get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
+         min_sl_pct = data_config['strategy'].get('min_sl_pct', DEFAULT_MIN_SL_PCT)
+         ob_body_ratio = data_config['strategy'].get('ob_body_ratio', DEFAULT_OB_BODY_RATIO)
      else:
          risk_reward_ratio = data_config.get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
+         min_sl_pct = data_config.get('min_sl_pct', DEFAULT_MIN_SL_PCT)
+         ob_body_ratio = data_config.get('ob_body_ratio', DEFAULT_OB_BODY_RATIO)
      
      return Config(
          data_folder=data_folder,
          output_folder=output_folder,
          risk_reward_ratio=risk_reward_ratio,
+         min_sl_pct=min_sl_pct,
+         ob_body_ratio=ob_body_ratio,
      )
 
 

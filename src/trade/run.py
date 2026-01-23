@@ -74,6 +74,8 @@ MAX_LOGS = CONFIG["dashboard"]["max_logs"]
 
 # Strategy settings
 RISK_REWARD_RATIO = CONFIG["strategy"]["risk_reward_ratio"]
+MIN_SL_PCT = CONFIG["strategy"].get("min_sl_pct", 0.05)
+OB_BODY_RATIO = CONFIG["strategy"].get("ob_body_ratio", 0.35)
 
 
 # =============================================================================
@@ -232,7 +234,7 @@ def run_cycle(timeframe: str):
          
          tf_state.status = "Executing..."
          state.add_log(f"TF[{timeframe}]", "Running execute...")
-         execute(DATA_FOLDER, OUTPUT_FOLDER, timeframe, RISK_REWARD_RATIO)
+         execute(DATA_FOLDER, OUTPUT_FOLDER, timeframe, RISK_REWARD_RATIO, MIN_SL_PCT, OB_BODY_RATIO)
          
          tf_state.cycles += 1
          tf_state.last_run = datetime.now().strftime("%H:%M:%S")
