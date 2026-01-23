@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from numba import njit
 
 from src.strategy import STRATEGY_NAME, Signal, Config
+from src.utils.rounding import round_price
 
 
 # ==================== DATA CLASSES ====================
@@ -197,11 +198,11 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
             'Symbol': t.symbol,
             'Type': t.trade_type,
             'Entry_Time': t.entry_time,
-            'Entry_Price': round(t.entry_price, 2),
-            'Stop_Loss': round(t.stop_loss, 2),
-            'Take_Profit': round(t.take_profit, 2),
+            'Entry_Price': round_price(t.entry_price),
+            'Stop_Loss': round_price(t.stop_loss),
+            'Take_Profit': round_price(t.take_profit),
             'Exit_Time': t.exit_time,
-            'Exit_Price': round(t.exit_price, 2) if t.exit_price else None,
+            'Exit_Price': round_price(t.exit_price) if t.exit_price else None,
             'Result': result
         })
     

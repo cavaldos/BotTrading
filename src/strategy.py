@@ -42,6 +42,7 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass, field
 from numba import njit
 from src.utils.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
+from src.utils.rounding import round_price
 
 
 # ==================== STRATEGY NAME ====================
@@ -1504,7 +1505,7 @@ class Strategy:
             symbol=symbol,
             trade_type=trade_type,
             entry_time=entry_time,
-            entry_price=entry,
-            stop_loss=stop_loss,
-            take_profit=take_profit
+            entry_price=round_price(entry),
+            stop_loss=round_price(stop_loss),
+            take_profit=round_price(take_profit)
         )
