@@ -69,7 +69,8 @@ class Config:
     
     # === ORDER BLOCK ===
     ob_mitigation: str = "high_low" # "close" or "high_low"
-    # Note: body_ratio filter removed - using LuxAlgo extreme candle logic instead
+    ob_body_ratio: float = 0.35      # Candle body size / candle range must be > 90% (trending candle filter)
+    # Note: OB detection uses LuxAlgo extreme candle logic + trending candle filter
     
     # === FVG ===
     fvg_atr_filter: bool = True     # Filter small FVGs using ATR
@@ -109,7 +110,8 @@ class Config:
             "internal_length": self.internal_length,
             "eqhl_length": self.eqhl_length,
             "eqhl_threshold": self.eqhl_threshold,
-            "ob_detection": "LuxAlgo extreme candle",  # Using LuxAlgo logic
+            "ob_detection": "LuxAlgo extreme candle + trending candle filter",
+            "ob_body_ratio": self.ob_body_ratio,
             "sl_buffer_pct": self.sl_buffer_pct,
             "sl_multiplier": self.sl_multiplier,
             "min_sl_pct": self.min_sl_pct,
@@ -397,13 +399,46 @@ def _precompute_parsed_hl_jit(highs: np.ndarray, lows: np.ndarray, atr: np.ndarr
 
 
 @njit(cache=True)
-def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray, 
-                       start_idx: int, end_idx: int, is_bullish: bool) -> int:
+def _check_trending_candle_jit(opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, 
+                               lows: np.ndarray, candle_idx: int, body_ratio_threshold: float) -> bool:
     """
-    Find Order Block candle index using LuxAlgo logic.
+    Check if a candle is a trending candle.
     
-    For Bullish OB: Find candle with LOWEST parsed_low in range
-    For Bearish OB: Find candle with HIGHEST parsed_high in range
+    Trending candle: Body size / Candle range > body_ratio_threshold (e.g., 0.6 = 60%)
+    
+    Body = abs(close - open)
+    Range = high - low
+    
+    Args:
+        opens, closes, highs, lows: OHLC arrays
+        candle_idx: Index of candle to check
+        body_ratio_threshold: Minimum body ratio (e.g., 0.6 for 60%)
+    
+    Returns:
+        True if body_ratio > threshold, False otherwise
+    """
+    body = abs(closes[candle_idx] - opens[candle_idx])
+    candle_range = highs[candle_idx] - lows[candle_idx]
+    
+    if candle_range == 0:
+        return False
+    
+    body_ratio = body / candle_range
+    return body_ratio > body_ratio_threshold
+
+
+@njit(cache=True)
+def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray, 
+                       start_idx: int, end_idx: int, is_bullish: bool,
+                       opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
+                       body_ratio_threshold: float) -> int:
+    """
+    Find Order Block candle index using LuxAlgo logic + trending candle filter.
+    
+    For Bullish OB: Find candle with LOWEST parsed_low in range (must be trending candle)
+    For Bearish OB: Find candle with HIGHEST parsed_high in range (must be trending candle)
+    
+    Trending candle: Body size > body_ratio_threshold * candle range
     
     Args:
         parsed_highs: Pre-computed parsed highs array
@@ -411,6 +446,8 @@ def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray,
         start_idx: Start of search range (pivot index)
         end_idx: End of search range (break index)
         is_bullish: True for Bullish OB, False for Bearish OB
+        opens, closes, highs, lows: OHLC arrays for body ratio check
+        body_ratio_threshold: Minimum body ratio (e.g., 0.6 for 60%)
     
     Returns:
         Index of the OB candle, or -1 if invalid range
@@ -419,23 +456,33 @@ def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray,
         return -1
     
     if is_bullish:
-        # Find candle with minimum parsed_low
+        # Find candle with minimum parsed_low (and is trending candle)
         min_val = parsed_lows[start_idx]
         min_idx = start_idx
         for i in range(start_idx + 1, end_idx):
-            if parsed_lows[i] < min_val:
+            if parsed_lows[i] < min_val and _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
                 min_val = parsed_lows[i]
                 min_idx = i
-        return min_idx
+        
+        # Check if the selected candle is a trending candle
+        if _check_trending_candle_jit(opens, closes, highs, lows, min_idx, body_ratio_threshold):
+            return min_idx
+        else:
+            return -1
     else:
-        # Find candle with maximum parsed_high
+        # Find candle with maximum parsed_high (and is trending candle)
         max_val = parsed_highs[start_idx]
         max_idx = start_idx
         for i in range(start_idx + 1, end_idx):
-            if parsed_highs[i] > max_val:
+            if parsed_highs[i] > max_val and _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
                 max_val = parsed_highs[i]
                 max_idx = i
-        return max_idx
+        
+        # Check if the selected candle is a trending candle
+        if _check_trending_candle_jit(opens, closes, highs, lows, max_idx, body_ratio_threshold):
+            return max_idx
+        else:
+            return -1
 
 
 @njit(cache=True)
@@ -673,14 +720,19 @@ def detect_structure(df: pd.DataFrame, swing_points: List[SwingPoint]) -> List[S
     return structures
 
 
-def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.Series) -> List[OrderBlock]:
+def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.Series, body_ratio_threshold: float = 0.6) -> List[OrderBlock]:
     """
-    Detect Order Blocks from structure breaks using LuxAlgo logic.
+    Detect Order Blocks from structure breaks using LuxAlgo logic + trending candle filter.
     
     LuxAlgo Order Block Detection:
     - For Bullish OB: Find candle with LOWEST parsed_low in range from pivot to break
     - For Bearish OB: Find candle with HIGHEST parsed_high in range from pivot to break
     - High volatility bars (range >= 2*ATR) have their high/low swapped
+    
+    Trending Candle Filter:
+    - Candle body size > body_ratio_threshold * candle range (e.g., 0.6 = 60%)
+    - Body = abs(close - open)
+    - Range = high - low
     
     Creates OB for both CHoCH and BOS structure breaks.
     """
@@ -688,6 +740,8 @@ def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.S
     
     highs = df['High'].values.astype(np.float64)
     lows = df['Low'].values.astype(np.float64)
+    opens = df['Open'].values.astype(np.float64)
+    closes = df['Close'].values.astype(np.float64)
     times = df['Time'].values
     atr_values = atr.values.astype(np.float64)
     
@@ -695,13 +749,18 @@ def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.S
     parsed_highs, parsed_lows = _precompute_parsed_hl_jit(highs, lows, atr_values)
     
     for structure in structures:
-        # Find OB using LuxAlgo logic - extreme candle in range
+        # Find OB using LuxAlgo logic + trending candle filter
         ob_index = _find_ob_index_jit(
             parsed_highs, 
             parsed_lows,
             structure.pivot_index,
             structure.break_index,
-            is_bullish=(structure.bias == 'BULLISH')
+            is_bullish=(structure.bias == 'BULLISH'),
+            opens=opens,
+            closes=closes,
+            highs=highs,
+            lows=lows,
+            body_ratio_threshold=body_ratio_threshold
         )
         
         if ob_index >= 0:
@@ -1007,12 +1066,17 @@ class Strategy:
                     current_trend = 'BULLISH'
                     last_broken_high_index = current_swing_high.index
                     
-                    # Create order block for CHoCH and BOS (LuxAlgo logic)
-                    # Find extreme candle in range using parsed highs/lows
+                    # Create order block for CHoCH and BOS (LuxAlgo logic + trending candle filter)
+                    # Find extreme candle in range using parsed highs/lows + body ratio check
                     ob_index = _find_ob_index_jit(
                         parsed_highs, parsed_lows,
                         structure.pivot_index, current_idx,
-                        is_bullish=True
+                        is_bullish=True,
+                        opens=opens,
+                        closes=closes,
+                        highs=highs,
+                        lows=lows,
+                        body_ratio_threshold=self.config.ob_body_ratio
                     )
                     
                     if ob_index >= 0:
@@ -1047,12 +1111,17 @@ class Strategy:
                     current_trend = 'BEARISH'
                     last_broken_low_index = current_swing_low.index
                     
-                    # Create order block for CHoCH and BOS (LuxAlgo logic)
-                    # Find extreme candle in range using parsed highs/lows
+                    # Create order block for CHoCH and BOS (LuxAlgo logic + trending candle filter)
+                    # Find extreme candle in range using parsed highs/lows + body ratio check
                     ob_index = _find_ob_index_jit(
                         parsed_highs, parsed_lows,
                         structure.pivot_index, current_idx,
-                        is_bullish=False
+                        is_bullish=False,
+                        opens=opens,
+                        closes=closes,
+                        highs=highs,
+                        lows=lows,
+                        body_ratio_threshold=self.config.ob_body_ratio
                     )
                     
                     if ob_index >= 0:
