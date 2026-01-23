@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import yaml
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,20 @@ from src.trade.bybit.order_executor import validate_and_place_order
 
 from .notify import send_entry_telegram
 from .discord_notify import send_entry_discord
+
+
+# Load config
+def load_config() -> dict:
+    """Load configuration from config.yaml"""
+    config_path = Path(__file__).parent.parent / "config.yaml"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f) or {}
+
+
+CONFIG = load_config()
+RISK_USD = CONFIG.get("strategy", {}).get("risk_usd", 5)
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -156,8 +171,11 @@ def place_order(
     take_profit: float,
     entry_time: str,
     leverage: int = 20,
-    risk_usd: float = 5,
+    risk_usd: float = None,
 ) -> dict:
+    if risk_usd is None:
+        risk_usd = RISK_USD
+    
     order_type = order_type.strip().upper()
     side = 'buy' if order_type == 'LONG' else 'sell'
     
