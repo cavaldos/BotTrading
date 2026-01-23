@@ -278,8 +278,16 @@ class BybitDashboard:
                     border_style="yellow"
                 )
             
-            # Fetch open orders
-            orders = self.exchange.fetch_open_orders()
+            # Fetch open orders - fetch all for multiple symbols if possible
+            try:
+                orders = self.exchange.fetch_open_orders()
+            except Exception as e:
+                # Fallback: return error panel
+                return Panel(
+                    f"[red]❌ Error fetching orders: {str(e)}[/red]",
+                    title="[bold yellow]📊 Open Orders (Realtime)[/bold yellow]",
+                    border_style="red"
+                )
             
             orders_table = Table(
                 show_header=True,
@@ -288,11 +296,11 @@ class BybitDashboard:
             )
             orders_table.add_column("Symbol", style="cyan", width=12)
             orders_table.add_column("Side", style="magenta", width=6)
-            orders_table.add_column("Type", style="blue", width=8)
+            orders_table.add_column("Type", style="blue", width=6)
             orders_table.add_column("Quantity", justify="right", width=12)
-            orders_table.add_column("Price", justify="right", style="green", width=14)
+            orders_table.add_column("Price", justify="right", style="green", width=5)
             orders_table.add_column("TP", justify="right", style="cyan", width=8)
-            orders_table.add_column("SL", justify="right", style="red", width=8)
+            orders_table.add_column("SL", justify="right", style="red", width=10)
             orders_table.add_column("Status", style="yellow", width=10)
             orders_table.add_column("Time", style="dim", width=10)
             
@@ -307,7 +315,7 @@ class BybitDashboard:
                     "",
                     "",
                     ""
-               )
+                )
             else:
                 # Group orders by parentOrderId to combine TP/SL with main order
                 # Also group orphan TP/SL orders by symbol/side/qty
@@ -328,7 +336,7 @@ class BybitDashboard:
                     is_sl = stop_order_type == 'StopLoss'
                     is_main = not (is_tp or is_sl)
                     
-                    # If this is a child order (TP/SL), group it with parent
+                    # If this is a child order (TP/SL) with a valid parent, group it with parent
                     if (is_tp or is_sl) and parent_id and parent_id != '0':
                         if parent_id not in grouped_orders:
                             grouped_orders[parent_id] = {'main': None, 'tp': None, 'sl': None}
@@ -337,12 +345,12 @@ class BybitDashboard:
                         elif is_sl:
                             grouped_orders[parent_id]['sl'] = order
                     elif is_main:
-                        # This is a main order
+                        # This is a main order - create or update entry
                         if order_id not in grouped_orders:
                             grouped_orders[order_id] = {'main': None, 'tp': None, 'sl': None}
                         grouped_orders[order_id]['main'] = order
-                    elif is_tp or is_sl:
-                        # Orphan TP/SL order - group by symbol/side/qty
+                    else:
+                        # Orphan TP/SL order (no parent_id or parent_id='0') - group by symbol/side/qty
                         group_key = f"{symbol}:{side}:{qty}"
                         if group_key not in orphan_tpsl:
                             orphan_tpsl[group_key] = {'main': None, 'tp': None, 'sl': None}
@@ -366,16 +374,26 @@ class BybitDashboard:
                     tp_order = group_data.get('tp')
                     sl_order = group_data.get('sl')
                     
-                    if not main_order:
+                    # Skip if no orders at all in this group (shouldn't happen with current logic)
+                    if not main_order and not tp_order and not sl_order:
                         continue
                     
-                    symbol = main_order.get('symbol', 'N/A')
-                    side = main_order.get('side', 'N/A').upper()
-                    order_type = main_order.get('type', 'N/A').upper()
-                    amount = main_order.get('amount') or 0
-                    price = main_order.get('price') or 0
-                    status = main_order.get('status', 'N/A').upper()
-                    main_info = main_order.get('info', {})
+                    # For orphan TP/SL orders without a main order, use TP if available, then SL
+                    if not main_order:
+                        main_order = tp_order or sl_order
+                        if not main_order:
+                            continue
+                    
+                    try:
+                        symbol = main_order.get('symbol', 'N/A')
+                        side = main_order.get('side', 'N/A').upper()
+                        order_type = main_order.get('type', 'N/A').upper()
+                        amount = main_order.get('amount') or 0
+                        price = main_order.get('price') or 0
+                        status = main_order.get('status', 'N/A').upper()
+                        main_info = main_order.get('info', {})
+                    except Exception:
+                        continue
                     
                     # Extract TP and SL from child orders or order info
                     tp_price = None
@@ -446,7 +464,7 @@ class BybitDashboard:
             
             # Add info
             info_text = Text(
-                f"📈 Total Orders: {len(orders)} | 🔄 {self.update_time.strftime('%H:%M:%S')}",
+                f"📈 Total: {len(orders)} | Displayed: {displayed_count} | 🔄 {self.update_time.strftime('%H:%M:%S')}",
                 style="dim white"
             )
             
