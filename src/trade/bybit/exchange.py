@@ -17,6 +17,7 @@ def create_bybit_demo_exchange(api_key: str, secret: str) -> ccxt.bybit:
         'options': {
             'defaultType': 'swap',
             'adjustForTimeDifference': True,
+            'warnOnFetchOpenOrdersWithoutSymbol': False,  # Suppress rate limit warning
         }
     })
     
