@@ -307,7 +307,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         "",
         f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
         "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-            "Symbol", "**Total**", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
         ),
         "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", ""),
     ]
@@ -344,7 +344,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         overall_longest_loss_streak = max(overall_longest_loss_streak, summary['longest_loss_streak'])
     
     total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-        "TOTAL",
+        "**TOTAL**",
         total_trades,
         total_wins,
         total_losses,
