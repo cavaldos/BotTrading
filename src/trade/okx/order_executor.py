@@ -13,6 +13,8 @@ from src.trade.okx.exchange import (
     validate_symbol,
     place_market_order_with_sl,
     set_position_sl_tp,
+    set_position_mode,
+    set_leverage_and_margin_mode,
 )
 from src.trade.okx.risk_calculator import clean_symbol
 from src.utils.rounding import round_price
@@ -27,6 +29,8 @@ def validate_and_place_order(
     leverage: int = 20,
     risk_usd: float = 5,
     risk_reward_ratio: float = 2.0,
+    margin_mode: str = 'isolated',
+    hedge_mode: bool = True,
 ) -> dict:
     """
     Validate và đặt lệnh market order trên OKX với SL/TP.
@@ -40,18 +44,21 @@ def validate_and_place_order(
         leverage: Đòn bẩy
         risk_usd: Rủi ro USD
         risk_reward_ratio: Tỉ lệ Risk:Reward (mặc định 2.0 = RR 1:2)
+        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
+        hedge_mode: True để bật hedge mode (long/short cùng lúc)
     
     Returns:
         dict: Kết quả đặt lệnh
     """
     try:
-        # Làm sạch symbol
-        clean_sym = clean_symbol(symbol)
+        # Convert Binance format (BTCUSDT_1m) → CCXT format (BTC/USDT)
+        clean_sym = clean_symbol(symbol, to_ccxt_format=True)
+        print(f"[OKX] Đang xử lý đặt lệnh cho symbol: {clean_sym}") 
         
         # Get exchange instance
         exchange = get_exchange()
         
-        # Format symbol theo chuẩn OKX
+        # Format symbol theo chuẩn OKX (BTC/USDT → BTC-USDT-SWAP)
         formatted_symbol = format_symbol(clean_sym)
         
         # Validate symbol
@@ -84,6 +91,8 @@ def validate_and_place_order(
             leverage=leverage,
             stop_loss=stop_loss,
             risk_usd=risk_usd,
+            margin_mode=margin_mode,
+            hedge_mode=hedge_mode,
         )
         
         if result['success']:
@@ -97,6 +106,7 @@ def validate_and_place_order(
                 side=side.lower(),
                 stop_loss=stop_loss,
                 take_profit=take_profit,
+                margin_mode=margin_mode,
             )
             
             if sl_tp_result['success']:
@@ -119,28 +129,77 @@ def validate_and_place_order(
             'exchange': 'OKX',
         }
 
+def okx_format_order_message(result: dict) -> str:
+    """
+    Format kết quả đặt lệnh thành message dễ đọc.
+    
+    Args:
+        result: Dict kết quả từ validate_and_place_order()
+    
+    Returns:
+        str: Message đã format
+    """
+    if not result.get('success'):
+        error = result.get('error', 'Unknown error')
+        return f"❌ THẤT BẠI\n└─ Lỗi: {error}"
+    
+    # Lấy thông tin
+    symbol = result.get('symbol', 'N/A')
+    entry_price = result.get('entry_price', 0)
+    stop_loss = result.get('stop_loss', 0)
+    take_profit = result.get('take_profit', 0)
+    
+    # Lấy side từ position_info
+    position_info = result.get('position_info', {})
+    side = position_info.get('side', 'N/A').upper()
+    leverage = position_info.get('leverage', 'N/A')
+    contracts = result.get('contracts', position_info.get('quantity', 0))
+    
+    # Tính Risk/Reward ratio
+    rr_ratio = 0
+    if side == 'BUY':  # LONG
+        risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
+        reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
+    else:  # SHORT
+        risk = abs(stop_loss - entry_price) if stop_loss and entry_price else 0
+        reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
+    
+    if risk > 0:
+        rr_ratio = reward / risk
+    
+    # Format message
+    side_emoji = "🟢" if side == "BUY" else "🔴"
+    side_text = "LONG" if side == "BUY" else "SHORT"
+    
+    message = f"""✅ THÀNH CÔNG
 
-if __name__ == '__main__':
-    print("="*70)
-    print("Test OKX validate_and_place_order()")
-    print("="*70)
+{side_emoji} {side_text} {symbol}
+├─ Leverage: {leverage}x
+├─ Contracts: {contracts}
+│
+├─ Entry:  ${entry_price:,.2f}
+├─ SL:     ${stop_loss:,.2f}
+├─ TP:     ${take_profit:,.2f}
+│
+└─ RR:     1:{rr_ratio:.2f}"""
     
-    # Test LONG với RR 1:2 (mặc định)
-    print("\n[TEST 1] LONG với RR 1:2 (auto TP)")
-    result = validate_and_place_order(
-        symbol='BTC_1m',
-        side='buy',
-        entry_price=88599,
-        stop_loss=88019,  # Risk = 580
-        # TP auto = 88599 + (580 * 2) = 89759
-        leverage=20,
-        risk_usd=5,
+    return message
+
+
+if __name__ == "__main__":
+    # Example usage
+    order_result = validate_and_place_order(
+        symbol="BTCUSDT_1m",
+        side="buy",
+        entry_price=89647,
+        stop_loss=88864,
+        take_profit=None,
+        leverage=10,
+        risk_usd=10,
+        risk_reward_ratio=2.0,
     )
-    
-    print(f"  Exchange: {result.get('exchange', 'N/A')}")
-    print(f"  Entry: {result.get('entry_price', 'N/A')}")
-    print(f"  Stop Loss: {result.get('stop_loss', 'N/A')}")
-    print(f"  Take Profit: {result.get('take_profit', 'N/A')}")
-    print(f"  Success: {result['success']}")
-    if not result['success']:
-        print(f"  Error: {result['error']}")
+    print(order_result)
+    print("\n" + "="*40 + "\n")
+    print(okx_format_order_message(order_result))
+
+

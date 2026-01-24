@@ -292,8 +292,8 @@ class OKXDashboard:
             positions_table.add_column("Entry Price", justify="right", width=12)
             positions_table.add_column("Mark Price", justify="right", width=12)
             positions_table.add_column("Leverage", justify="right", width=8)
-            positions_table.add_column("P&L", justify="right", width=12)
-            positions_table.add_column("ROI %", justify="right", width=10)
+            positions_table.add_column("P&L", justify="right", width=8)
+            positions_table.add_column("ROI %", justify="right", width=6)
             
             if not open_positions:
                 positions_table.add_row(
@@ -407,13 +407,13 @@ class OKXDashboard:
             orders_table.add_column("Symbol", style="cyan", width=12)
             orders_table.add_column("Side", style="magenta", width=6)
             orders_table.add_column("Type", style="blue", width=8)
-            orders_table.add_column("Amount", justify="right", width=12)
-            orders_table.add_column("Filled", justify="right", width=10)
+            orders_table.add_column("Amount", justify="right", width=8)
+            orders_table.add_column("Filled", justify="right", width=8)
             orders_table.add_column("Avg Price", justify="right", style="blue", width=12)
             orders_table.add_column("Price", justify="right", style="green", width=12)
             orders_table.add_column("Fee", justify="right", style="yellow", width=10)
-            orders_table.add_column("P&L", justify="right", width=12)
-            orders_table.add_column("ROI %", justify="right", width=10)
+            orders_table.add_column("P&L", justify="right", width=8)
+            orders_table.add_column("ROI %", justify="right", width=8)
             orders_table.add_column("Time", style="dim", width=10)
             
             if not closed_orders:
@@ -553,24 +553,23 @@ class OKXDashboard:
         title = Text("🚀 OKX Trading Dashboard", style="bold cyan", justify="center")
         layout["header"].update(Panel(title, border_style="cyan"))
         
-        # Main area - 3 columns layout
-        layout["main"].split_row(
-            Layout(name="left"),
-            Layout(name="center"),
-            Layout(name="right")
+        # Main area - 2 rows layout (grid 2x2)
+        layout["main"].split_column(
+            Layout(name="top"),
+            Layout(name="bottom")
         )
         
-        # Left: Balance + Positions
-        layout["left"].split_column(
+        # Top row: Balance (left) + Open Orders (right)
+        layout["top"].split_row(
             Layout(self._create_balance_panel(), name="balance"),
-            Layout(self._create_positions_panel(), name="positions")
+            Layout(self._create_orders_panel(), name="orders")
         )
         
-        # Center: Open Orders
-        layout["center"].update(self._create_orders_panel())
-        
-        # Right: Order History
-        layout["right"].update(self._create_order_history_panel())
+        # Bottom row: Positions (left) + Order History (right)
+        layout["bottom"].split_row(
+            Layout(self._create_positions_panel(), name="positions"),
+            Layout(self._create_order_history_panel(), name="history")
+        )
         
         # Footer
         status = Text(

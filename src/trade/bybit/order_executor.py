@@ -114,6 +114,33 @@ def validate_and_place_order(
             'symbol': clean_symbol(symbol),
         }
 
+def bybit_format_order_message(order_result: dict) -> str:
+    """
+    Format order result thành chuỗi thông báo.
+    Args:
+        order_result: Kết quả đặt lệnh
+    
+    Returns:
+        str: Chuỗi thông báo
+    """
+    if not order_result.get('success', False):
+        return f"❌ Lệnh thất bại: {order_result.get('error', 'Unknown error')}"
+    
+    entry_price = order_result.get('entry_price', 'N/A')
+    stop_loss = order_result.get('stop_loss', 'N/A')
+    take_profit = order_result.get('take_profit', 'N/A')
+    
+    message = (
+        f"✅ Lệnh thành công!\n"
+        f"• Giá Entry: {entry_price}\n"
+        f"• Stop Loss: {stop_loss}\n"
+        f"• Take Profit: {take_profit}\n"
+    )
+    
+    if 'sl_tp_warning' in order_result:
+        message += f"⚠️ Cảnh báo SL/TP: {order_result['sl_tp_warning']}\n"
+    
+    return message
 
 if __name__ == '__main__':
     print("="*70)

@@ -1,26 +1,22 @@
-"""
-Risk management utilities for OKX
-- Symbol cleaning
-- Slippage calculation
-- Risk validation
-"""
-
 import re
 from src.utils.rounding import round_price
 
 
-def clean_symbol(symbol: str) -> str:
-    """
-    Remove timeframe suffix from a symbol.
-    Examples: 'BTCUSDT_1m' -> 'BTCUSDT', 'BTC-USDT-SWAP_5m' -> 'BTC-USDT-SWAP'
-
-    Args:
-        symbol: Symbol with or without a timeframe suffix
-
-    Returns:
-        The cleaned symbol
-    """
-    symbol = re.sub(r'_\d+[mhd]$', '', symbol.strip())
+def clean_symbol(symbol: str, to_ccxt_format: bool = True) -> str:
+    symbol = symbol.strip()
+    symbol = re.sub(r'[\s_]\d+[mhd]$', '', symbol)
+    
+    if not to_ccxt_format:
+        return symbol
+    
+    if '/' in symbol or '-SWAP' in symbol or ':' in symbol:
+        return symbol
+    
+    for q in ['USDT', 'BUSD', 'TUSD', 'USD', 'BTC', 'ETH', 'USDC']:
+        if symbol.endswith(q):
+            base = symbol[:-len(q)]
+            return f"{base}/{q}"
+    
     return symbol
 
 
@@ -93,3 +89,20 @@ def validate_slippage(slippage_pct: float, max_slippage_pct: float = 0.5) -> boo
         True if slippage is acceptable, False otherwise
     """
     return abs(slippage_pct) <= max_slippage_pct
+
+
+if __name__ == "__main__":
+    test_symbols = [
+       'BTCUSDT_1m',
+       'ETHUSDT 5m',
+       'BTC/USDT_1h',
+       'BTC/USDT:USDT_5m',
+    ]
+    
+    print("Testing clean_symbol():")
+    print("=" * 70)
+    for sym in test_symbols:
+       cleaned = clean_symbol(sym, to_ccxt_format=False)
+       normalized = clean_symbol(sym, to_ccxt_format=True)
+       print(f"  {sym:25} → {cleaned:25} → {normalized}")
+

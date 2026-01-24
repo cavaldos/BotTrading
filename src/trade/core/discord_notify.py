@@ -5,8 +5,6 @@ import sys
 from dotenv import load_dotenv
 
 from src.trade.core.calculate import calculate_trade_size
-from src.trade.bybit.formatter import format_result as format_bybit_result
-from src.trade.okx.formatter import format_result as format_okx_result
 
 # Tải biến môi trường từ file .env
 load_dotenv()
@@ -14,61 +12,6 @@ load_dotenv()
 # Discord Webhook URL
 DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL')
 
-
-def format_multi_exchange_result(result: dict) -> str:
-    """
-    Format kết quả từ nhiều sàn giao dịch thành chuỗi dễ đọc.
-    
-    Args:
-        result: Dict chứa kết quả từ các sàn {'bybit': {...}, 'okx': {...}}
-    
-    Returns:
-        str: Chuỗi format cho Discord
-    """
-    if result is None:
-        return ""
-    
-    # Nếu là kết quả từ 1 sàn (format cũ)
-    if 'bybit' not in result and 'okx' not in result:
-        return format_bybit_result(result)
-    
-    lines = []
-    
-    # Format kết quả Bybit
-    if result.get('bybit'):
-        bybit_result = result['bybit']
-        if bybit_result.get('success'):
-            order = bybit_result.get('order', {})
-            position_info = bybit_result.get('position_info', {})
-            order_id = order.get('info', {}).get('orderId', 'N/A')
-            quantity = position_info.get('quantity', 'N/A')
-            lines.append(f"BYBIT: ✓ OK (ID: {order_id}, Qty: {quantity})")
-        else:
-            error = bybit_result.get('error', 'Unknown')
-            # Truncate long error messages
-            if len(error) > 50:
-                error = error[:50] + "..."
-            lines.append(f"BYBIT: ✗ {error}")
-    
-    # Format kết quả OKX
-    if result.get('okx'):
-        okx_result = result['okx']
-        if okx_result.get('success'):
-            order = okx_result.get('order', {})
-            order_id = order.get('id', 'N/A') or order.get('info', {}).get('ordId', 'N/A')
-            contracts = okx_result.get('contracts', 'N/A')
-            lines.append(f"OKX:   ✓ OK (ID: {order_id}, Contracts: {contracts})")
-        else:
-            error = okx_result.get('error', 'Unknown')
-            # Truncate long error messages
-            if len(error) > 50:
-                error = error[:50] + "..."
-            lines.append(f"OKX:   ✗ {error}")
-    
-    if lines:
-        return "\n" + "\n".join(lines)
-    
-    return ""
 
 # Hàm gửi tin nhắn tùy chỉnh qua Discord webhook
 def send_custom_message(message: str) -> None:
@@ -138,7 +81,8 @@ Leverage:   {leverage}x
 Risk:       ${risk_per_trade}
 
 R:R Ratio:  1:{rr_ratio:.2f}
-{format_multi_exchange_result(result) if result else ''}
+RESULT
+{result if result else "N/A"}
 ```"""
 
     send_custom_message(message)

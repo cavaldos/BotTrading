@@ -170,31 +170,96 @@ def validate_symbol(exchange: ccxt.okx, symbol: str) -> bool:
 
 
 def format_symbol(symbol: str) -> str:
-    """Format symbol to OKX standard format (BTC-USDT for swap)."""
+    """Format symbol to OKX CCXT standard format (BTC/USDT:USDT for swap)."""
     symbol = symbol.upper().strip()
     
-    if '-USDT' in symbol:
+    # Already in CCXT format (BTC/USDT:USDT, BTC/USD:BTC, etc.)
+    if '/' in symbol and ':' in symbol:
         return symbol
     
+    # CCXT format without settlement (BTC/USDT) → Add settlement (BTC/USDT:USDT)
     if '/' in symbol:
-        base = symbol.split('/')[0]
-        return f"{base}-USDT"
+        quote = symbol.split('/')[1] if '/' in symbol else 'USDT'
+        if ':' not in symbol:
+            return f"{symbol}:{quote}"
+        return symbol
     
+    # Binance/simple format (BTCUSDT) → CCXT format (BTC/USDT:USDT)
     if symbol.endswith('USDT'):
-        symbol = symbol[:-4]
+        base = symbol[:-4]
+        return f"{base}/USDT:USDT"
     
-    return f"{symbol}-USDT"
+    # Fallback
+    return f"{symbol}/USDT:USDT"
 
 
-def set_leverage_and_margin_mode(exchange: ccxt.okx, symbol: str, leverage: int = 20) -> dict:
+def set_position_mode(exchange: ccxt.okx, hedge_mode: bool = True) -> dict:
     """
-    Set leverage and margin mode for OKX.
-    OKX requires setting both position mode and margin mode.
+    Set position mode for OKX account.
+    
+    Args:
+        exchange: CCXT OKX instance
+        hedge_mode: True for hedge mode (long/short cùng lúc), False for one-way mode
+    
+    Returns:
+        dict: Result of setting position mode
+    """
+    try:
+        pos_mode = 'long_short_mode' if hedge_mode else 'net_mode'
+        
+        result = exchange.privatePostAccountSetPositionMode({
+            'posMode': pos_mode
+        })
+        
+        if result.get('code') == '0':
+            mode_text = "Hedge (Long/Short)" if hedge_mode else "One-way (Net)"
+            print(f"✓ Position mode set to: {mode_text}")
+            return {
+                'success': True,
+                'position_mode': pos_mode,
+                'hedge_mode': hedge_mode,
+            }
+        else:
+            return {
+                'success': False,
+                'error': result.get('msg', 'Unknown error'),
+                'result': result,
+            }
+            
+    except Exception as e:
+        error_msg = str(e)
+        # Ignore if already set
+        if 'already' in error_msg.lower() or 'same' in error_msg.lower():
+            mode_text = "Hedge (Long/Short)" if hedge_mode else "One-way (Net)"
+            print(f"✓ Position mode already: {mode_text}")
+            return {
+                'success': True,
+                'position_mode': 'long_short_mode' if hedge_mode else 'net_mode',
+                'hedge_mode': hedge_mode,
+                'note': 'Already set',
+            }
+        return {
+            'success': False,
+            'error': error_msg,
+        }
+
+
+def set_leverage_and_margin_mode(
+    exchange: ccxt.okx, 
+    symbol: str, 
+    leverage: int = 20,
+    margin_mode: str = 'isolated',
+    hedge_mode: bool = True,
+) -> dict:
+    """
+    Set leverage, margin mode và position mode for OKX.
     
     Args:
         exchange: CCXT OKX instance
         symbol: Symbol (e.g., 'BTC-USDT-SWAP')
         leverage: Leverage (default 20)
+        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
+        hedge_mode: True để bật hedge mode (long/short cùng lúc)
     
     Returns:
         dict: Result of setting leverage
@@ -216,24 +281,48 @@ def set_leverage_and_margin_mode(exchange: ccxt.okx, symbol: str, leverage: int 
         market = exchange.markets[formatted_symbol]
         inst_id = market.get('id', formatted_symbol)
         
-        # Set margin mode to 'cross' (OKX default for swap)
+        # 1. Set position mode (hedge mode để long/short cùng lúc)
+        if hedge_mode:
+            pos_mode_result = set_position_mode(exchange, hedge_mode=True)
+            if not pos_mode_result['success']:
+                print(f"⚠️  Warning: Could not set hedge mode - {pos_mode_result.get('error', 'Unknown')}")
+        
+        # 2. Set margin mode (isolated hoặc cross)
         try:
-            exchange.set_margin_mode('cross', formatted_symbol)
+            exchange.set_margin_mode(margin_mode, formatted_symbol)
+            print(f"✓ Margin mode set to: {margin_mode.upper()}")
         except Exception as e:
+            error_msg = str(e).lower()
             # Ignore if already set
-            if 'already' not in str(e).lower():
+            if 'already' not in error_msg and 'same' not in error_msg:
                 print(f"⚠️  Warning: Could not set margin mode - {e}")
         
-        # Set leverage
+        # 3. Set leverage for both long and short sides (required for hedge mode)
         try:
-            exchange.set_leverage(leverage, formatted_symbol, params={'mgnMode': 'cross'})
+            # For hedge mode, need to set leverage for both sides
+            exchange.privatePostAccountSetLeverage({
+                'instId': inst_id,
+                'lever': str(leverage),
+                'mgnMode': margin_mode,
+                'posSide': 'long',
+            })
+            exchange.privatePostAccountSetLeverage({
+                'instId': inst_id,
+                'lever': str(leverage),
+                'mgnMode': margin_mode,
+                'posSide': 'short',
+            })
+            print(f"✓ Leverage set to: {leverage}x (both sides)")
         except Exception as e:
-            if 'already' not in str(e).lower() and 'same' not in str(e).lower():
+            error_msg = str(e).lower()
+            if 'already' not in error_msg and 'same' not in error_msg and 'lever' not in error_msg:
                 print(f"⚠️  Warning: Could not set leverage - {e}")
         
         return {
             'success': True,
             'leverage': leverage,
+            'margin_mode': margin_mode,
+            'hedge_mode': hedge_mode,
             'symbol': formatted_symbol,
             'inst_id': inst_id,
         }
@@ -251,6 +340,7 @@ def set_position_sl_tp(
     side: str,
     stop_loss: float,
     take_profit: float = None,
+    margin_mode: str = 'isolated',
 ) -> dict:
     """
     Set Stop Loss and Take Profit for a position on OKX.
@@ -261,6 +351,7 @@ def set_position_sl_tp(
         side: 'buy' for long, 'sell' for short
         stop_loss: Stop loss price
         take_profit: Take profit price (optional)
+        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
     
     Returns:
         dict: Result of setting SL/TP
@@ -280,6 +371,7 @@ def set_position_sl_tp(
         
         position = None
         position_size = 0
+        pos_side_found = None
         
         for pos in positions:
             pos_side = pos.get('side', '').lower()
@@ -291,10 +383,12 @@ def set_position_sl_tp(
                    (side.lower() == 'sell' and pos_side == 'short'):
                     position = pos
                     position_size = pos_contracts
+                    pos_side_found = pos_side
                     break
                 elif pos_side == side.lower():
                     position = pos
                     position_size = pos_contracts
+                    pos_side_found = pos_side
                     break
         
         if not position or position_size == 0:
@@ -307,7 +401,7 @@ def set_position_sl_tp(
         # Create SL order
         sl_params = {
             'instId': inst_id,
-            'tdMode': 'cross',
+            'tdMode': margin_mode,  # 'isolated' hoặc 'cross'
             'side': 'sell' if side.lower() == 'buy' else 'buy',  # Opposite side
             'ordType': 'conditional',
             'sz': str(position_size),
@@ -315,6 +409,10 @@ def set_position_sl_tp(
             'slOrdPx': '-1',  # Market price
             'triggerPxType': 'last',
         }
+        
+        # Add posSide for hedge mode
+        if pos_side_found in ['long', 'short']:
+            sl_params['posSide'] = pos_side_found
         
         # Add TP if provided
         if take_profit:
@@ -324,16 +422,23 @@ def set_position_sl_tp(
         # Use OKX's create order with algo type
         try:
             # Method 1: Use ccxt's create_order with trigger params
+            order_params = {
+                'stopLossPrice': stop_loss,
+                'takeProfitPrice': take_profit if take_profit else None,
+                'triggerType': 'last',
+                'tdMode': margin_mode,
+            }
+            
+            # Add posSide for hedge mode
+            if pos_side_found in ['long', 'short']:
+                order_params['posSide'] = pos_side_found
+            
             sl_order = exchange.create_order(
                 symbol=formatted_symbol,
                 type='market',
                 side='sell' if side.lower() == 'buy' else 'buy',
                 amount=position_size,
-                params={
-                    'stopLossPrice': stop_loss,
-                    'takeProfitPrice': take_profit if take_profit else None,
-                    'triggerType': 'last',
-                }
+                params=order_params
             )
             
             return {
@@ -347,9 +452,9 @@ def set_position_sl_tp(
         except Exception as e:
             # Method 2: Try using privatePostTradeOrderAlgo if standard method fails
             try:
-                algo_result = exchange.privatePostTradeOrderAlgo({
+                algo_params = {
                     'instId': inst_id,
-                    'tdMode': 'cross',
+                    'tdMode': margin_mode,
                     'side': 'sell' if side.lower() == 'buy' else 'buy',
                     'ordType': 'oco',  # One-Cancels-Other for SL/TP
                     'sz': str(position_size),
@@ -357,7 +462,13 @@ def set_position_sl_tp(
                     'slOrdPx': '-1',
                     'tpTriggerPx': str(take_profit) if take_profit else '',
                     'tpOrdPx': '-1' if take_profit else '',
-                })
+                }
+                
+                # Add posSide for hedge mode
+                if pos_side_found in ['long', 'short']:
+                    algo_params['posSide'] = pos_side_found
+                
+                algo_result = exchange.privatePostTradeOrderAlgo(algo_params)
                 
                 if algo_result.get('code') == '0':
                     return {
@@ -394,6 +505,8 @@ def place_market_order_with_sl(
     leverage: int = 20,
     stop_loss: float = None,
     risk_usd: float = 5,
+    margin_mode: str = 'isolated',
+    hedge_mode: bool = True,
 ) -> dict:
     """
     Place a market order with stop loss on OKX.
@@ -405,6 +518,8 @@ def place_market_order_with_sl(
         leverage: Leverage (default 20)
         stop_loss: Stop loss price (required)
         risk_usd: Risk amount in USD (default 5)
+        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
+        hedge_mode: True để bật hedge mode (long/short cùng lúc)
     
     Returns:
         dict: Order information
@@ -415,8 +530,12 @@ def place_market_order_with_sl(
     # Format symbol for OKX (BTC -> BTC-USDT-SWAP)
     formatted_symbol = format_symbol(symbol)
     
-    # Set leverage and margin mode
-    leverage_result = set_leverage_and_margin_mode(exchange, symbol, leverage)
+    # Set leverage, margin mode and hedge mode
+    leverage_result = set_leverage_and_margin_mode(
+        exchange, symbol, leverage, 
+        margin_mode=margin_mode, 
+        hedge_mode=hedge_mode
+    )
     if not leverage_result['success']:
         print(f"⚠️  Warning: Could not set leverage - {leverage_result.get('error', 'Unknown')}")
     
@@ -458,14 +577,20 @@ def place_market_order_with_sl(
         # OKX posSide: 'long' for buy, 'short' for sell in hedged mode
         pos_side = 'long' if side.lower() == 'buy' else 'short'
         
+        # Build order params
+        order_params = {
+            'tdMode': margin_mode,  # 'isolated' hoặc 'cross'
+        }
+        
+        # Add posSide for hedge mode
+        if hedge_mode:
+            order_params['posSide'] = pos_side
+        
         order = exchange.create_market_order(
             symbol=formatted_symbol,
             side=side.lower(),
             amount=contracts,
-            params={
-                'tdMode': 'cross',  # Cross margin
-                'posSide': pos_side,  # Position side for hedge mode
-            }
+            params=order_params
         )
         
         # Get actual fill price
@@ -479,12 +604,14 @@ def place_market_order_with_sl(
             'stop_loss': stop_loss,
             'contracts': contracts,
             'symbol': formatted_symbol,
+            'margin_mode': margin_mode,
+            'hedge_mode': hedge_mode,
         }
         
     except Exception as e:
         error_msg = str(e)
         
-        # Try without posSide (one-way mode)
+        # Try without posSide (fallback to one-way mode)
         if 'posSide' in error_msg or 'position side' in error_msg.lower():
             try:
                 order = exchange.create_market_order(
@@ -492,7 +619,7 @@ def place_market_order_with_sl(
                     side=side.lower(),
                     amount=contracts,
                     params={
-                        'tdMode': 'cross',
+                        'tdMode': margin_mode,
                     }
                 )
                 
@@ -506,7 +633,9 @@ def place_market_order_with_sl(
                     'stop_loss': stop_loss,
                     'contracts': contracts,
                     'symbol': formatted_symbol,
-                    'mode': 'one_way',
+                    'margin_mode': margin_mode,
+                    'hedge_mode': False,
+                    'note': 'Fallback to one-way mode',
                 }
                 
             except Exception as e2:
@@ -522,58 +651,3 @@ def place_market_order_with_sl(
             'position_info': position_info,
         }
 
-
-if __name__ == '__main__':
-    try:
-        # Test get_exchange
-        print("=" * 60)
-        print("Testing OKX get_exchange()...")
-        exchange = get_exchange()
-        print(f"✓ Exchange initialized: {exchange.__class__.__name__}")
-        print(f"✓ Markets loaded: {len(exchange.markets)} markets")
-        
-        # Test calculate_position_size
-        print("\n" + "=" * 60)
-        print("Testing calculate_position_size()...")
-        entry_price = 100000
-        stop_loss = 89900
-        leverage = 20
-        risk = 5
-        
-        pos_info = calculate_position_size(entry_price, stop_loss, leverage, risk, side='buy')
-        print(f"  Entry: ${entry_price:,.2f}")
-        print(f"  Stop Loss: ${stop_loss:,.2f}")
-        print(f"  Leverage: {leverage}x")
-        print(f"  Target Risk: ${risk}")
-        print(f"  → Quantity: {pos_info['quantity']} BTC")
-        print(f"  → Margin: ${pos_info['margin_required']:,.2f}")
-        print(f"  → Notional: ${pos_info['notional_value']:,.2f}")
-        print(f"  → Actual Risk: ${pos_info['actual_risk']:.2f}")
-        
-        # Test place_market_order_with_sl
-        print("\n" + "=" * 60)
-        print("Testing place_market_order_with_sl()...")
-        
-        result = place_market_order_with_sl(
-            exchange=exchange,
-            symbol='BTC',
-            side='buy',
-            leverage=20,
-            stop_loss=89900,
-            risk_usd=5
-        )
-        
-        if result['success']:
-            print(f"\n✓ Order placed successfully!")
-            print(f"   Entry Price: {result.get('entry_price', 'N/A')}")
-            print(f"   Contracts: {result.get('contracts', 'N/A')}")
-        else:
-            print(f"\n✗ Order failed: {result.get('error', 'Unknown')}")
-        
-        print("\n" + "=" * 60)
-        print("✓ All tests passed!")
-        
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        import traceback
-        traceback.print_exc()

@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 
-from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order
-from src.trade.okx.order_executor import validate_and_place_order as okx_place_order
+from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order, bybit_format_order_message
+from src.trade.okx.order_executor import validaste_and_place_order as okx_place_order, okx_format_order_message
 
 from .notify import send_entry_telegram
 from .discord_notify import send_entry_discord
@@ -311,7 +311,18 @@ def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list =
                  name_coin=row['Symbol']
              )
              
-             # Bước 3: Gửi thông báo Discord với kết quả từ cả 2 sàn
+             # Bước 3: Gửi thông báo Discord với kết quả từ cả 2 sàn (song song)
+             bybit_msg = ""
+             okx_msg = ""
+             
+             if order_result.get('bybit'):
+                 bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
+             
+             if order_result.get('okx'):
+                 okx_msg = f"**OKX**\n{okx_format_order_message(order_result['okx'])}"
+             
+             combined_result = f"{bybit_msg}\n\n{okx_msg}".strip()
+             
              send_entry_discord(
                  type=row['Type'],
                  entry=float(row['Entry_Price']),
@@ -319,7 +330,7 @@ def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list =
                  takeprofit=float(row['Take_Profit']),
                  time=row['Entry_Time'],
                  name_coin=row['Symbol'],
-                 result=order_result
+                 result=combined_result
              )
              
              # Thêm order với thông tin chi tiết
