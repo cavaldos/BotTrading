@@ -7,7 +7,8 @@ from datetime import datetime
 from pathlib import Path
 
 
-from src.trade.bybit.order_executor import validate_and_place_order
+from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order
+from src.trade.okx.order_executor import validate_and_place_order as okx_place_order
 
 from .notify import send_entry_telegram
 from .discord_notify import send_entry_discord
@@ -172,40 +173,105 @@ def place_order(
     entry_time: str,
     leverage: int = 20,
     risk_usd: float = None,
+    exchanges: list = None,
 ) -> dict:
+    """
+    Đặt lệnh trên một hoặc nhiều sàn giao dịch.
+    
+    Args:
+        symbol: Symbol giao dịch
+        order_type: 'LONG' hoặc 'SHORT'
+        entry_price: Giá entry
+        stop_loss: Giá stop loss
+        take_profit: Giá take profit
+        entry_time: Thời gian entry
+        leverage: Đòn bẩy (default 20)
+        risk_usd: Rủi ro USD (default từ config)
+        exchanges: Danh sách sàn ['bybit', 'okx'] (default cả 2)
+    
+    Returns:
+        dict: Kết quả đặt lệnh cho từng sàn
+    """
     if risk_usd is None:
         risk_usd = RISK_USD
+    
+    if exchanges is None:
+        exchanges = ['bybit', 'okx']  # Mặc định đặt cả 2 sàn
     
     order_type = order_type.strip().upper()
     side = 'buy' if order_type == 'LONG' else 'sell'
     
+    results = {
+        'success': False,
+        'bybit': None,
+        'okx': None,
+        'any_success': False,
+    }
+    
     # Đặt lệnh trên Bybit
-    order_result = validate_and_place_order(
-        symbol=symbol,
-        side=side,
-        entry_price=entry_price,
-        stop_loss=stop_loss,
-        take_profit=take_profit,
-        leverage=leverage,
-        risk_usd=risk_usd,
-    )
+    if 'bybit' in exchanges:
+        try:
+            bybit_result = bybit_place_order(
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                leverage=leverage,
+                risk_usd=risk_usd,
+            )
+            results['bybit'] = bybit_result
+            if bybit_result.get('success'):
+                results['any_success'] = True
+        except Exception as e:
+            results['bybit'] = {
+                'success': False,
+                'error': str(e),
+                'exchange': 'Bybit',
+            }
     
-    if not order_result['success']:
-        return order_result
+    # Đặt lệnh trên OKX
+    if 'okx' in exchanges:
+        try:
+            okx_result = okx_place_order(
+                symbol=symbol,
+                side=side,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                leverage=leverage,
+                risk_usd=risk_usd,
+            )
+            results['okx'] = okx_result
+            if okx_result.get('success'):
+                results['any_success'] = True
+        except Exception as e:
+            results['okx'] = {
+                'success': False,
+                'error': str(e),
+                'exchange': 'OKX',
+            }
     
-    # Lấy giá fill thực tế
-    actual_entry = order_result.get('entry_price', entry_price)
-    return order_result
+    # Đánh dấu success nếu ít nhất 1 sàn thành công
+    results['success'] = results['any_success']
+    
+    return results
 
 
-def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
+def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list = None) -> int:
      """
-     Kiểm tra các lệnh Open, đặt lệnh trên Bybit, sau đó gửi Telegram/Discord nếu chưa gửi.
+     Kiểm tra các lệnh Open, đặt lệnh trên Bybit và OKX, sau đó gửi Telegram/Discord.
+     
      Args:
          output_dir: Đường dẫn đến thư mục chứa các file CSV (vd: "src/output")
          log_file: Đường dẫn đến file log (vd: "trade/logs/sent_orders.json")
+         exchanges: Danh sách sàn giao dịch ['bybit', 'okx'] (default cả 2)
+     
      Returns: Số lệnh đã gửi mới
      """
+     if exchanges is None:
+         exchanges = ['bybit', 'okx']  # Mặc định đặt cả 2 sàn
+     
      output_path = Path(output_dir)
      log_path = Path(log_file)
      
@@ -224,17 +290,18 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
              continue
          
          try:
-             # Bước 1: Đặt lệnh trên Bybit trước
+             # Bước 1: Đặt lệnh trên cả Bybit và OKX
              order_result = place_order(
                  symbol=row['Symbol'],
                  order_type=row['Type'],
                  entry_price=float(row['Entry_Price']),
                  stop_loss=float(row['Stop_Loss']),
                  take_profit=float(row['Take_Profit']),
-                 entry_time=row['Entry_Time']
+                 entry_time=row['Entry_Time'],
+                 exchanges=exchanges,
              )
              
-             # Bước 2: Gửi thông báo (dù đặt lệnh thành công hay thất bại)
+             # Bước 2: Gửi thông báo Telegram
              send_entry_telegram(
                  type=row['Type'],
                  entry=float(row['Entry_Price']),
@@ -243,6 +310,8 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                  time=row['Entry_Time'],
                  name_coin=row['Symbol']
              )
+             
+             # Bước 3: Gửi thông báo Discord với kết quả từ cả 2 sàn
              send_entry_discord(
                  type=row['Type'],
                  entry=float(row['Entry_Price']),
@@ -260,7 +329,11 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                  "stop_loss": float(row['Stop_Loss']),
                  "take_profit": float(row['Take_Profit']),
                  "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                 "status": "OPEN"
+                 "status": "OPEN",
+                 "exchanges": {
+                     "bybit": order_result.get('bybit', {}).get('success', False) if order_result.get('bybit') else False,
+                     "okx": order_result.get('okx', {}).get('success', False) if order_result.get('okx') else False,
+                 }
              }
              sent_orders.append(order_detail)
              sent_keys.add(order_key)
