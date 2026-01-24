@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { resolve } from 'path'
 
 // https://vite.dev/config/
 export default ({ mode }) => {
@@ -14,6 +15,16 @@ export default ({ mode }) => {
     .filter(Boolean)
 
   return defineConfig({
+    resolve: {
+      alias: {
+        '@': resolve(__dirname, './src'),
+        '@components': resolve(__dirname, './src/components'),
+        '@pages': resolve(__dirname, './src/pages'),
+        '@hooks': resolve(__dirname, './src/hooks'),
+        '@assets': resolve(__dirname, './src/assets'),
+        '@plugins': resolve(__dirname, './src/plugins'),
+      },
+    },
     plugins: [react(), tailwindcss()],
     css: {
       transformer: 'postcss', // Sử dụng PostCSS thay vì LightningCSS để tương thích với Tailwind CSS v4
