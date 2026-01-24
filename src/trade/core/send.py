@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order, bybit_format_order_message
-from src.trade.okx.order_executor import validaste_and_place_order as okx_place_order, okx_format_order_message
+from src.trade.okx.order_executor import validate_and_place_order as okx_place_order, okx_format_order_message
 
 from .notify import send_entry_telegram
 from .discord_notify import send_entry_discord
