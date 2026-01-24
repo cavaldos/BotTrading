@@ -5,6 +5,7 @@ import sys
 from dotenv import load_dotenv
 
 from src.trade.core.calculate import calculate_trade_size
+from src.trade.bybit.formatter import format_result
 
 # Tải biến môi trường từ file .env
 load_dotenv()
@@ -80,7 +81,7 @@ Leverage:   {leverage}x
 Risk:       ${risk_per_trade}
 
 R:R Ratio:  1:{rr_ratio:.2f}
-{f'INFO: {result}' if result else ''}
+{format_result(result) if result else ''}
 ```"""
 
     send_custom_message(message)
