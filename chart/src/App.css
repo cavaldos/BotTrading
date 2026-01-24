@@ -130,3 +130,61 @@ body {
 .retry-btn:hover {
   background: #1e4bd8;
 }
+
+/* Realtime indicator styles */
+.realtime-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background-color: rgba(41, 98, 255, 0.15);
+  border: 1px solid #2962ff;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2962ff;
+}
+
+.realtime-dot {
+  width: 8px;
+  height: 8px;
+  background-color: #2962ff;
+  border-radius: 50%;
+  animation: pulse-blue 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-blue {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.9);
+  }
+}
+
+.update-info {
+  font-size: 12px;
+  color: #888;
+}
+
+.refresh-btn {
+  padding: 6px 12px;
+  background-color: #2a2a2a;
+  border: 1px solid #444;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.refresh-btn:hover {
+  background-color: #3a3a3a;
+  border-color: #666;
+}
+
+.refresh-btn:active {
+  background-color: #222;
+}

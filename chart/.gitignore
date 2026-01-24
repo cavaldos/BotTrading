@@ -35,4 +35,5 @@ coverage
 .env.local
 .env.development.local
 public/data
+public/live
 public/chart_data.json

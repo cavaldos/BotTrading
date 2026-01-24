@@ -31,6 +31,7 @@ const TradingChart = forwardRef(function TradingChart({
   const measurementRef = useRef(null);
   const measurementHandlerRef = useRef(null);
   const [isMeasuring, setIsMeasuring] = useState(false);
+  const preservePositionRef = useRef(false); // Flag to preserve scroll position on data update
 
   // Chart colors
   const colors = useMemo(() => ({
@@ -95,6 +96,56 @@ const TradingChart = forwardRef(function TradingChart({
     },
     
     getChart: () => chartRef.current,
+    
+    // Get current scroll/view position
+    getScrollPosition: () => {
+      if (!chartRef.current) return null;
+      
+      const timeScale = chartRef.current.timeScale();
+      const visibleRange = timeScale.getVisibleRange();
+      const logicalRange = timeScale.getVisibleLogicalRange();
+      
+      // Get price scale position
+      let priceRange = null;
+      if (candleSeriesRef.current) {
+        const priceScale = candleSeriesRef.current.priceScale();
+        // Try to get visible price range
+        const barsInfo = candleSeriesRef.current.barsInLogicalRange(logicalRange);
+        if (barsInfo) {
+          priceRange = {
+            from: barsInfo.barsBefore,
+            to: barsInfo.barsAfter,
+          };
+        }
+      }
+      
+      return {
+        timeRange: visibleRange,
+        logicalRange: logicalRange,
+        priceRange: priceRange,
+      };
+    },
+    
+    // Restore scroll/view position
+    restoreScrollPosition: (position) => {
+      if (!chartRef.current || !position) return;
+      
+      preservePositionRef.current = true;
+      
+      const timeScale = chartRef.current.timeScale();
+      
+      // Restore time range
+      if (position.timeRange) {
+        timeScale.setVisibleRange(position.timeRange);
+      } else if (position.logicalRange) {
+        timeScale.setVisibleLogicalRange(position.logicalRange);
+      }
+    },
+    
+    // Set preserve position flag (prevents fitContent on next data update)
+    setPreservePosition: (preserve) => {
+      preservePositionRef.current = preserve;
+    },
     
     // Measurement tool controls
     toggleMeasurement: () => {
@@ -238,7 +289,13 @@ const TradingChart = forwardRef(function TradingChart({
   useEffect(() => {
     if (!candleSeriesRef.current || !candles?.length) return;
     candleSeriesRef.current.setData(candles);
-    chartRef.current?.timeScale().fitContent();
+    
+    // Only fitContent if not preserving position
+    if (!preservePositionRef.current) {
+      chartRef.current?.timeScale().fitContent();
+    }
+    // Reset the preserve flag after update
+    preservePositionRef.current = false;
   }, [candles]);
 
   // Update volume data
