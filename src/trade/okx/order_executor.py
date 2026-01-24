@@ -52,8 +52,7 @@ def validate_and_place_order(
     """
     try:
         # Convert Binance format (BTCUSDT_1m) → CCXT format (BTC/USDT)
-        clean_sym = clean_symbol(symbol, to_ccxt_format=True)
-        print(f"[OKX] Đang xử lý đặt lệnh cho symbol: {clean_sym}") 
+        clean_sym = clean_symbol(symbol, to_ccxt_format=True) 
         
         # Get exchange instance
         exchange = get_exchange()

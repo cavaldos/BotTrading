@@ -419,8 +419,7 @@ def place_market_order_with_sl(
     
     # Bật Hedge Mode để có thể long và short cùng lúc
     hedge_result = enable_hedge_mode(exchange, symbol)
-    if not hedge_result['success'] and 'Already in hedge mode' not in hedge_result.get('message', ''):
-        print(f"⚠️  Warning: Could not enable hedge mode - {hedge_result.get('error', 'Unknown')}")
+    # Silent mode - không print warning để tránh nhấp nháy dashboard
     
     # Detect Position Mode sau khi enable
     position_mode = get_position_mode(exchange, symbol)

@@ -25,9 +25,8 @@ def send_custom_message(message: str) -> None:
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
         response.raise_for_status()
-        print(f"✓ Tin nhắn đã gửi đến Discord")
-    except requests.exceptions.RequestException as e:
-        print(f"✗ Lỗi gửi tin nhắn: {e}")
+    except requests.exceptions.RequestException:
+        pass  # Silent mode - avoid dashboard flicker
 
 
 def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None):

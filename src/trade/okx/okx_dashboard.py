@@ -98,12 +98,29 @@ class OKXDashboard:
                     free_stable += float(data.get('free', 0) or 0)
                     used_stable += float(data.get('used', 0) or 0)
             
+            # Calculate unrealized PnL from positions
+            unrealized_pnl = 0.0
+            try:
+                positions = self.exchange.fetch_positions()
+                for pos in positions:
+                    if isinstance(pos, dict):
+                        pnl = float(pos.get('unrealizedPnl') or pos.get('info', {}).get('upl') or 0)
+                        unrealized_pnl += pnl
+            except Exception:
+                pass
+            
             # Create balance table
             balance_table = Table(show_header=True, header_style="bold magenta", box=None)
             balance_table.add_column("Type", style="cyan", width=15)
             balance_table.add_column("Value (USDT)", justify="right", style="green", width=20)
             
             balance_table.add_row("Total (stable)", f"${total_stable:,.2f}")
+            
+            # Unrealized PnL with color
+            pnl_color = "green" if unrealized_pnl >= 0 else "red"
+            pnl_symbol = "+" if unrealized_pnl >= 0 else ""
+            balance_table.add_row("Unrealized P&L", f"[{pnl_color}]{pnl_symbol}${unrealized_pnl:,.2f}[/{pnl_color}]")
+            
             balance_table.add_row("Available", f"${free_stable:,.2f}")
             balance_table.add_row("In Use", f"${used_stable:,.2f}")
             

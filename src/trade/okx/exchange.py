@@ -120,18 +120,13 @@ def get_exchange(force_new: bool = False, sandbox: bool = True) -> ccxt.okx:
             f"  OKX_{'DEMO_' if sandbox else ''}PASSPHRASE=your_passphrase"
         )
     
-    mode = "DEMO (Sandbox)" if sandbox else "LIVE"
-    print(f"🔗 Connecting to OKX {mode} environment...")
-    
     _exchange_instance = create_okx_exchange(api_key, secret, passphrase, sandbox=sandbox)
     
     # Optionally load markets (may fail due to API restrictions)
     try:
         _exchange_instance.load_markets()
-        print(f"✓ Markets loaded: {len(_exchange_instance.markets)} markets")
-    except Exception as e:
-        print(f"⚠️  Warning: Could not load markets - {e}")
-        print("   Continuing without pre-loaded markets")
+    except Exception:
+        pass  # Silent mode - continue without pre-loaded markets
     
     return _exchange_instance
 
