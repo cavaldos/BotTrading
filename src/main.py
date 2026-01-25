@@ -44,8 +44,22 @@ DEFAULT_OUTPUT_FOLDER = "res/output"
 DEFAULT_REPORT_FOLDER = "res/report"
 DEFAULT_BACKTEST_RESULTS_FILE = "backtest_results"
 DEFAULT_RISK_REWARD_RATIO = 2.0
-DEFAULT_MIN_SL_PCT = 0.05
+# Structure Detection
+DEFAULT_SWING_LENGTH = 10
+DEFAULT_INTERNAL_LENGTH = 3
+# EQH/EQL Detection
+DEFAULT_EQHL_LENGTH = 3
+DEFAULT_EQHL_THRESHOLD = 0.3
+# Order Block
+DEFAULT_OB_MITIGATION = "high_low"
 DEFAULT_OB_BODY_RATIO = 0.35
+# FVG
+DEFAULT_FVG_ATR_FILTER = True
+# Risk Management
+DEFAULT_SL_BUFFER_PCT = 0.1
+DEFAULT_SL_MULTIPLIER = 1.05
+DEFAULT_MIN_SL_PCT = 0.05
+DEFAULT_RISK_PER_TRADE = 10.0
 
 
 # ==============================================================================
@@ -79,21 +93,28 @@ def create_config() -> Config:
      output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
      
      # Support both top-level and nested strategy section
-     if 'strategy' in data_config and isinstance(data_config['strategy'], dict):
-         risk_reward_ratio = data_config['strategy'].get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
-         min_sl_pct = data_config['strategy'].get('min_sl_pct', DEFAULT_MIN_SL_PCT)
-         ob_body_ratio = data_config['strategy'].get('ob_body_ratio', DEFAULT_OB_BODY_RATIO)
-     else:
-         risk_reward_ratio = data_config.get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO)
-         min_sl_pct = data_config.get('min_sl_pct', DEFAULT_MIN_SL_PCT)
-         ob_body_ratio = data_config.get('ob_body_ratio', DEFAULT_OB_BODY_RATIO)
+     strategy_cfg = data_config.get('strategy', {}) if isinstance(data_config.get('strategy'), dict) else {}
      
      return Config(
          data_folder=data_folder,
          output_folder=output_folder,
-         risk_reward_ratio=risk_reward_ratio,
-         min_sl_pct=min_sl_pct,
-         ob_body_ratio=ob_body_ratio,
+         risk_reward_ratio=strategy_cfg.get('risk_reward_ratio', DEFAULT_RISK_REWARD_RATIO),
+         # Structure Detection
+         swing_length=strategy_cfg.get('swing_length', DEFAULT_SWING_LENGTH),
+         internal_length=strategy_cfg.get('internal_length', DEFAULT_INTERNAL_LENGTH),
+         # EQH/EQL Detection
+         eqhl_length=strategy_cfg.get('eqhl_length', DEFAULT_EQHL_LENGTH),
+         eqhl_threshold=strategy_cfg.get('eqhl_threshold', DEFAULT_EQHL_THRESHOLD),
+         # Order Block
+         ob_mitigation=strategy_cfg.get('ob_mitigation', DEFAULT_OB_MITIGATION),
+         ob_body_ratio=strategy_cfg.get('ob_body_ratio', DEFAULT_OB_BODY_RATIO),
+         # FVG
+         fvg_atr_filter=strategy_cfg.get('fvg_atr_filter', DEFAULT_FVG_ATR_FILTER),
+         # Risk Management
+         sl_buffer_pct=strategy_cfg.get('sl_buffer_pct', DEFAULT_SL_BUFFER_PCT),
+         sl_multiplier=strategy_cfg.get('sl_multiplier', DEFAULT_SL_MULTIPLIER),
+         min_sl_pct=strategy_cfg.get('min_sl_pct', DEFAULT_MIN_SL_PCT),
+         risk_per_trade=strategy_cfg.get('risk_per_trade', DEFAULT_RISK_PER_TRADE),
      )
 
 

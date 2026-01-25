@@ -31,33 +31,81 @@ def get_symbol_from_filename(filename: str) -> str:
     return filename.replace('.csv', '')
 
 
-def create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio: float = 2.0, 
-                  min_sl_pct: float = 0.05, ob_body_ratio: float = 0.35) -> Config:
-    """Create Config with system paths and risk management settings."""
+def create_config(
+    DATA_FOLDER, 
+    OUTPUT_FOLDER, 
+    risk_reward_ratio: float = 2.0,
+    swing_length: int = 10,
+    internal_length: int = 3,
+    eqhl_length: int = 3,
+    eqhl_threshold: float = 0.3,
+    ob_mitigation: str = "high_low",
+    ob_body_ratio: float = 0.35,
+    fvg_atr_filter: bool = True,
+    sl_buffer_pct: float = 0.1,
+    sl_multiplier: float = 1.05,
+    min_sl_pct: float = 0.05,
+    risk_per_trade: float = 10.0
+) -> Config:
+    """Create Config with system paths and all strategy settings."""
     return Config(
         data_folder=DATA_FOLDER,
         output_folder=OUTPUT_FOLDER,
         risk_reward_ratio=risk_reward_ratio,
-        min_sl_pct=min_sl_pct,
+        swing_length=swing_length,
+        internal_length=internal_length,
+        eqhl_length=eqhl_length,
+        eqhl_threshold=eqhl_threshold,
+        ob_mitigation=ob_mitigation,
         ob_body_ratio=ob_body_ratio,
+        fvg_atr_filter=fvg_atr_filter,
+        sl_buffer_pct=sl_buffer_pct,
+        sl_multiplier=sl_multiplier,
+        min_sl_pct=min_sl_pct,
+        risk_per_trade=risk_per_trade,
     )
 
 
-def execute(DATA_FOLDER="res/data", OUTPUT_FOLDER="res/output", timeframe: str = None, 
-            risk_reward_ratio: float = 2.0, min_sl_pct: float = 0.05, ob_body_ratio: float = 0.35):
+def execute(
+    DATA_FOLDER="res/data", 
+    OUTPUT_FOLDER="res/output", 
+    timeframe: str = None,
+    risk_reward_ratio: float = 2.0,
+    swing_length: int = 10,
+    internal_length: int = 3,
+    eqhl_length: int = 3,
+    eqhl_threshold: float = 0.3,
+    ob_mitigation: str = "high_low",
+    ob_body_ratio: float = 0.35,
+    fvg_atr_filter: bool = True,
+    sl_buffer_pct: float = 0.1,
+    sl_multiplier: float = 1.05,
+    min_sl_pct: float = 0.05,
+    risk_per_trade: float = 10.0
+):
     """Main execution function
     
     Args:
         DATA_FOLDER: Path to data folder containing CSV files
         OUTPUT_FOLDER: Path to output folder for trade reports
-        timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h"). 
-                   If provided, only files matching *_{timeframe}.csv will be processed.
-                   If None, all CSV files will be processed.
-        risk_reward_ratio: Risk/reward ratio for take profit calculation (default: 2.0)
-        min_sl_pct: Minimum SL percentage (default: 0.05)
-        ob_body_ratio: Order Block body ratio filter (default: 0.35)
+        timeframe: Optional timeframe filter (e.g., "1m", "5m", "1h")
+        All other args: Strategy configuration parameters
     """
-    config = create_config(DATA_FOLDER, OUTPUT_FOLDER, risk_reward_ratio, min_sl_pct, ob_body_ratio)
+    config = create_config(
+        DATA_FOLDER, OUTPUT_FOLDER,
+        risk_reward_ratio=risk_reward_ratio,
+        swing_length=swing_length,
+        internal_length=internal_length,
+        eqhl_length=eqhl_length,
+        eqhl_threshold=eqhl_threshold,
+        ob_mitigation=ob_mitigation,
+        ob_body_ratio=ob_body_ratio,
+        fvg_atr_filter=fvg_atr_filter,
+        sl_buffer_pct=sl_buffer_pct,
+        sl_multiplier=sl_multiplier,
+        min_sl_pct=min_sl_pct,
+        risk_per_trade=risk_per_trade
+    )
     
     # Create output folder if not exists
     output_dir = Path(config.output_folder)
