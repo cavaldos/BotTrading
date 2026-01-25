@@ -27,13 +27,13 @@ def create_bybit_demo_exchange(api_key: str, secret: str) -> ccxt.bybit:
     return exchange
 
 
-def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_usd: float = 5, side: str = 'buy') -> dict:
+def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy') -> dict:
     """
     Calculate position size and margin for a trade.
 
     Formula:
     - price_diff = abs(entry_price - stop_loss)
-    - quantity = risk_usd / price_diff  (quantity such that risk = risk_usd USD)
+    - quantity = risk_per_trade / price_diff  (quantity such that risk = risk_per_trade USD)
     - notional = quantity × entry_price
     - margin = notional / leverage
 
@@ -41,7 +41,7 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
         entry_price: Entry price (USDT)
         stop_loss: Stop loss price (USDT)
         leverage: Leverage (e.g., 20)
-        risk_usd: Maximum risk in USD
+        risk_per_trade: Maximum risk in USD
         side: 'buy' for LONG, 'sell' for SHORT
 
     Returns:
@@ -61,9 +61,9 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
     # Tính price diff (luôn dương)
     price_diff = abs(entry_price - stop_loss)
     
-    # quantity = risk_usd / price_diff
-    # Nếu giá chạm stop_loss, lỗ = price_diff * quantity = risk_usd
-    quantity = risk_usd / price_diff
+    # quantity = risk_per_trade / price_diff
+    # Nếu giá chạm stop_loss, lỗ = price_diff * quantity = risk_per_trade
+    quantity = risk_per_trade / price_diff
     
     # Margin = notional_value / leverage
     notional_value = quantity * entry_price
@@ -395,7 +395,7 @@ def place_market_order_with_sl(
     side: str = 'buy',
     leverage: int = 20,
     stop_loss: float = None,
-    risk_usd: float = 5,
+    risk_per_trade: float = 5,
 ) -> dict:
     """
     Place a market order with a stop loss.
@@ -406,7 +406,7 @@ def place_market_order_with_sl(
         side: 'buy' for long, 'sell' for short
         leverage: Leverage (default 20)
         stop_loss: Stop loss price (required)
-        risk_usd: Risk amount in USD (default 5)
+        risk_per_trade: Risk amount in USD (default 5)
 
     Returns:
         dict: Order information
@@ -439,7 +439,7 @@ def place_market_order_with_sl(
         entry_price=current_price,
         stop_loss=stop_loss,
         leverage=leverage,
-        risk_usd=risk_usd,
+        risk_per_trade=risk_per_trade,
         side=side
     )
     
@@ -517,7 +517,7 @@ if __name__ == '__main__':
             side='buy',
             leverage=20,
             stop_loss=89900,
-            risk_usd=5
+            risk_per_trade=5
         )
         
         if result['success']:

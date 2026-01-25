@@ -25,7 +25,7 @@ def load_config() -> dict:
 
 
 CONFIG = load_config()
-RISK_USD = CONFIG.get("strategy", {}).get("risk_usd", 5)
+risk_per_trade = CONFIG.get("strategy", {}).get("risk_per_trade", 5)
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -172,7 +172,7 @@ def place_order(
     take_profit: float,
     entry_time: str,
     leverage: int = 20,
-    risk_usd: float = None,
+    risk_per_trade: float = None,
     exchanges: list = None,
 ) -> dict:
     """
@@ -186,14 +186,14 @@ def place_order(
         take_profit: Giá take profit
         entry_time: Thời gian entry
         leverage: Đòn bẩy (default 20)
-        risk_usd: Rủi ro USD (default từ config)
+        risk_per_trade: Rủi ro USD (default từ config)
         exchanges: Danh sách sàn ['bybit', 'okx'] (default cả 2)
     
     Returns:
         dict: Kết quả đặt lệnh cho từng sàn
     """
-    if risk_usd is None:
-        risk_usd = RISK_USD
+    if risk_per_trade is None:
+        risk_per_trade = risk_per_trade
     
     if exchanges is None:
         exchanges = ['bybit', 'okx']  # Mặc định đặt cả 2 sàn
@@ -218,7 +218,7 @@ def place_order(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 leverage=leverage,
-                risk_usd=risk_usd,
+                risk_per_trade=risk_per_trade,
             )
             results['bybit'] = bybit_result
             if bybit_result.get('success'):
@@ -240,7 +240,7 @@ def place_order(
                 stop_loss=stop_loss,
                 take_profit=take_profit,
                 leverage=leverage,
-                risk_usd=risk_usd,
+                risk_per_trade=risk_per_trade,
             )
             results['okx'] = okx_result
             if okx_result.get('success'):
@@ -308,7 +308,8 @@ def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list =
                  stoploss=float(row['Stop_Loss']),
                  takeprofit=float(row['Take_Profit']),
                  time=row['Entry_Time'],
-                 name_coin=row['Symbol']
+                 name_coin=row['Symbol'],
+                 risk_per_trade = risk_per_trade
              )
              
              # Bước 3: Gửi thông báo Discord với kết quả từ cả 2 sàn (song song)
@@ -330,7 +331,8 @@ def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list =
                  takeprofit=float(row['Take_Profit']),
                  time=row['Entry_Time'],
                  name_coin=row['Symbol'],
-                 result=combined_result
+                 result=combined_result,
+                 risk_per_trade = risk_per_trade
              )
              
              # Thêm order với thông tin chi tiết

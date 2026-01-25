@@ -44,7 +44,7 @@ def send_message_to_chat(message: str):
     asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
 
 
-def send_entry_telegram(type, entry, stoploss, takeprofit, time, name_coin):
+def send_entry_telegram(type, entry, stoploss, takeprofit, time, name_coin, risk_per_trade = 5):
     # Chuyển chuỗi time thành đối tượng datetime
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
 
@@ -57,7 +57,7 @@ def send_entry_telegram(type, entry, stoploss, takeprofit, time, name_coin):
     time_gmt7 = new_time.strftime('%H:%M')
 
     # Tính toán position size
-    required_margin, leverage, risk_per_trade = calculate_trade_size(entry, stoploss, takeprofit)
+    required_margin, leverage = calculate_trade_size(entry, stoploss, takeprofit, risk_per_trade)
     
     # Tính chênh lệch giá
     sl_diff = entry - stoploss

@@ -29,7 +29,7 @@ def send_custom_message(message: str) -> None:
         pass  # Silent mode - avoid dashboard flicker
 
 
-def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None):
+def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None, risk_per_trade = 5):
     """
     Gửi thông tin entry lệnh giao dịch đến Discord
     """
@@ -45,7 +45,7 @@ def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, resul
     time_gmt7 = new_time.strftime('%H:%M')
 
     # Tính toán position size
-    required_margin, leverage, risk_per_trade = calculate_trade_size(entry, stoploss, takeprofit)
+    required_margin, leverage = calculate_trade_size(entry, stoploss, takeprofit, risk_per_trade)
     
     # Tính chênh lệch giá
     sl_diff = entry - stoploss

@@ -25,7 +25,7 @@ def validate_and_place_order(
     stop_loss: float,
     take_profit: float = None,
     leverage: int = 20,
-    risk_usd: float = 5,
+    risk_per_trade: float = 5,
     risk_reward_ratio: float = 2.0,
 ) -> dict:
     """
@@ -36,7 +36,7 @@ def validate_and_place_order(
         stop_loss: Giá stop loss
         take_profit: Giá take profit (nếu None sẽ tự động tính theo RR ratio)
         leverage: Đòn bẩy
-        risk_usd: Rủi ro USD
+        risk_per_trade: Rủi ro USD
         risk_reward_ratio: Tỉ lệ Risk:Reward (mặc định 2.0 = RR 1:2)
     
     Returns:
@@ -80,7 +80,7 @@ def validate_and_place_order(
             side=side.lower(),
             leverage=leverage,
             stop_loss=stop_loss,
-            risk_usd=risk_usd,
+            risk_per_trade=risk_per_trade,
         )
         
         if result['success']:
@@ -184,7 +184,7 @@ if __name__ == '__main__':
         stop_loss=88019,  # Risk = 1000
         # TP auto = 100000 + (1000 * 2) = 102000
         leverage=20,
-        risk_usd=5,
+        risk_per_trade=5,
     )
     
     print(f"  Entry: {result.get('entry_price', 'N/A')}")
