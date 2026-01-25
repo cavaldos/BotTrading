@@ -13,6 +13,7 @@ from rich.text import Text
 from rich.align import Align
 
 from src.trade.okx.exchange import get_exchange
+from src.trade.okx.console_logger import get_logs
 
 
 class OKXDashboard:
@@ -557,12 +558,41 @@ class OKXDashboard:
                 border_style="red"
             )
 
+    def _create_console_panel(self) -> Panel:
+        """Create panel displaying console logs (warnings/errors)"""
+        logs = get_logs(limit=10)
+        
+        log_texts = []
+        for timestamp, level, message in logs:
+            time_str = timestamp.strftime('%H:%M:%S')
+            if level == "warning":
+                log_texts.append(f"[yellow]⚠️  {time_str}[/yellow] [dim]{message}[/dim]")
+            elif level == "error":
+                log_texts.append(f"[red]❌ {time_str}[/red] [dim]{message}[/dim]")
+            elif level == "success":
+                log_texts.append(f"[green]✓ {time_str}[/green] [dim]{message}[/dim]")
+            else:
+                log_texts.append(f"[blue]ℹ️  {time_str}[/blue] [dim]{message}[/dim]")
+        
+        if not log_texts:
+            content = "[dim]No messages[/dim]"
+        else:
+            content = "\n".join(log_texts)
+        
+        return Panel(
+            content,
+            title="[bold white]📋 Console[/bold white]",
+            border_style="white",
+            padding=(0, 1)
+        )
+
     def _create_layout(self) -> Layout:
         """Create dashboard layout"""
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="main"),
+            Layout(name="console", size=14),
             Layout(name="footer", size=3)
         )
         
@@ -587,6 +617,9 @@ class OKXDashboard:
             Layout(self._create_positions_panel(), name="positions"),
             Layout(self._create_order_history_panel(), name="history")
         )
+        
+        # Console panel
+        layout["console"].update(self._create_console_panel())
         
         # Footer
         status = Text(

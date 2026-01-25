@@ -4,6 +4,7 @@ from typing import Optional
 import ccxt
 from dotenv import load_dotenv
 from src.utils.rounding import round_price
+from src.trade.okx.console_logger import log_warning, log_success, log_info
 
 load_dotenv()
 
@@ -276,17 +277,17 @@ def set_leverage_and_margin_mode(
         if hedge_mode:
             pos_mode_result = set_position_mode(exchange, hedge_mode=True)
             if not pos_mode_result['success']:
-                print(f"⚠️  Warning: Could not set hedge mode - {pos_mode_result.get('error', 'Unknown')}")
+                log_warning(f"Could not set hedge mode - {pos_mode_result.get('error', 'Unknown')}")
         
         # 2. Set margin mode (isolated hoặc cross)
         try:
             exchange.set_margin_mode(margin_mode, formatted_symbol)
-            print(f"✓ Margin mode set to: {margin_mode.upper()}")
+            log_success(f"Margin mode set to: {margin_mode.upper()}")
         except Exception as e:
             error_msg = str(e).lower()
             # Ignore if already set
             if 'already' not in error_msg and 'same' not in error_msg:
-                print(f"⚠️  Warning: Could not set margin mode - {e}")
+                log_warning(f"Could not set margin mode - {e}")
         
         # 3. Set leverage for both long and short sides (required for hedge mode)
         try:
@@ -303,11 +304,11 @@ def set_leverage_and_margin_mode(
                 'mgnMode': margin_mode,
                 'posSide': 'short',
             })
-            print(f"✓ Leverage set to: {leverage}x (both sides)")
+            log_success(f"Leverage set to: {leverage}x (both sides)")
         except Exception as e:
             error_msg = str(e).lower()
             if 'already' not in error_msg and 'same' not in error_msg and 'lever' not in error_msg:
-                print(f"⚠️  Warning: Could not set leverage - {e}")
+                log_warning(f"Could not set leverage - {e}")
         
         return {
             'success': True,
