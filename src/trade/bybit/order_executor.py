@@ -116,29 +116,57 @@ def validate_and_place_order(
 
 def bybit_format_order_message(order_result: dict) -> str:
     """
-    Format order result thành chuỗi thông báo.
+    Format kết quả đặt lệnh thành message dễ đọc.
+    
     Args:
-        order_result: Kết quả đặt lệnh
+        order_result: Dict kết quả từ validate_and_place_order()
     
     Returns:
-        str: Chuỗi thông báo
+        str: Message đã format
     """
-    if not order_result.get('success', False):
-        return f"❌ Lệnh thất bại: {order_result.get('error', 'Unknown error')}"
+    if not order_result.get('success'):
+        error = order_result.get('error', 'Unknown error')
+        return f"❌ THẤT BẠI\n└─ Lỗi: {error}"
     
-    entry_price = order_result.get('entry_price', 'N/A')
-    stop_loss = order_result.get('stop_loss', 'N/A')
-    take_profit = order_result.get('take_profit', 'N/A')
+    # Lấy thông tin
+    symbol = order_result.get('symbol', 'N/A')
+    entry_price = order_result.get('entry_price', 0)
+    stop_loss = order_result.get('stop_loss', 0)
+    take_profit = order_result.get('take_profit', 0)
     
-    message = (
-        f"✅ Lệnh thành công!\n"
-        f"• Giá Entry: {entry_price}\n"
-        f"• Stop Loss: {stop_loss}\n"
-        f"• Take Profit: {take_profit}\n"
-    )
+    # Lấy side từ position_info
+    position_info = order_result.get('position_info', {})
+    side = position_info.get('side', 'N/A').upper()
+    leverage = position_info.get('leverage', 'N/A')
+    contracts = order_result.get('contracts', position_info.get('quantity', 0))
     
-    if 'sl_tp_warning' in order_result:
-        message += f"⚠️ Cảnh báo SL/TP: {order_result['sl_tp_warning']}\n"
+    # Tính Risk/Reward ratio
+    rr_ratio = 0
+    if side == 'BUY':  # LONG
+        risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
+        reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
+    else:  # SHORT
+        risk = abs(stop_loss - entry_price) if stop_loss and entry_price else 0
+        reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
+    
+    if risk > 0:
+        rr_ratio = reward / risk
+    
+    # Format message
+    side_emoji = "🟢" if side == "BUY" else "🔴"
+    side_text = "LONG" if side == "BUY" else "SHORT"
+    
+    message = f"""✅ THÀNH CÔNG
+
+{side_emoji} {side_text} {symbol}
+├─ Leverage: {leverage}x
+├─ Contracts: {contracts}
+│
+├─ Entry:  ${entry_price:,.4f}
+├─ SL:     ${stop_loss:,.4f}
+├─ TP:     ${take_profit:,.4f}
+│
+└─ RR:     1:{rr_ratio:.2f}"""
     
     return message
 

@@ -176,9 +176,9 @@ def okx_format_order_message(result: dict) -> str:
 ├─ Leverage: {leverage}x
 ├─ Contracts: {contracts}
 │
-├─ Entry:  ${entry_price:,.2f}
-├─ SL:     ${stop_loss:,.2f}
-├─ TP:     ${take_profit:,.2f}
+├─ Entry:  ${entry_price:,.4f}
+├─ SL:     ${stop_loss:,.4f}
+├─ TP:     ${take_profit:,.4f}
 │
 └─ RR:     1:{rr_ratio:.2f}"""
     
