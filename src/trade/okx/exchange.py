@@ -4,7 +4,7 @@ from typing import Optional
 import ccxt
 from dotenv import load_dotenv
 from src.utils.rounding import round_price
-from src.trade.okx.console_logger import log_warning, log_success, log_info
+from src.utils.console_logger import log_warning, log_success, log_info
 
 load_dotenv()
 

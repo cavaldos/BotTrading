@@ -13,7 +13,7 @@ from rich.text import Text
 from rich.align import Align
 
 from src.trade.okx.exchange import get_exchange
-from src.trade.okx.console_logger import get_logs
+from src.utils.console_logger import get_logs
 
 
 class OKXDashboard:

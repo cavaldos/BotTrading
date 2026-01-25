@@ -1,12 +1,12 @@
 """
-Console Logger for OKX Dashboard
+Console Logger for Dashboard
 
 Collects warning/error messages to display in dashboard console panel
-instead of printing to terminal.
+instead of printing to terminal. Can be used by any exchange.
 """
 from collections import deque
 from datetime import datetime
-from typing import Deque, Tuple
+from typing import Deque, List, Tuple
 
 # Global log storage (timestamp, level, message)
 _logs: Deque[Tuple[datetime, str, str]] = deque(maxlen=50)
@@ -32,7 +32,7 @@ def log_success(message: str) -> None:
     _logs.append((datetime.now(), "success", message))
 
 
-def get_logs(limit: int = 20) -> list:
+def get_logs(limit: int = 20) -> List[Tuple[datetime, str, str]]:
     """Get the latest log messages.
     
     Returns:
