@@ -165,9 +165,9 @@ def bybit_format_order_message(order_result: dict) -> str:
     
     # Lấy thông tin
     symbol = order_result.get('symbol', 'N/A')
-    entry_price = order_result.get('entry_price', 0)
-    stop_loss = order_result.get('stop_loss', 0)
-    take_profit = order_result.get('take_profit', 0)
+    entry_price = order_result.get('entry_price') or 0
+    stop_loss = order_result.get('stop_loss') or 0
+    take_profit = order_result.get('take_profit') or 0
     
     # Lấy thông tin slippage
     slippage_info = order_result.get('slippage_info', {})
@@ -191,7 +191,7 @@ def bybit_format_order_message(order_result: dict) -> str:
         risk = abs(stop_loss - entry_price) if stop_loss and entry_price else 0
         reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
     
-    if risk > 0:
+    if risk > 0 and reward > 0:
         rr_ratio = reward / risk
     
     # Format message
