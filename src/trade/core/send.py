@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import yaml
 import asyncio
 import pandas as pd
 from datetime import datetime
@@ -11,18 +10,7 @@ from pathlib import Path
 from src.trade.core.notify import send_entry_telegram
 from src.trade.core.discord_notify import send_entry_discord
 
-
-# Load config
-def load_config() -> dict:
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    if not config_path.exists():
-        return {}
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f) or {}
-
-
-CONFIG = load_config()
-risk_per_trade = CONFIG.get("strategy", {}).get("risk_per_trade", 5)
+from .place_order import place_order, bybit_format_order_message, okx_format_order_message, risk_per_trade
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -149,10 +137,10 @@ def scan_open_orders(output_dir: Path) -> list:
      return open_orders
 
 
-async def send_entry_notifications_async(row, risk_per_trade: float, timeout: float = 60):
+async def send_entry_notifications_async(row, risk_per_trade: float, timeout: float = 60, combined_result: str = None):
      """Send entry notifications to Telegram and Discord asynchronously."""
      try:
-          params = {
+          params_tele = {
               "type": row['Type'],
               "entry": float(row['Entry_Price']),
               "stoploss": float(row['Stop_Loss']),
@@ -161,11 +149,22 @@ async def send_entry_notifications_async(row, risk_per_trade: float, timeout: fl
               "name_coin": row['Symbol'],
               "risk_per_trade": risk_per_trade
           }
+          params_dis = {
+              "type": row['Type'],
+              "entry": float(row['Entry_Price']),
+              "stoploss": float(row['Stop_Loss']),
+              "takeprofit": float(row['Take_Profit']),
+              "time": row['Entry_Time'],
+              "name_coin": row['Symbol'],
+              "result": combined_result,
+              "risk_per_trade": risk_per_trade
+          }
+
           
           await asyncio.wait_for(
               asyncio.gather(
-                  asyncio.to_thread(send_entry_telegram, **params),
-                  asyncio.to_thread(send_entry_discord, **params),
+                  asyncio.to_thread(send_entry_telegram, **params_tele),
+                  asyncio.to_thread(send_entry_discord, **params_dis),
                   return_exceptions=True
               ),
               timeout=timeout
@@ -197,8 +196,26 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
           
           try:
               
+              order_result = place_order(
+                 symbol=row['Symbol'],
+                 order_type=row['Type'],
+                 entry_price=float(row['Entry_Price']),
+                 stop_loss=float(row['Stop_Loss']),
+                 take_profit=float(row['Take_Profit']),
+                 entry_time=row['Entry_Time'],
+              )
+              bybit_msg = ""
+              okx_msg = ""
+             
+              if order_result.get('bybit'):
+                  bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
+             
+              if order_result.get('okx'):
+                  okx_msg = f"**OKX**\n{okx_format_order_message(order_result['okx'])}"
+             
+              combined_result = f"{bybit_msg}\n\n{okx_msg}".strip()
               # Send notifications asynchronously
-              asyncio.run(send_entry_notifications_async(row, risk_per_trade))
+              asyncio.run(send_entry_notifications_async(row, risk_per_trade, combined_result=combined_result))
               # Add to sent_orders
               order_detail = {
                   "key": order_key,
