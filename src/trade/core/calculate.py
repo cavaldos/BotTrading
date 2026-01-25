@@ -18,7 +18,7 @@ def calculate_trade_size(entry: float, stoploss: float, takeprofit: float, lever
     # Tính toán margin cần thiết với đòn bẩy cố định là 50
     required_margin = (position_size * entry) / leverage
 
-    return round_price(required_margin)*leverage, leverage, risk_per_trade 
+    return round_price(required_margin)*leverage, leverage 
 
 
 if __name__ == '__main__':

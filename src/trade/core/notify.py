@@ -6,76 +6,67 @@ import os
 import sys
 from dotenv import load_dotenv
 
-# Add the src directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from .calculate import calculate_trade_size
 
-# Tải biến môi trường từ file .env
 load_dotenv()
 
-# Đọc token và chat_id từ biến môi trường
 my_token = os.environ.get('TELEGRAM_TOKEN')
 CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 
-# Command handler for /check command
+
 async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text('hello')
 
 
-# Hàm gửi tin nhắn từ string được truyền vào
 async def send_custom_message(application, message: str) -> None:
-    # Hiển thị trạng thái "typing"
+    """Send custom message to Telegram with typing indicator."""
     await application.bot.send_chat_action(chat_id=CHAT_ID, action="typing")
-
-    # Gửi tin nhắn thực tế với hỗ trợ Markdown
     await application.bot.send_message(
         chat_id=CHAT_ID,
         text=message,
         parse_mode="Markdown"
     )
 
-# Hàm để gửi tin nhắn tuỳ chỉnh cho CHAT_ID
-def send_message_to_chat(message: str):
+def send_message_to_chat(message: str, timeout: int = 5, retries: int = 3):
+    """Send message to configured Telegram chat with retry."""
     async def send_message():
-        app = ApplicationBuilder().token(my_token).build()
+        app = ApplicationBuilder().token(my_token).read_timeout(timeout).write_timeout(timeout).connect_timeout(timeout).build()
         await send_custom_message(app, message)
 
-    asyncio.run(send_message())  # Gọi hàm gửi tin nhắn với message
+    for attempt in range(retries):
+        try:
+            asyncio.run(send_message())
+            return
+        except Exception as e:
+            if attempt < retries - 1:
+                continue
+            raise e
 
 
 def send_entry_telegram(type, entry, stoploss, takeprofit, time, name_coin, risk_per_trade = 5):
-    # Chuyển chuỗi time thành đối tượng datetime
+    """Send trade entry notification to Telegram."""
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
-
-    # Cộng thêm 7 giờ vào thời gian
     new_time = time_obj + timedelta(hours=7)
 
-    # Tách ngày và giờ (bỏ giây)
     date_str = time_obj.strftime('%Y-%m-%d')
     time_gmt0 = time_obj.strftime('%H:%M')
     time_gmt7 = new_time.strftime('%H:%M')
 
-    # Tính toán position size
     required_margin, leverage = calculate_trade_size(entry, stoploss, takeprofit, risk_per_trade)
     
-    # Tính chênh lệch giá
     sl_diff = entry - stoploss
     tp_diff = takeprofit - entry
-    
-    # Tính chênh lệch theo phần trăm
     sl_diff_percent = (abs(sl_diff) / entry) * 100
     tp_diff_percent = (abs(tp_diff) / entry) * 100
     
-    # Tính R:R ratio
     risk = abs(sl_diff)
     reward = abs(tp_diff)
     rr_ratio = reward / risk if risk > 0 else 0
 
-    # Chấm màu theo loại lệnh: xanh cho LONG, đỏ cho SHORT
     type_dot = "🟢" if type.lower() == "long" else "🔴"
 
-    # Format message
     message = f"""{type_dot} *{name_coin}* | *{type.upper()}*
 Date: {date_str}
 ├ GMT+0: *{time_gmt0}*
@@ -93,31 +84,26 @@ R:R = *1:{rr_ratio:.2f}*
 
     send_message_to_chat(message)
 
-# Function to run the Telegram bot
 def run_telegram_bot():
+    """Start Telegram bot in a background thread."""
     async def start_bot():
         app = ApplicationBuilder().token(my_token).build()
 
-        # Add command handlers
         app.add_handler(CommandHandler("check", check_command))
 
-        # Start the bot
         await app.initialize()
         await app.start()
         await app.updater.start_polling()
 
-        # Keep the bot running
         try:
-            await asyncio.Future()  # Run forever
+            await asyncio.Future()
         except asyncio.CancelledError:
-            # Handle shutdown
             await app.stop()
             await app.updater.stop()
 
-    # Run the bot in a separate thread to not block the main program
     import threading
     bot_thread = threading.Thread(target=lambda: asyncio.run(start_bot()))
-    bot_thread.daemon = True  # Allow the program to exit even if the bot is running
+    bot_thread.daemon = True
     bot_thread.start()
 
 # Test

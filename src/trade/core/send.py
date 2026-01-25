@@ -2,21 +2,18 @@ import os
 import sys
 import json
 import yaml
+import asyncio
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
 
-from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order, bybit_format_order_message
-from src.trade.okx.order_executor import validate_and_place_order as okx_place_order, okx_format_order_message
-
-from .notify import send_entry_telegram
-from .discord_notify import send_entry_discord
+from src.trade.core.notify import send_entry_telegram
+from src.trade.core.discord_notify import send_entry_discord
 
 
 # Load config
 def load_config() -> dict:
-    """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent / "config.yaml"
     if not config_path.exists():
         return {}
@@ -29,10 +26,7 @@ risk_per_trade = CONFIG.get("strategy", {}).get("risk_per_trade", 5)
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
-    """
-    Load danh sách các lệnh đã gửi từ file log
-    Returns: (set of order keys, list of order details)
-    """
+    """Load sent orders from log file. Returns (order keys set, order details list)."""
     if not log_file.exists():
         return set(), []
     
@@ -41,12 +35,10 @@ def load_sent_orders(log_file: Path) -> tuple[set, list]:
             data = json.load(f)
             orders = data.get("sent_orders", [])
             
-            # Hỗ trợ cả format cũ (list of strings) và format mới (list of dicts)
+            # Support both old format (list of strings) and new format (list of dicts)
             if orders and isinstance(orders[0], str):
-                # Format cũ - chuyển sang format mới
                 return set(orders), []
             else:
-                # Format mới
                 keys = set(order.get("key", "") for order in orders)
                 return keys, orders
     except:
@@ -54,7 +46,7 @@ def load_sent_orders(log_file: Path) -> tuple[set, list]:
 
 
 def save_sent_orders(log_file: Path, sent_orders: list) -> None:
-    """Lưu danh sách các lệnh đã gửi vào file log (format mới với chi tiết)"""
+    """Save sent orders to log file in JSON format with timestamp."""
     try:
         with open(log_file, 'w', encoding='utf-8') as f:
             json.dump({
@@ -66,26 +58,15 @@ def save_sent_orders(log_file: Path, sent_orders: list) -> None:
 
 
 def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
-    """
-    Cập nhật status các orders trong sent_orders.json từ kết quả trong CSV.
-    Status có thể là: WIN, LOSS, OPEN
-    
-    Args:
-        output_dir: Đường dẫn đến thư mục chứa các file CSV
-        log_file: Đường dẫn đến file sent_orders.json
-    
-    Returns: Số orders được cập nhật
-    """
+    """Update sent orders status from CSV files. Returns count of updated orders."""
     output_path = Path(output_dir)
     log_path = Path(log_file)
     
-    # Load sent_orders từ file log
     sent_keys, sent_orders = load_sent_orders(log_path)
     
     if not sent_orders:
         return 0
     
-    # Load tất cả trades từ CSV
     trades_from_csv = {}
     
     if output_path.exists():
@@ -99,22 +80,22 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
                     continue
                 
                 for _, row in df.iterrows():
-                    symbol = str(row.get('Symbol', '')).strip()
-                    trade_type = str(row.get('Type', '')).strip().upper()
-                    entry_time = str(row.get('Entry_Time', '')).strip()
-                    result = str(row.get('Result', '')).strip().upper()
-                    
-                    # Create key: {SYMBOL}|{TYPE}|{ENTRY_TIME}
-                    trade_key = f"{symbol}|{trade_type}|{entry_time}"
-                    
-                    # Lưu kết quả vào dict
-                    if result in ('WIN', 'LOSS', 'OPEN'):
-                        trades_from_csv[trade_key] = result
+                     symbol = str(row.get('Symbol', '')).strip()
+                     trade_type = str(row.get('Type', '')).strip().upper()
+                     entry_time = str(row.get('Entry_Time', '')).strip()
+                     result = str(row.get('Result', '')).strip().upper() if row.get('Result') else ''
+                     
+                     # Create key: {SYMBOL}|{TYPE}|{ENTRY_TIME}
+                     trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                     
+                     # Save only valid results
+                     if result in ('WIN', 'LOSS', 'OPEN'):
+                         trades_from_csv[trade_key] = result
                     
             except Exception:
                 continue
     
-    # Cập nhật status cho các orders
+    # Update order statuses
     updated_count = 0
     
     for order in sent_orders:
@@ -127,7 +108,7 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
                 order["status"] = new_status
                 updated_count += 1
     
-    # Lưu lại nếu có cập nhật
+    # Save if any updates
     if updated_count > 0:
         save_sent_orders(log_path, sent_orders)
     
@@ -135,236 +116,117 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
 
 
 def generate_order_key(row: pd.Series) -> str:
-    """Tạo unique key cho mỗi lệnh để kiểm tra trùng (không bao gồm giá)"""
     return f"{row['Symbol']}|{row['Type']}|{row['Entry_Time']}"
 
 
 def scan_open_orders(output_dir: Path) -> list:
-    """Scan tất cả file CSV trong output_dir và lọc các lệnh Open"""
-    open_orders = []
-    
-    if not output_dir.exists():
-        return open_orders
-    
-    csv_files = list(output_dir.glob("*.csv"))
-    
-    for csv_file in csv_files:
-        try:
-            df = pd.read_csv(csv_file)
-            
-            if 'Result' not in df.columns:
-                continue
-            
-            open_df = df[df['Result'].str.upper() == 'OPEN']
-            
-            for _, row in open_df.iterrows():
-                open_orders.append(row)
-                
-        except:
-            continue
-    
-    return open_orders
-def place_order(
-    symbol: str,
-    order_type: str,
-    entry_price: float,
-    stop_loss: float,
-    take_profit: float,
-    entry_time: str,
-    leverage: int = 20,
-    risk_per_trade: float = None,
-    exchanges: list = None,
-) -> dict:
-    """
-    Đặt lệnh trên một hoặc nhiều sàn giao dịch.
-    
-    Args:
-        symbol: Symbol giao dịch
-        order_type: 'LONG' hoặc 'SHORT'
-        entry_price: Giá entry
-        stop_loss: Giá stop loss
-        take_profit: Giá take profit
-        entry_time: Thời gian entry
-        leverage: Đòn bẩy (default 20)
-        risk_per_trade: Rủi ro USD (default từ config)
-        exchanges: Danh sách sàn ['bybit', 'okx'] (default cả 2)
-    
-    Returns:
-        dict: Kết quả đặt lệnh cho từng sàn
-    """
-    if risk_per_trade is None:
-        risk_per_trade = risk_per_trade
-    
-    if exchanges is None:
-        exchanges = ['bybit', 'okx']  # Mặc định đặt cả 2 sàn
-    
-    order_type = order_type.strip().upper()
-    side = 'buy' if order_type == 'LONG' else 'sell'
-    
-    results = {
-        'success': False,
-        'bybit': None,
-        'okx': None,
-        'any_success': False,
-    }
-    
-    # Đặt lệnh trên Bybit
-    if 'bybit' in exchanges:
-        try:
-            bybit_result = bybit_place_order(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                leverage=leverage,
-                risk_per_trade=risk_per_trade,
-            )
-            results['bybit'] = bybit_result
-            if bybit_result.get('success'):
-                results['any_success'] = True
-        except Exception as e:
-            results['bybit'] = {
-                'success': False,
-                'error': str(e),
-                'exchange': 'Bybit',
-            }
-    
-    # Đặt lệnh trên OKX
-    if 'okx' in exchanges:
-        try:
-            okx_result = okx_place_order(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                leverage=leverage,
-                risk_per_trade=risk_per_trade,
-            )
-            results['okx'] = okx_result
-            if okx_result.get('success'):
-                results['any_success'] = True
-        except Exception as e:
-            results['okx'] = {
-                'success': False,
-                'error': str(e),
-                'exchange': 'OKX',
-            }
-    
-    # Đánh dấu success nếu ít nhất 1 sàn thành công
-    results['success'] = results['any_success']
-    
-    return results
-
-
-def check_and_send_open_orders(output_dir: str, log_file: str, exchanges: list = None) -> int:
-     """
-     Kiểm tra các lệnh Open, đặt lệnh trên Bybit và OKX, sau đó gửi Telegram/Discord.
+     """Scan all CSV files in output_dir and filter OPEN orders."""
+     open_orders = []
      
-     Args:
-         output_dir: Đường dẫn đến thư mục chứa các file CSV (vd: "src/output")
-         log_file: Đường dẫn đến file log (vd: "trade/logs/sent_orders.json")
-         exchanges: Danh sách sàn giao dịch ['bybit', 'okx'] (default cả 2)
+     if not output_dir.exists():
+         return open_orders
      
-     Returns: Số lệnh đã gửi mới
-     """
-     if exchanges is None:
-         exchanges = ['bybit', 'okx']  # Mặc định đặt cả 2 sàn
+     csv_files = list(output_dir.glob("*.csv"))
      
-     output_path = Path(output_dir)
-     log_path = Path(log_file)
-     
-     # Cập nhật status từ CSV trước khi xử lý
-     updated_status_count = update_order_status_from_csv(output_dir, log_file)
-     
-     sent_keys, sent_orders = load_sent_orders(log_path)
-     open_orders = scan_open_orders(output_path)
-     
-     new_sent_count = 0
-     
-     for row in open_orders:
-         order_key = generate_order_key(row)
-         
-         if order_key in sent_keys:
-             continue
-         
+     for csv_file in csv_files:
          try:
-             # Bước 1: Đặt lệnh trên cả Bybit và OKX
-             order_result = place_order(
-                 symbol=row['Symbol'],
-                 order_type=row['Type'],
-                 entry_price=float(row['Entry_Price']),
-                 stop_loss=float(row['Stop_Loss']),
-                 take_profit=float(row['Take_Profit']),
-                 entry_time=row['Entry_Time'],
-                 exchanges=exchanges,
-             )
+             df = pd.read_csv(csv_file)
              
-             # Bước 2: Gửi thông báo Telegram
-             send_entry_telegram(
-                 type=row['Type'],
-                 entry=float(row['Entry_Price']),
-                 stoploss=float(row['Stop_Loss']),
-                 takeprofit=float(row['Take_Profit']),
-                 time=row['Entry_Time'],
-                 name_coin=row['Symbol'],
-                 risk_per_trade = risk_per_trade
-             )
+             if 'Result' not in df.columns:
+                 continue
              
-             # Bước 3: Gửi thông báo Discord với kết quả từ cả 2 sàn (song song)
-             bybit_msg = ""
-             okx_msg = ""
+             # Convert Result column to string, remove NaN, handle case-insensitive
+             df['Result'] = df['Result'].fillna('').astype(str).str.strip().str.upper()
+             open_df = df[df['Result'] == 'OPEN']
              
-             if order_result.get('bybit'):
-                 bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
-             
-             if order_result.get('okx'):
-                 okx_msg = f"**OKX**\n{okx_format_order_message(order_result['okx'])}"
-             
-             combined_result = f"{bybit_msg}\n\n{okx_msg}".strip()
-             
-             send_entry_discord(
-                 type=row['Type'],
-                 entry=float(row['Entry_Price']),
-                 stoploss=float(row['Stop_Loss']),
-                 takeprofit=float(row['Take_Profit']),
-                 time=row['Entry_Time'],
-                 name_coin=row['Symbol'],
-                 result=combined_result,
-                 risk_per_trade = risk_per_trade
-             )
-             
-             # Thêm order với thông tin chi tiết
-             order_detail = {
-                 "key": order_key,
-                 "entry_price": float(row['Entry_Price']),
-                 "stop_loss": float(row['Stop_Loss']),
-                 "take_profit": float(row['Take_Profit']),
-                 "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                 "status": "OPEN",
-                 "exchanges": {
-                     "bybit": order_result.get('bybit', {}).get('success', False) if order_result.get('bybit') else False,
-                     "okx": order_result.get('okx', {}).get('success', False) if order_result.get('okx') else False,
-                 }
-             }
-             sent_orders.append(order_detail)
-             sent_keys.add(order_key)
-             new_sent_count += 1
-             
-         except:
+             for _, row in open_df.iterrows():
+                 open_orders.append(row)
+                 
+         except Exception as e:
+             print(f"Error scanning {csv_file}: {e}")
              continue
      
-     if new_sent_count > 0:
-         save_sent_orders(log_path, sent_orders)
-     
-     return new_sent_count
+     return open_orders
+
+
+async def send_entry_notifications_async(row, risk_per_trade: float, timeout: float = 60):
+     """Send entry notifications to Telegram and Discord asynchronously."""
+     try:
+          params = {
+              "type": row['Type'],
+              "entry": float(row['Entry_Price']),
+              "stoploss": float(row['Stop_Loss']),
+              "takeprofit": float(row['Take_Profit']),
+              "time": row['Entry_Time'],
+              "name_coin": row['Symbol'],
+              "risk_per_trade": risk_per_trade
+          }
+          
+          await asyncio.wait_for(
+              asyncio.gather(
+                  asyncio.to_thread(send_entry_telegram, **params),
+                  asyncio.to_thread(send_entry_discord, **params),
+                  return_exceptions=True
+              ),
+              timeout=timeout
+          )
+     except asyncio.TimeoutError:
+          print(f"Timeout sending notifications for {row['Symbol']}, but continuing...")
+     except Exception as e:
+          print(f"Error sending notifications for {row['Symbol']}: {e}")
+          raise
+
+
+def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
+      """Check for new OPEN orders and send notifications. Returns count of new orders sent."""
+      output_path = Path(output_dir)
+      log_path = Path(log_file)
+      
+      update_order_status_from_csv(output_dir, log_file)
+      
+      sent_keys, sent_orders = load_sent_orders(log_path)
+      open_orders = scan_open_orders(output_path)
+      
+      new_sent_count = 0
+      
+      for row in open_orders:
+          order_key = generate_order_key(row)
+          
+          if order_key in sent_keys:
+              continue
+          
+          try:
+              
+              # Send notifications asynchronously
+              asyncio.run(send_entry_notifications_async(row, risk_per_trade))
+              # Add to sent_orders
+              order_detail = {
+                  "key": order_key,
+                  "entry_price": float(row['Entry_Price']),
+                  "stop_loss": float(row['Stop_Loss']),
+                  "take_profit": float(row['Take_Profit']),
+                  "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                  "status": "OPEN",
+              }
+              sent_orders.append(order_detail)
+              sent_keys.add(order_key)
+              new_sent_count += 1
+
+              
+          except Exception as e:
+              print(f"Error processing order {order_key}: {e}")
+              continue
+      
+      if new_sent_count > 0:
+          save_sent_orders(log_path, sent_orders)
+      
+      return new_sent_count
 
 
 if __name__ == "__main__":
-    
-    # Example usage
-    OUTPUT_FOLDER = "res/output"    
-    LOG_FILE = "res/logs/sent_orders.json"
-    check_and_send_open_orders(OUTPUT_FOLDER, LOG_FILE)
-    pass
+     
+     # Example usage
+     OUTPUT_FOLDER = "res/logs/output"    
+     LOG_FILE = "res/logs/sent_orders.json"
+     check_and_send_open_orders(OUTPUT_FOLDER, LOG_FILE)
+     pass

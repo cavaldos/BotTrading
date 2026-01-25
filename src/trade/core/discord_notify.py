@@ -6,64 +6,52 @@ from dotenv import load_dotenv
 
 from src.trade.core.calculate import calculate_trade_size
 
-# Tải biến môi trường từ file .env
 load_dotenv()
 
-# Discord Webhook URL
 DISCORD_WEBHOOK_URL = os.environ.get('DISCORD_WEBHOOK_URL')
 
 
-# Hàm gửi tin nhắn tùy chỉnh qua Discord webhook
-def send_custom_message(message: str) -> None:
-    """
-    Gửi tin nhắn tùy chỉnh đến Discord webhook
-    """
+def send_custom_message(message: str, timeout: int = 5, retries: int = 3) -> None:
+    """Send custom message to Discord webhook with timeout and retry."""
     payload = {
         "content": message
     }
     
-    try:
-        response = requests.post(DISCORD_WEBHOOK_URL, json=payload)
-        response.raise_for_status()
-    except requests.exceptions.RequestException:
-        pass  # Silent mode - avoid dashboard flicker
+    for attempt in range(retries):
+        try:
+            response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=timeout)
+            response.raise_for_status()
+            return
+        except requests.exceptions.Timeout:
+            if attempt < retries - 1:
+                continue
+        except requests.exceptions.RequestException:
+            pass
+    # Silent mode - avoid dashboard flicker
 
 
 def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None, risk_per_trade = 5):
-    """
-    Gửi thông tin entry lệnh giao dịch đến Discord
-    """
-    # Chuyển chuỗi time thành đối tượng datetime
+    """Send trade entry notification to Discord."""
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
-
-    # Cộng thêm 7 giờ vào thời gian
     new_time = time_obj + timedelta(hours=7)
 
-    # Tách ngày và giờ (bỏ giây)
     date_str = time_obj.strftime('%Y-%m-%d')
     time_gmt0 = time_obj.strftime('%H:%M')
     time_gmt7 = new_time.strftime('%H:%M')
 
-    # Tính toán position size
     required_margin, leverage = calculate_trade_size(entry, stoploss, takeprofit, risk_per_trade)
     
-    # Tính chênh lệch giá
     sl_diff = entry - stoploss
     tp_diff = takeprofit - entry
-    
-    # Tính chênh lệch theo phần trăm
     sl_diff_percent = (abs(sl_diff) / entry) * 100
     tp_diff_percent = (abs(tp_diff) / entry) * 100
     
-    # Tính R:R ratio
     risk = abs(sl_diff)
     reward = abs(tp_diff)
     rr_ratio = reward / risk if risk > 0 else 0
 
-    # Xác định loại lệnh
     type_upper = type.upper()
 
-    # Format message dạng table
     message = f"""**{name_coin} | {type_upper}**
 ```
 Date: {date_str}
@@ -88,9 +76,7 @@ RESULT
 
 
 def send_message_to_discord(message: str):
-    """
-    Hàm wrapper để gửi tin nhắn text thô đến Discord
-    """
+    """Send raw text message to Discord."""
     send_custom_message(message)
 
 
