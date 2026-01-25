@@ -69,7 +69,7 @@ class Config:
     eqhl_threshold: float = 0.3     # ATR multiplier for EQH/EQL sensitivity (increased)
     
     # === ORDER BLOCK ===
-    ob_mitigation: str = "high_low" # "close" or "high_low"
+    ob_mitigation: str = "close" # "close" or "high_low"
     ob_body_ratio: float = 0.35      # Candle body size / candle range must be > 90% (trending candle filter)
     # Note: OB detection uses LuxAlgo extreme candle logic + trending candle filter
     

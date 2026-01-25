@@ -222,6 +222,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             'losses': 0,
             'open_trades': 0,
             'win_rate': 0.0,
+            'avg_sl_percent': 0.0,
             'longest_win_streak': 0,
             'longest_loss_streak': 0
         }
@@ -237,6 +238,14 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
     closed_trades = total_trades - open_count
     
     win_rate = (win_count / closed_trades * 100) if closed_trades > 0 else 0
+    
+    # Calculate average SL percentage
+    sl_percentages = []
+    for t in trades:
+        if t.entry_price > 0:
+            sl_pct = abs(t.entry_price - t.stop_loss) / t.entry_price * 100
+            sl_percentages.append(sl_pct)
+    avg_sl_percent = sum(sl_percentages) / len(sl_percentages) if sl_percentages else 0
     
     # Calculate streaks
     longest_win_streak = 0
@@ -261,6 +270,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         'losses': loss_count,
         'open_trades': open_count,
         'win_rate': round(win_rate, 2),
+        'avg_sl_percent': round(avg_sl_percent, 2),
         'longest_win_streak': longest_win_streak,
         'longest_loss_streak': longest_loss_streak
     }
@@ -306,10 +316,10 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     lines = [
         "",
         f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
-        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "RR", "SLM", "ROE", "W-S", "L-S"
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "%SL", "RR", "SLM", "ROE", "W-S", "L-S"
         ),
-        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", ""),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->8}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", "", ""),
     ]
     
     # Add results grouped by timeframe
@@ -317,13 +327,14 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         for summary in timeframe_groups[timeframe]:
             # ROE = (Wins * RR Ratio) - Losses
             roe = (summary['wins'] * rr_ratio) - summary['losses']
-            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
                 summary['symbol'],
                 summary['total_trades'],
                 summary['wins'],
                 summary['losses'],
                 summary['open_trades'],
                 f"*{summary['win_rate']}%*",
+                f"{summary['avg_sl_percent']}%",
                 f"{rr_ratio}",
                 f"{sl_multiplier}",
                 f"{round(roe, 2)}",
@@ -336,20 +347,25 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # ROE = (Total Wins * RR Ratio) - Total Losses
     overall_roe = (total_wins * rr_ratio) - total_losses
     
-    # Calculate overall streaks
+    # Calculate overall streaks and average SL percent
     overall_longest_win_streak = 0
     overall_longest_loss_streak = 0
+    all_sl_percents = []
     for summary in all_summaries:
         overall_longest_win_streak = max(overall_longest_win_streak, summary['longest_win_streak'])
         overall_longest_loss_streak = max(overall_longest_loss_streak, summary['longest_loss_streak'])
+        if summary['avg_sl_percent'] > 0:
+            all_sl_percents.append(summary['avg_sl_percent'])
+    overall_avg_sl_percent = sum(all_sl_percents) / len(all_sl_percents) if all_sl_percents else 0
     
-    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
         "**TOTAL**",
         total_trades,
         total_wins,
         total_losses,
         total_open,
         f"*{round(overall_win_rate, 2)}%*",
+        f"{round(overall_avg_sl_percent, 2)}%",
         f"{rr_ratio}",
         f"{sl_multiplier}",
         f"{round(overall_roe, 2)}",

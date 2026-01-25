@@ -46,7 +46,7 @@ strategy:
   eqhl_length: 3            # Length for EQH/EQL detection
   eqhl_threshold: 0.3       # ATR multiplier for EQH/EQL sensitivity
   # === ORDER BLOCK ===
-  ob_mitigation: "high_low" # "close" or "high_low"
+  ob_mitigation: "close" # "close" or "high_low"
   ob_body_ratio: 0.35       # Body size / candle range filter
   # === FVG ===
   fvg_atr_filter: true      # Filter small FVGs using ATR
