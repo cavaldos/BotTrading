@@ -116,14 +116,4 @@ def format_symbol(symbol: str) -> str:
 
 
 if __name__ == '__main__':
-    try:
-        print("=" * 60)
-        print("Testing Binance Exchange...")
-        exchange = get_exchange()
-        print(f"✓ Exchange initialized: {exchange.__class__.__name__}")
-        print(f"✓ Markets loaded: {len(exchange.markets)} markets")
-        print("=" * 60)
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    exchange = get_exchange()

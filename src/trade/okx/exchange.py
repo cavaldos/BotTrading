@@ -207,8 +207,6 @@ def set_position_mode(exchange: ccxt.okx, hedge_mode: bool = True) -> dict:
         })
         
         if result.get('code') == '0':
-            mode_text = "Hedge (Long/Short)" if hedge_mode else "One-way (Net)"
-            print(f"✓ Position mode set to: {mode_text}")
             return {
                 'success': True,
                 'position_mode': pos_mode,
@@ -225,8 +223,6 @@ def set_position_mode(exchange: ccxt.okx, hedge_mode: bool = True) -> dict:
         error_msg = str(e)
         # Ignore if already set
         if 'already' in error_msg.lower() or 'same' in error_msg.lower():
-            mode_text = "Hedge (Long/Short)" if hedge_mode else "One-way (Net)"
-            print(f"✓ Position mode already: {mode_text}")
             return {
                 'success': True,
                 'position_mode': 'long_short_mode' if hedge_mode else 'net_mode',
@@ -531,8 +527,7 @@ def place_market_order_with_sl(
         margin_mode=margin_mode, 
         hedge_mode=hedge_mode
     )
-    if not leverage_result['success']:
-        print(f"⚠️  Warning: Could not set leverage - {leverage_result.get('error', 'Unknown')}")
+    # Silent mode - leverage errors are handled by the caller
     
     # Get current price
     ticker = exchange.fetch_ticker(formatted_symbol)

@@ -16,7 +16,7 @@ from src.trade.okx.exchange import (
     set_position_mode,
     set_leverage_and_margin_mode,
 )
-from src.trade.okx.risk_calculator import clean_symbol
+from src.trade.okx.risk_calculator import clean_symbol, adjust_levels_for_slippage, validate_slippage
 from src.utils.rounding import round_price
 
 
@@ -98,18 +98,53 @@ def validate_and_place_order(
             # Đợi position settle trên server (1-2 giây)
             time.sleep(2)
             
-            # Đặt SL/TP cho position
+            # Lấy giá fill thực tế từ sàn
+            actual_entry = result.get('entry_price', entry_price)
+            
+            # Kiểm tra và điều chỉnh SL/TP nếu có slippage
+            slippage_info = adjust_levels_for_slippage(
+                expected_entry=entry_price,
+                actual_entry=actual_entry,
+                expected_sl=stop_loss,
+                expected_tp=take_profit,
+                side=side.lower(),
+            )
+            
+            # Lấy SL/TP đã điều chỉnh
+            adjusted_sl = slippage_info['adjusted_sl']
+            adjusted_tp = slippage_info['adjusted_tp']
+            
+            # Đảm bảo SL luôn "an toàn hơn" (rộng hơn) so với SL gốc
+            # BUY: SL phải <= SL gốc (thấp hơn = an toàn hơn)
+            # SELL: SL phải >= SL gốc (cao hơn = an toàn hơn)
+            if side.lower() == 'buy':
+                adjusted_sl = min(adjusted_sl, stop_loss)
+            else:  # sell
+                adjusted_sl = max(adjusted_sl, stop_loss)
+            
+            # Thêm thông tin slippage vào result
+            result['slippage_info'] = slippage_info
+            result['original_sl'] = stop_loss
+            result['original_tp'] = take_profit
+            
+            # Cảnh báo nếu slippage quá lớn (> 0.5%)
+            if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
+                result['slippage_warning'] = f"⚠️ Slippage cao: {slippage_info['slippage_pct']:.3f}%"
+            
+            # Đặt SL/TP đã điều chỉnh cho position
             sl_tp_result = set_position_sl_tp(
                 exchange=exchange,
                 symbol=clean_sym,
                 side=side.lower(),
-                stop_loss=stop_loss,
-                take_profit=take_profit,
+                stop_loss=adjusted_sl,
+                take_profit=adjusted_tp,
                 margin_mode=margin_mode,
             )
             
             if sl_tp_result['success']:
                 result['sl_tp_result'] = sl_tp_result
+                result['stop_loss'] = adjusted_sl
+                result['take_profit'] = adjusted_tp
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
         
@@ -148,6 +183,13 @@ def okx_format_order_message(result: dict) -> str:
     stop_loss = result.get('stop_loss', 0)
     take_profit = result.get('take_profit', 0)
     
+    # Lấy thông tin slippage
+    slippage_info = result.get('slippage_info', {})
+    original_sl = result.get('original_sl', stop_loss)
+    original_tp = result.get('original_tp', take_profit)
+    slippage_pct = slippage_info.get('slippage_pct', 0)
+    expected_entry = slippage_info.get('expected_entry', entry_price)
+    
     # Lấy side từ position_info
     position_info = result.get('position_info', {})
     side = position_info.get('side', 'N/A').upper()
@@ -170,15 +212,26 @@ def okx_format_order_message(result: dict) -> str:
     side_emoji = "🟢" if side == "BUY" else "🔴"
     side_text = "LONG" if side == "BUY" else "SHORT"
     
+    # Thêm thông tin slippage nếu có
+    slippage_line = ""
+    adjusted_line = ""
+    if slippage_pct != 0:
+        slippage_emoji = "⚠️" if abs(slippage_pct) > 0.3 else "ℹ️"
+        slippage_line = f"\n├─ Slippage: {slippage_emoji} {slippage_pct:+.3f}%"
+        if original_sl != stop_loss or original_tp != take_profit:
+            adjusted_line = f"\n├─ (SL/TP đã điều chỉnh từ ${original_sl:,.4f} / ${original_tp:,.4f})"
+    
     message = f"""✅ THÀNH CÔNG
 
 {side_emoji} {side_text} {symbol}
 ├─ Leverage: {leverage}x
 ├─ Contracts: {contracts}
 │
-├─ Entry:  ${entry_price:,.4f}
+├─ Expected Entry: ${expected_entry:,.4f}
+├─ Actual Entry:   ${entry_price:,.4f}{slippage_line}
+│
 ├─ SL:     ${stop_loss:,.4f}
-├─ TP:     ${take_profit:,.4f}
+├─ TP:     ${take_profit:,.4f}{adjusted_line}
 │
 └─ RR:     1:{rr_ratio:.2f}"""
     
@@ -190,8 +243,8 @@ if __name__ == "__main__":
     order_result = validate_and_place_order(
         symbol="BTCUSDT_1m",
         side="buy",
-        entry_price=89647,
-        stop_loss=88864,
+        entry_price=89736,
+        stop_loss=89200,
         take_profit=None,
         leverage=10,
         risk_per_trade=10,

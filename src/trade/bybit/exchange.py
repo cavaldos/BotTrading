@@ -480,56 +480,20 @@ def place_market_order_with_sl(
 
 
 if __name__ == '__main__':
-    try:
-        # Test get_exchange
-        print("=" * 60)
-        print("Testing get_exchange()...")
-        exchange = get_exchange()
-        print(f"✓ Exchange initialized: {exchange.__class__.__name__}")
-        print(f"✓ Markets loaded: {len(exchange.markets)} markets")
-        
-        # Test calculate_position_size
-        print("\n" + "=" * 60)
-        print("Testing calculate_position_size()...")
-        entry_price = 100000
-        stop_loss = 89900
-        leverage = 20
-        risk = 5
-        
-        pos_info = calculate_position_size(entry_price, stop_loss, leverage, risk, side='buy')
-        print(f"  Entry: ${entry_price:,.2f}")
-        print(f"  Stop Loss: ${stop_loss:,.2f}")
-        print(f"  Leverage: {leverage}x")
-        print(f"  Target Risk: ${risk}")
-        print(f"  → Quantity: {pos_info['quantity']} BTC")
-        print(f"  → Margin: ${pos_info['margin_required']:,.2f}")
-        print(f"  → Notional: ${pos_info['notional_value']:,.2f}")
-        print(f"  → Actual Risk: ${pos_info['actual_risk']:.2f}")
-        
-        # Test place_market_order_with_sl (DEMO - không thực sự đặt lệnh)
-        print("\n" + "=" * 60)
-        print("Testing place_market_order_with_sl()...")
-        print("(Chỉ tính toán, không đặt lệnh thực tế)")
-        
-        result = place_market_order_with_sl(
-            exchange=exchange,
-            symbol='BTC',
-            side='buy',
-            leverage=20,
-            stop_loss=89900,
-            risk_per_trade=5
-        )
-        
-        if result['success']:
-            print(f"\n✓ Order placed successfully!")
-        else:
-            print(f"\nℹ️  Demo mode - Calculation successful (no actual order placed)")
-            print(f"   Position Info: {result['position_info']}")
-        
-        print("\n" + "=" * 60)
-        print("✓ All tests passed!")
-        
-    except Exception as e:
-        print(f"✗ Error: {e}")
-        import traceback
-        traceback.print_exc()
+    exchange = get_exchange()
+    
+    entry_price = 100000
+    stop_loss = 89900
+    leverage = 20
+    risk = 5
+    
+    pos_info = calculate_position_size(entry_price, stop_loss, leverage, risk, side='buy')
+    
+    result = place_market_order_with_sl(
+        exchange=exchange,
+        symbol='BTC',
+        side='buy',
+        leverage=20,
+        stop_loss=89900,
+        risk_per_trade=5
+    )
