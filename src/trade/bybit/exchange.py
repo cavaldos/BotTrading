@@ -27,7 +27,7 @@ def create_bybit_demo_exchange(api_key: str, secret: str) -> ccxt.bybit:
     return exchange
 
 
-def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy') -> dict:
+def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy', skip_validation: bool = False) -> dict:
     """
     Calculate position size and margin for a trade.
 
@@ -43,6 +43,7 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
         leverage: Leverage (e.g., 20)
         risk_per_trade: Maximum risk in USD
         side: 'buy' for LONG, 'sell' for SHORT
+        skip_validation: Skip SL position validation (for market orders)
 
     Returns:
         dict: Position information (quantity, margin, notional_value)
@@ -50,13 +51,14 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
     if leverage <= 0:
         raise ValueError("Leverage phải > 0")
     
-    # Validate stop loss theo side
-    if side.lower() == 'buy':  # LONG
-        if entry_price <= stop_loss:
-            raise ValueError("LONG: Entry price phải cao hơn stop loss")
-    else:  # SHORT
-        if entry_price >= stop_loss:
-            raise ValueError("SHORT: Stop loss phải cao hơn entry price")
+    # Validate stop loss theo side (có thể skip cho market order)
+    if not skip_validation:
+        if side.lower() == 'buy':  # LONG
+            if entry_price <= stop_loss:
+                raise ValueError("LONG: Entry price phải cao hơn stop loss")
+        else:  # SHORT
+            if entry_price >= stop_loss:
+                raise ValueError("SHORT: Stop loss phải cao hơn entry price")
     
     # Tính price diff (luôn dương)
     price_diff = abs(entry_price - stop_loss)
@@ -432,15 +434,23 @@ def place_market_order_with_sl(
     
     # Lấy giá hiện tại
     ticker = exchange.fetch_ticker(symbol)
-    current_price = ticker['last']
+    current_price = ticker.get('last')
     
-    # Tính kích thước vị trí
+    # Validate current_price
+    if current_price is None:
+        return {
+            'success': False,
+            'error': 'Không lấy được giá hiện tại từ sàn',
+        }
+    
+    # Tính kích thước vị trí (skip validation vì market order có thể fill ở giá khác)
     position_info = calculate_position_size(
         entry_price=current_price,
         stop_loss=stop_loss,
         leverage=leverage,
         risk_per_trade=risk_per_trade,
-        side=side
+        side=side,
+        skip_validation=True,  # Skip SL validation cho market order
     )
     
     # Đặt lệnh market order

@@ -15,6 +15,7 @@ from src.trade.okx.exchange import (
     set_position_sl_tp,
     set_position_mode,
     set_leverage_and_margin_mode,
+    close_position_market,
 )
 from src.trade.okx.risk_calculator import clean_symbol, adjust_levels_for_slippage, validate_slippage
 from src.utils.rounding import round_price
@@ -69,18 +70,8 @@ def validate_and_place_order(
                 'exchange': 'OKX',
             }
         
-        # Tính take_profit tự động nếu không được truyền vào
-        if take_profit is None:
-            if side.lower() == 'buy':  # LONG
-                risk = entry_price - stop_loss
-                reward = risk * risk_reward_ratio
-                take_profit = entry_price + reward
-            else:  # SHORT (sell)
-                risk = stop_loss - entry_price
-                reward = risk * risk_reward_ratio
-                take_profit = entry_price - reward
-            
-            take_profit = round_price(take_profit)
+        # Tạm thời không tính TP trước (sẽ tính sau khi có actual entry)
+        original_tp = take_profit
         
         # Đặt lệnh market order
         result = place_market_order_with_sl(
@@ -101,31 +92,36 @@ def validate_and_place_order(
             # Lấy giá fill thực tế từ sàn (dùng 'or' để handle cả None value)
             actual_entry = result.get('entry_price') or entry_price
             
-            # Kiểm tra và điều chỉnh SL/TP nếu có slippage
+            # Giữ SL gốc (không điều chỉnh SL)
+            adjusted_sl = stop_loss
+            
+            # Tính TP dựa trên actual_entry và SL thực tế
+            if original_tp is None:
+                if side.lower() == 'buy':  # LONG
+                    risk = actual_entry - adjusted_sl
+                    reward = risk * risk_reward_ratio
+                    adjusted_tp = actual_entry + reward
+                else:  # SHORT (sell)
+                    risk = adjusted_sl - actual_entry
+                    reward = risk * risk_reward_ratio
+                    adjusted_tp = actual_entry - reward
+                adjusted_tp = round_price(adjusted_tp)
+            else:
+                adjusted_tp = original_tp
+            
+            # Kiểm tra slippage entry
             slippage_info = adjust_levels_for_slippage(
                 expected_entry=entry_price,
                 actual_entry=actual_entry,
                 expected_sl=stop_loss,
-                expected_tp=take_profit,
+                expected_tp=adjusted_tp,
                 side=side.lower(),
             )
-            
-            # Lấy SL/TP đã điều chỉnh
-            adjusted_sl = slippage_info['adjusted_sl']
-            adjusted_tp = slippage_info['adjusted_tp']
-            
-            # Đảm bảo SL luôn "an toàn hơn" (rộng hơn) so với SL gốc
-            # BUY: SL phải <= SL gốc (thấp hơn = an toàn hơn)
-            # SELL: SL phải >= SL gốc (cao hơn = an toàn hơn)
-            if side.lower() == 'buy':
-                adjusted_sl = min(adjusted_sl, stop_loss)
-            else:  # sell
-                adjusted_sl = max(adjusted_sl, stop_loss)
             
             # Thêm thông tin slippage vào result
             result['slippage_info'] = slippage_info
             result['original_sl'] = stop_loss
-            result['original_tp'] = take_profit
+            result['original_tp'] = original_tp
             
             # Cảnh báo nếu slippage quá lớn (> 0.5%)
             if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
@@ -140,18 +136,26 @@ def validate_and_place_order(
                 take_profit=adjusted_tp,
                 margin_mode=margin_mode,
             )
-            
+
             if sl_tp_result['success']:
                 result['sl_tp_result'] = sl_tp_result
                 result['stop_loss'] = adjusted_sl
                 result['take_profit'] = adjusted_tp
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
+                result['success'] = False  # ❌ Mark as failed nếu SL/TP không set được
+                close_result = close_position_market(
+                    exchange=exchange,
+                    symbol=clean_sym,
+                    side=side.lower(),
+                    contracts=result.get('contracts'),
+                    margin_mode=margin_mode,
+                    hedge_mode=result.get('hedge_mode', hedge_mode),
+                )
+                result['close_on_sl_tp_fail'] = close_result
         
         # Thêm thông tin bổ sung
         result['exchange'] = 'OKX'
-        if take_profit:
-            result['take_profit'] = take_profit
         
         return result
         
@@ -198,14 +202,24 @@ def okx_format_order_message(result: dict) -> str:
     
     # Tính Risk/Reward ratio
     rr_ratio = 0
+    risk = 0
+    reward = 0
+    sl_pct = 0
+    tp_pct = 0
     if side == 'BUY':  # LONG
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
         reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
-    else:  # SHORT
+        if entry_price:
+            sl_pct = (stop_loss - entry_price) / entry_price * 100 if stop_loss else 0
+            tp_pct = (take_profit - entry_price) / entry_price * 100 if take_profit else 0
+    elif side == 'SELL':  # SHORT
         risk = abs(stop_loss - entry_price) if stop_loss and entry_price else 0
         reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
+        if entry_price:
+            sl_pct = (entry_price - stop_loss) / entry_price * 100 if stop_loss else 0
+            tp_pct = (entry_price - take_profit) / entry_price * 100 if take_profit else 0
     
-    if risk > 0:
+    if risk > 0 and reward is not None:
         rr_ratio = reward / risk
     
     # Format message
@@ -218,7 +232,7 @@ def okx_format_order_message(result: dict) -> str:
     if slippage_pct != 0:
         slippage_emoji = "⚠️" if abs(slippage_pct) > 0.3 else "ℹ️"
         slippage_line = f"\n├─ Slippage: {slippage_emoji} {slippage_pct:+.3f}%"
-        if original_sl != stop_loss or original_tp != take_profit:
+        if original_tp is not None and (original_sl != stop_loss or original_tp != take_profit):
             adjusted_line = f"\n├─ (SL/TP đã điều chỉnh từ ${original_sl:,.4f} / ${original_tp:,.4f})"
     
     message = f"""✅ THÀNH CÔNG
@@ -230,8 +244,8 @@ def okx_format_order_message(result: dict) -> str:
 ├─ Expected Entry: ${expected_entry:,.4f}
 ├─ Actual Entry:   ${entry_price:,.4f}{slippage_line}
 │
-├─ SL:     ${stop_loss:,.4f}
-├─ TP:     ${take_profit:,.4f}{adjusted_line}
+├─ SL:     ${stop_loss:,.4f} ({sl_pct:+.2f}%)
+├─ TP:     ${take_profit:,.4f} ({tp_pct:+.2f}%){adjusted_line}
 │
 └─ RR:     1:{rr_ratio:.2f}"""
     
@@ -241,10 +255,10 @@ def okx_format_order_message(result: dict) -> str:
 if __name__ == "__main__":
     # Example usage
     order_result = validate_and_place_order(
-        symbol="BTCUSDT_1m",
-        side="buy",
-        entry_price=89736,
-        stop_loss=89200,
+        symbol="BCHUSDT_5m",
+        side="sell",
+        entry_price= 579.9000,
+        stop_loss=580.7860,
         take_profit=None,
         leverage=10,
         risk_per_trade=10,
@@ -253,5 +267,3 @@ if __name__ == "__main__":
     print(order_result)
     print("\n" + "="*40 + "\n")
     print(okx_format_order_message(order_result))
-
-

@@ -35,7 +35,7 @@ def create_okx_exchange(api_key: str, secret: str, passphrase: str, sandbox: boo
     return exchange
 
 
-def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy') -> dict:
+def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy', skip_validation: bool = False) -> dict:
     """
     Calculate position size and margin for a trade.
 
@@ -51,6 +51,7 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
         leverage: Leverage (e.g., 20)
         risk_per_trade: Maximum risk in USD
         side: 'buy' for LONG, 'sell' for SHORT
+        skip_validation: Skip SL position validation (for market orders)
 
     Returns:
         dict: Position information (quantity, margin, notional_value)
@@ -58,13 +59,14 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
     if leverage <= 0:
         raise ValueError("Leverage phải > 0")
     
-    # Validate stop loss theo side
-    if side.lower() == 'buy':  # LONG
-        if entry_price <= stop_loss:
-            raise ValueError("LONG: Entry price phải cao hơn stop loss")
-    else:  # SHORT
-        if entry_price >= stop_loss:
-            raise ValueError("SHORT: Stop loss phải cao hơn entry price")
+    # Validate stop loss theo side (có thể skip cho market order)
+    if not skip_validation:
+        if side.lower() == 'buy':  # LONG
+            if entry_price <= stop_loss:
+                raise ValueError("LONG: Entry price phải cao hơn stop loss")
+        else:  # SHORT
+            if entry_price >= stop_loss:
+                raise ValueError("SHORT: Stop loss phải cao hơn entry price")
     
     # Tính price diff (luôn dương)
     price_diff = abs(entry_price - stop_loss)
@@ -532,15 +534,23 @@ def place_market_order_with_sl(
     
     # Get current price
     ticker = exchange.fetch_ticker(formatted_symbol)
-    current_price = ticker['last']
+    current_price = ticker.get('last')
     
-    # Calculate position size based on risk
+    # Validate current_price
+    if current_price is None:
+        return {
+            'success': False,
+            'error': 'Không lấy được giá hiện tại từ sàn',
+        }
+    
+    # Calculate position size based on risk (skip validation cho market order)
     position_info = calculate_position_size(
         entry_price=current_price,
         stop_loss=stop_loss,
         leverage=leverage,
         risk_per_trade=risk_per_trade,
-        side=side
+        side=side,
+        skip_validation=True,  # Skip SL validation cho market order
     )
     
     # Get market info for precision
@@ -642,3 +652,88 @@ def place_market_order_with_sl(
             'position_info': position_info,
         }
 
+
+def close_position_market(
+    exchange: ccxt.okx,
+    symbol: str,
+    side: str,
+    contracts: float,
+    margin_mode: str = 'isolated',
+    hedge_mode: bool = True,
+) -> dict:
+    """
+    Close a position using a reduce-only market order.
+
+    Args:
+        exchange: CCXT OKX instance
+        symbol: Symbol (e.g., 'BTC' or 'BTC-USDT-SWAP')
+        side: Position side to close ('buy' for long, 'sell' for short)
+        contracts: Position size in contracts
+        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
+        hedge_mode: True để bật hedge mode (long/short cùng lúc)
+
+    Returns:
+        dict: Close order result
+    """
+    if not contracts:
+        return {
+            'success': False,
+            'error': 'Không có số lượng contracts để đóng vị thế',
+        }
+
+    formatted_symbol = format_symbol(symbol)
+    close_side = 'sell' if side.lower() == 'buy' else 'buy'
+    pos_side = 'long' if side.lower() == 'buy' else 'short'
+
+    order_params = {
+        'tdMode': margin_mode,
+        'reduceOnly': True,
+    }
+    if hedge_mode:
+        order_params['posSide'] = pos_side
+
+    try:
+        order = exchange.create_market_order(
+            symbol=formatted_symbol,
+            side=close_side,
+            amount=contracts,
+            params=order_params,
+        )
+        return {
+            'success': True,
+            'order': order,
+            'symbol': formatted_symbol,
+            'side': close_side,
+            'contracts': contracts,
+        }
+    except Exception as e:
+        error_msg = str(e)
+        if 'posSide' in error_msg or 'position side' in error_msg.lower():
+            try:
+                fallback_params = {
+                    'tdMode': margin_mode,
+                    'reduceOnly': True,
+                }
+                order = exchange.create_market_order(
+                    symbol=formatted_symbol,
+                    side=close_side,
+                    amount=contracts,
+                    params=fallback_params,
+                )
+                return {
+                    'success': True,
+                    'order': order,
+                    'symbol': formatted_symbol,
+                    'side': close_side,
+                    'contracts': contracts,
+                }
+            except Exception as e2:
+                return {
+                    'success': False,
+                    'error': f'Close position failed: {str(e)} | {str(e2)}',
+                }
+
+        return {
+            'success': False,
+            'error': f'Close position failed: {error_msg}',
+        }

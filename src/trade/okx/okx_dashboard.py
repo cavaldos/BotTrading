@@ -306,12 +306,12 @@ class OKXDashboard:
             )
             positions_table.add_column("Symbol", style="cyan", width=12)
             positions_table.add_column("Side", style="magenta", width=6)
-            positions_table.add_column("Size", justify="right", width=12)
-            positions_table.add_column("Entry Price", justify="right", width=12)
+            positions_table.add_column("Size", justify="right", width=6)
+            positions_table.add_column("Entrye", justify="right", width=6)
             positions_table.add_column("Mark Price", justify="right", width=12)
             positions_table.add_column("Leverage", justify="right", width=8)
             positions_table.add_column("P&L", justify="right", width=8)
-            positions_table.add_column("ROI %", justify="right", width=6)
+            positions_table.add_column("ROI %", justify="right", width=12)
             
             if not open_positions:
                 positions_table.add_row(
@@ -592,7 +592,6 @@ class OKXDashboard:
         layout.split_column(
             Layout(name="header", size=3),
             Layout(name="main"),
-            Layout(name="console", size=14),
             Layout(name="footer", size=3)
         )
         
@@ -617,9 +616,6 @@ class OKXDashboard:
             Layout(self._create_positions_panel(), name="positions"),
             Layout(self._create_order_history_panel(), name="history")
         )
-        
-        # Console panel
-        layout["console"].update(self._create_console_panel())
         
         # Footer
         status = Text(
