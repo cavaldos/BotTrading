@@ -220,6 +220,27 @@ class BybitDashboard:
                         balance_table.add_row("Margin Available", f"${margin.get('available'):,.2f}")
             except Exception:
                 pass
+            
+            # Fetch unrealized PnL from open positions
+            try:
+                positions = self.exchange.fetch_positions()
+                total_unrealized_pnl = 0.0
+                for pos in positions:
+                    contracts = abs(float(pos.get('contracts', 0) or 0))
+                    if contracts > 0:
+                        info = pos.get('info', {})
+                        unrealised_pnl = float(info.get('unrealisedPnl', 0) or 0)
+                        total_unrealized_pnl += unrealised_pnl
+                
+                pnl_color = "green" if total_unrealized_pnl >= 0 else "red"
+                pnl_symbol = "+" if total_unrealized_pnl >= 0 else ""
+                balance_table.add_row("", "")
+                balance_table.add_row(
+                    "Unrealized PnL",
+                    f"[{pnl_color}]{pnl_symbol}${total_unrealized_pnl:,.2f}[/{pnl_color}]"
+                )
+            except Exception:
+                pass
 
             # Attempt to fetch BTC mark/index/last prices for quick comparison
             # Hidden: BTC and ETH prices removed from balance panel
@@ -829,7 +850,7 @@ class BybitDashboard:
         
         # Left column: Balance + Order History (stacked vertically)
         layout["left"].split_column(
-            Layout(self._create_balance_panel(), name="balance", size=15),
+            Layout(self._create_balance_panel(), name="balance", size=18),
             Layout(self._create_orders_history_panel(), name="history")
         )
         
