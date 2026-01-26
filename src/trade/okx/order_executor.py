@@ -92,12 +92,22 @@ def validate_and_place_order(
             # Lấy giá fill thực tế từ sàn (dùng 'or' để handle cả None value)
             actual_entry = result.get('entry_price') or entry_price
             
+            # Calculate expected TP if not provided
+            expected_tp = take_profit
+            if expected_tp is None:
+                if side.lower() == 'buy':  # LONG
+                    risk = entry_price - stop_loss
+                    expected_tp = entry_price + (risk * risk_reward_ratio)
+                else:  # SHORT (sell)
+                    risk = abs(stop_loss - entry_price)
+                    expected_tp = entry_price - (risk * risk_reward_ratio)
+            
             # Kiểm tra slippage entry và điều chỉnh SL/TP theo actual entry
             slippage_info = adjust_levels_for_slippage(
                 expected_entry=entry_price,
                 actual_entry=actual_entry,
                 expected_sl=stop_loss,
-                expected_tp=take_profit if take_profit else (stop_loss + (stop_loss - entry_price) * risk_reward_ratio) if side.lower() == 'buy' else (stop_loss - abs(stop_loss - entry_price) * risk_reward_ratio),
+                expected_tp=expected_tp,
                 side=side.lower(),
             )
             
@@ -209,18 +219,20 @@ def okx_format_order_message(result: dict) -> str:
     if side == 'BUY':  # LONG
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
         reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
-        if entry_price:
+        if entry_price and entry_price != 0:
             sl_pct = (stop_loss - entry_price) / entry_price * 100 if stop_loss else 0
             tp_pct = (take_profit - entry_price) / entry_price * 100 if take_profit else 0
     elif side == 'SELL':  # SHORT
         risk = abs(stop_loss - entry_price) if stop_loss and entry_price else 0
         reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
-        if entry_price:
+        if entry_price and entry_price != 0:
             sl_pct = (entry_price - stop_loss) / entry_price * 100 if stop_loss else 0
             tp_pct = (entry_price - take_profit) / entry_price * 100 if take_profit else 0
     
-    if risk > 0 and reward is not None:
+    if risk > 0 and reward is not None and reward > 0:
         rr_ratio = reward / risk
+    else:
+        rr_ratio = 0
     
     # Format message
     side_emoji = "🟢" if side == "BUY" else "🔴"
@@ -255,10 +267,10 @@ def okx_format_order_message(result: dict) -> str:
 if __name__ == "__main__":
     # Example usage
     order_result = validate_and_place_order(
-        symbol="BCHUSDT_5m",
+        symbol="BTCUSDT_1m",
         side="sell",
-        entry_price= 579.9000,
-        stop_loss=580.7860,
+        entry_price= 87995.12,
+        stop_loss=88074.48,
         take_profit=None,
         leverage=10,
         risk_per_trade=10,
@@ -267,3 +279,4 @@ if __name__ == "__main__":
     print(order_result)
     print("\n" + "="*40 + "\n")
     print(okx_format_order_message(order_result))
+    
