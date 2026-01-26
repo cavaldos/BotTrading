@@ -33,7 +33,7 @@ def place_order(
     take_profit: float,
     entry_time: str,
     leverage: int = 20,
-    risk_per_trade: float = None,
+    risk_per_trade: float = risk_per_trade,
     exchanges: list = None,
 ) -> dict:
     """    

@@ -201,8 +201,9 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
                  order_type=row['Type'],
                  entry_price=float(row['Entry_Price']),
                  stop_loss=float(row['Stop_Loss']),
-                 take_profit=float(row['Take_Profit']),
+                 take_profit=None,
                  entry_time=row['Entry_Time'],
+                 risk_per_trade=risk_per_trade,
               )
               bybit_msg = ""
               okx_msg = ""
