@@ -92,31 +92,31 @@ def validate_and_place_order(
             # Lấy giá fill thực tế từ sàn (dùng 'or' để handle cả None value)
             actual_entry = result.get('entry_price') or entry_price
             
-            # Giữ SL gốc (không điều chỉnh SL)
-            adjusted_sl = stop_loss
+            # Kiểm tra slippage entry và điều chỉnh SL/TP theo actual entry
+            slippage_info = adjust_levels_for_slippage(
+                expected_entry=entry_price,
+                actual_entry=actual_entry,
+                expected_sl=stop_loss,
+                expected_tp=take_profit if take_profit else (stop_loss + (stop_loss - entry_price) * risk_reward_ratio) if side.lower() == 'buy' else (stop_loss - abs(stop_loss - entry_price) * risk_reward_ratio),
+                side=side.lower(),
+            )
             
-            # Tính TP dựa trên actual_entry và SL thực tế
+            # Sử dụng adjusted SL từ slippage adjustment
+            adjusted_sl = slippage_info['adjusted_sl']
+            
+            # Tính TP dựa trên actual_entry và adjusted SL
             if original_tp is None:
                 if side.lower() == 'buy':  # LONG
                     risk = actual_entry - adjusted_sl
                     reward = risk * risk_reward_ratio
                     adjusted_tp = actual_entry + reward
                 else:  # SHORT (sell)
-                    risk = adjusted_sl - actual_entry
+                    risk = abs(adjusted_sl - actual_entry)  # Use absolute value
                     reward = risk * risk_reward_ratio
                     adjusted_tp = actual_entry - reward
                 adjusted_tp = round_price(adjusted_tp)
             else:
                 adjusted_tp = original_tp
-            
-            # Kiểm tra slippage entry
-            slippage_info = adjust_levels_for_slippage(
-                expected_entry=entry_price,
-                actual_entry=actual_entry,
-                expected_sl=stop_loss,
-                expected_tp=adjusted_tp,
-                side=side.lower(),
-            )
             
             # Thêm thông tin slippage vào result
             result['slippage_info'] = slippage_info
@@ -132,14 +132,14 @@ def validate_and_place_order(
                 exchange=exchange,
                 symbol=clean_sym,
                 side=side.lower(),
-                stop_loss=adjusted_sl,
+                stop_loss=adjusted_sl,  # Use adjusted SL
                 take_profit=adjusted_tp,
                 margin_mode=margin_mode,
             )
 
             if sl_tp_result['success']:
                 result['sl_tp_result'] = sl_tp_result
-                result['stop_loss'] = adjusted_sl
+                result['stop_loss'] = adjusted_sl  # Use adjusted SL
                 result['take_profit'] = adjusted_tp
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
