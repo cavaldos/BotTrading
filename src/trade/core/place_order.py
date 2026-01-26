@@ -49,7 +49,7 @@ def place_order(
         exchanges = ['bybit', 'okx'] 
     
     order_type = order_type.strip().upper()
-    side = 'buy' if order_type == 'LONG' else 'sell'
+    side = 'buy' if order_type in ('BUY', 'LONG') else 'sell'
     
     results = {
         'success': False,
@@ -107,3 +107,27 @@ def place_order(
     
     return results 
 
+if __name__ == "__main__":
+    # Test place_order function
+    order_result = place_order(
+        symbol="BCHUSDT_1m",
+        order_type="LONG",
+        entry_price=575.1,
+        stop_loss=576.8,
+        take_profit=None,
+        entry_time=datetime.utcnow().isoformat(),
+        leverage=10,
+        risk_per_trade=5,
+        exchanges=['bybit', 'okx'],
+    )
+
+    # Bybit result
+    if order_result.get('bybit'):
+        print("\n[BYBIT]")
+        print(bybit_format_order_message(order_result.get('bybit')))
+    
+    # OKX result
+    if order_result.get('okx'):
+        print("\n[OKX]")
+        print(okx_format_order_message(order_result.get('okx')))
+    

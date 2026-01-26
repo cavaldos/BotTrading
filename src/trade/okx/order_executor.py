@@ -20,7 +20,6 @@ from src.trade.okx.exchange import (
 from src.trade.okx.risk_calculator import clean_symbol, adjust_levels_for_slippage, validate_slippage
 from src.utils.rounding import round_price
 
-
 def validate_and_place_order(
     symbol: str,
     side: str,
@@ -35,28 +34,33 @@ def validate_and_place_order(
 ) -> dict:
     """
     Validate và đặt lệnh market order trên OKX với SL/TP.
-    
-    Args:
-        symbol: Symbol giao dịch
-        side: 'buy' (LONG) hoặc 'sell' (SHORT)
-        entry_price: Giá entry dự kiến
-        stop_loss: Giá stop loss
-        take_profit: Giá take profit (nếu None sẽ tự động tính theo RR ratio)
-        leverage: Đòn bẩy
-        risk_per_trade: Rủi ro USD
-        risk_reward_ratio: Tỉ lệ Risk:Reward (mặc định 2.0 = RR 1:2)
-        margin_mode: 'isolated' hoặc 'cross' (default 'isolated')
-        hedge_mode: True để bật hedge mode (long/short cùng lúc)
-    
-    Returns:
-        dict: Kết quả đặt lệnh
     """
     try:
-        # Validate required inputs
-        if entry_price is None or stop_loss is None:
+        # ✅ Validate required inputs TRƯỚC TIÊN
+        if entry_price is None:
             return {
                 'success': False,
-                'error': f'entry_price và stop_loss không được là None (entry={entry_price}, sl={stop_loss})',
+                'error': 'entry_price không được là None',
+                'symbol': symbol,
+                'exchange': 'OKX',
+            }
+        
+        if stop_loss is None:
+            return {
+                'success': False,
+                'error': 'stop_loss không được là None',
+                'symbol': symbol,
+                'exchange': 'OKX',
+            }
+        
+        # ✅ Đảm bảo entry_price và stop_loss là số
+        try:
+            entry_price = float(entry_price)
+            stop_loss = float(stop_loss)
+        except (TypeError, ValueError) as e:
+            return {
+                'success': False,
+                'error': f'entry_price hoặc stop_loss không phải là số hợp lệ: {e}',
                 'symbol': symbol,
                 'exchange': 'OKX',
             }
@@ -67,10 +71,10 @@ def validate_and_place_order(
         # Get exchange instance
         exchange = get_exchange()
         
-        # Format symbol theo chuẩn OKX (BTC/USDT → BTC-USDT-SWAP)
+        # Format symbol theo chuẩn OKX (BTC/USDT → BTC/USDT:USDT)
         formatted_symbol = format_symbol(clean_sym)
         
-        # Validate symbol
+        # Validate symbol TRƯỚC khi đặt lệnh
         if not validate_symbol(exchange, formatted_symbol):
             return {
                 'success': False,
@@ -79,7 +83,78 @@ def validate_and_place_order(
                 'exchange': 'OKX',
             }
         
-        # Tạm thời không tính TP trước (sẽ tính sau khi có actual entry)
+        # Lấy giá hiện tại để validate
+        ticker = exchange.fetch_ticker(formatted_symbol)
+        current_price = ticker.get('last')
+        
+        # ✅ Validate current_price
+        if current_price is None:
+            return {
+                'success': False,
+                'error': f'Không lấy được giá hiện tại từ sàn cho {formatted_symbol}',
+                'symbol': formatted_symbol,
+                'exchange': 'OKX',
+            }
+        
+        # ✅ Convert current_price sang float
+        try:
+            current_price = float(current_price)
+        except (TypeError, ValueError):
+            return {
+                'success': False,
+                'error': f'Giá từ sàn không hợp lệ: {current_price}',
+                'symbol': formatted_symbol,
+                'exchange': 'OKX',
+            }
+        
+        # ✅ Validate entry_price != 0 để tránh chia cho 0
+        if entry_price == 0:
+            return {
+                'success': False,
+                'error': 'entry_price không được bằng 0',
+                'symbol': formatted_symbol,
+                'exchange': 'OKX',
+            }
+        
+        # Validate entry_price có gần giá thị trường không (tránh nhầm symbol)
+        price_diff_pct = abs(current_price - entry_price) / entry_price * 100
+        if price_diff_pct > 5:  # Nếu chênh lệch > 5% thì cảnh báo
+            return {
+                'success': False,
+                'error': f'Entry price ({entry_price}) chênh lệch quá lớn so với giá thị trường ({current_price}). '
+                        f'Có thể bạn đang nhầm symbol? Diff: {price_diff_pct:.2f}%',
+                'symbol': formatted_symbol,
+                'current_price': current_price,
+                'exchange': 'OKX',
+            }
+        
+        # Validate SL logic trước khi đặt lệnh
+        if side.lower() == 'buy':  # LONG
+            if stop_loss >= entry_price:
+                return {
+                    'success': False,
+                    'error': f'LONG: Stop loss ({stop_loss}) phải nhỏ hơn entry price ({entry_price})',
+                    'symbol': formatted_symbol,
+                    'exchange': 'OKX',
+                }
+        else:  # SHORT
+            if stop_loss <= entry_price:
+                return {
+                    'success': False,
+                    'error': f'SHORT: Stop loss ({stop_loss}) phải lớn hơn entry price ({entry_price})',
+                    'symbol': formatted_symbol,
+                    'exchange': 'OKX',
+                }
+        
+        # Tính TP trước nếu chưa có
+        if take_profit is None:
+            if side.lower() == 'buy':  # LONG
+                risk = entry_price - stop_loss
+                take_profit = round_price(entry_price + (risk * risk_reward_ratio))
+            else:  # SHORT
+                risk = stop_loss - entry_price
+                take_profit = round_price(entry_price - (risk * risk_reward_ratio))
+        
         original_tp = take_profit
         
         # Đặt lệnh market order
@@ -95,74 +170,90 @@ def validate_and_place_order(
         )
         
         if result['success']:
-            # Đợi position settle trên server (1-2 giây)
+            # Đợi position settle trên server
             time.sleep(2)
             
-            # Lấy giá fill thực tế từ sàn (dùng 'or' để handle cả None value)
-            actual_entry = result.get('entry_price') or entry_price
+            # ✅ Lấy giá fill thực tế với fallback an toàn
+            actual_entry = result.get('entry_price')
+            if actual_entry is None:
+                actual_entry = entry_price
             
-            # Calculate expected TP if not provided
-            expected_tp = take_profit
-            if expected_tp is None:
-                if side.lower() == 'buy':  # LONG
-                    risk = entry_price - stop_loss
-                    expected_tp = entry_price + (risk * risk_reward_ratio)
-                else:  # SHORT (sell)
-                    risk = abs(stop_loss - entry_price)
-                    expected_tp = entry_price - (risk * risk_reward_ratio)
+            try:
+                actual_entry = float(actual_entry)
+            except (TypeError, ValueError):
+                actual_entry = entry_price
             
-            # Kiểm tra slippage entry và điều chỉnh SL/TP theo actual entry
+            # ✅ Validate actual_entry không lệch quá xa expected entry
+            if actual_entry != 0 and entry_price != 0:
+                actual_diff_pct = abs(actual_entry - entry_price) / entry_price * 100
+                if actual_diff_pct > 2:  # Slippage > 2% là bất thường
+                    close_result = close_position_market(
+                        exchange=exchange,
+                        symbol=clean_sym,
+                        side=side.lower(),
+                        contracts=result.get('contracts'),
+                        margin_mode=margin_mode,
+                        hedge_mode=result.get('hedge_mode', hedge_mode),
+                    )
+                    return {
+                        'success': False,
+                        'error': f'Slippage quá lớn ({actual_diff_pct:.2f}%). Đã đóng vị thế.',
+                        'symbol': formatted_symbol,
+                        'expected_entry': entry_price,
+                        'actual_entry': actual_entry,
+                        'close_result': close_result,
+                        'exchange': 'OKX',
+                    }
+            
+            # Kiểm tra slippage và điều chỉnh SL/TP
             slippage_info = adjust_levels_for_slippage(
                 expected_entry=entry_price,
                 actual_entry=actual_entry,
                 expected_sl=stop_loss,
-                expected_tp=expected_tp,
+                expected_tp=take_profit,
                 side=side.lower(),
             )
             
-            # Sử dụng adjusted SL từ slippage adjustment
             adjusted_sl = slippage_info['adjusted_sl']
-            
-            # Tính TP dựa trên actual_entry và adjusted SL
-            if original_tp is None:
-                if side.lower() == 'buy':  # LONG
-                    risk = actual_entry - adjusted_sl
-                    reward = risk * risk_reward_ratio
-                    adjusted_tp = actual_entry + reward
-                else:  # SHORT (sell)
-                    risk = abs(adjusted_sl - actual_entry)  # Use absolute value
-                    reward = risk * risk_reward_ratio
-                    adjusted_tp = actual_entry - reward
-                adjusted_tp = round_price(adjusted_tp)
-            else:
-                adjusted_tp = original_tp
+            adjusted_tp = slippage_info['adjusted_tp']
             
             # Thêm thông tin slippage vào result
             result['slippage_info'] = slippage_info
             result['original_sl'] = stop_loss
             result['original_tp'] = original_tp
             
-            # Cảnh báo nếu slippage quá lớn (> 0.5%)
+            # Cảnh báo nếu slippage > 0.5%
             if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
                 result['slippage_warning'] = f"⚠️ Slippage cao: {slippage_info['slippage_pct']:.3f}%"
             
-            # Đặt SL/TP đã điều chỉnh cho position
+            # ✅ Validate TP trước khi đặt SL/TP
+            if side.lower() == 'buy':  # LONG
+                if adjusted_tp <= actual_entry:
+                    adjusted_tp = actual_entry * 1.01  # TP ít nhất +1%
+            else:  # SHORT
+                if adjusted_tp >= actual_entry:
+                    adjusted_tp = actual_entry * 0.99  # TP ít nhất -1%
+            
+            adjusted_tp = round_price(adjusted_tp)
+            
+            # Đặt SL/TP
             sl_tp_result = set_position_sl_tp(
                 exchange=exchange,
                 symbol=clean_sym,
                 side=side.lower(),
-                stop_loss=adjusted_sl,  # Use adjusted SL
+                stop_loss=adjusted_sl,
                 take_profit=adjusted_tp,
                 margin_mode=margin_mode,
             )
 
             if sl_tp_result['success']:
                 result['sl_tp_result'] = sl_tp_result
-                result['stop_loss'] = adjusted_sl  # Use adjusted SL
+                result['stop_loss'] = adjusted_sl
                 result['take_profit'] = adjusted_tp
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
-                result['success'] = False  # ❌ Mark as failed nếu SL/TP không set được
+                result['success'] = False
+                
                 close_result = close_position_market(
                     exchange=exchange,
                     symbol=clean_sym,
@@ -173,16 +264,16 @@ def validate_and_place_order(
                 )
                 result['close_on_sl_tp_fail'] = close_result
         
-        # Thêm thông tin bổ sung
         result['exchange'] = 'OKX'
-        
         return result
         
     except Exception as e:
+        import traceback
         return {
             'success': False,
             'error': str(e),
-            'symbol': clean_symbol(symbol),
+            'traceback': traceback.format_exc(),  # ✅ Thêm traceback để debug
+            'symbol': clean_symbol(symbol) if symbol else 'Unknown',
             'exchange': 'OKX',
         }
 
