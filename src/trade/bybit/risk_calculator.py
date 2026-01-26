@@ -68,11 +68,15 @@ def adjust_levels_for_slippage(
         adjusted_sl = actual_entry + distance_sl
         adjusted_tp = actual_entry - distance_tp
     
+    slippage_pct = 0
+    if expected_entry and expected_entry != 0:
+        slippage_pct = round((slippage / expected_entry) * 100, 3)
+    
     return {
         'expected_entry': round_price(expected_entry),
         'actual_entry': round_price(actual_entry),
         'slippage': round_price(slippage),
-        'slippage_pct': round((slippage / expected_entry) * 100, 3),
+        'slippage_pct': slippage_pct,
         'expected_sl': round_price(expected_sl),
         'adjusted_sl': round_price(adjusted_sl),
         'expected_tp': round_price(expected_tp),

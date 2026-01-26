@@ -52,6 +52,15 @@ def validate_and_place_order(
         dict: Kết quả đặt lệnh
     """
     try:
+        # Validate required inputs
+        if entry_price is None or stop_loss is None:
+            return {
+                'success': False,
+                'error': f'entry_price và stop_loss không được là None (entry={entry_price}, sl={stop_loss})',
+                'symbol': symbol,
+                'exchange': 'OKX',
+            }
+        
         # Convert Binance format (BTCUSDT_1m) → CCXT format (BTC/USDT)
         clean_sym = clean_symbol(symbol, to_ccxt_format=True) 
         

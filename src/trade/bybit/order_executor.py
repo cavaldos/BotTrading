@@ -43,6 +43,14 @@ def validate_and_place_order(
         dict: Kết quả đặt lệnh
     """
     try:
+        # Validate required inputs
+        if entry_price is None or stop_loss is None:
+            return {
+                'success': False,
+                'error': f'entry_price và stop_loss không được là None (entry={entry_price}, sl={stop_loss})',
+                'symbol': symbol,
+            }
+        
         # Làm sạch symbol
         clean_sym = clean_symbol(symbol)
         
@@ -231,19 +239,13 @@ if __name__ == '__main__':
     # Test LONG với RR 1:2 (mặc định)
     print("\n[TEST 1] LONG với RR 1:2 (auto TP)")
     result = validate_and_place_order(
-        symbol='BTC_1m',
-        side='buy',
-        entry_price=88599,
-        stop_loss=88019,  # Risk = 1000
+        symbol='BCHUSDT_1m',
+        side='sell',
+        entry_price=582.1000,
+        stop_loss=582.2840,  # Risk = 1000
         # TP auto = 100000 + (1000 * 2) = 102000
         leverage=20,
         risk_per_trade=5,
     )
-    
-    print(f"  Entry: {result.get('entry_price', 'N/A')}")
-    print(f"  Stop Loss: {result.get('stop_loss', 'N/A')}")
-    print(f"  Take Profit: {result.get('take_profit', 'N/A')}")
-    print(f"  Success: {result['success']}")
-    if not result['success']:
-        print(f"  Error: {result['error']}")
+    print(bybit_format_order_message(result))
     
