@@ -59,3 +59,11 @@ def get_price_precision(price: float) -> int:
         return 4
     else:
         return 5
+
+if __name__ == "__main__":
+    # Example usages
+    test_prices = [15000.56789, 250.4567, 45.6789, 0.123456, -0.98765]
+    for price in test_prices:
+        rounded = round_price(price)
+        precision = get_price_precision(price)
+        print(f"Original: {price}, Rounded: {rounded}, Precision: {precision} decimals")

@@ -98,8 +98,8 @@ def validate_and_place_order(
             # Đợi position settle trên server (1-2 giây)
             time.sleep(2)
             
-            # Lấy giá fill thực tế từ sàn
-            actual_entry = result.get('entry_price', entry_price)
+            # Lấy giá fill thực tế từ sàn (dùng 'or' để handle cả None value)
+            actual_entry = result.get('entry_price') or entry_price
             
             # Kiểm tra và điều chỉnh SL/TP nếu có slippage
             slippage_info = adjust_levels_for_slippage(
