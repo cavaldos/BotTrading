@@ -46,61 +46,72 @@ def save_sent_orders(log_file: Path, sent_orders: list) -> None:
 
 
 def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
-    """Update sent orders status from CSV files. Returns count of updated orders."""
-    output_path = Path(output_dir)
-    log_path = Path(log_file)
-    
-    sent_keys, sent_orders = load_sent_orders(log_path)
-    
-    if not sent_orders:
-        return 0
-    
-    trades_from_csv = {}
-    
-    if output_path.exists():
-        csv_files = list(output_path.glob("*.csv"))
-        
-        for csv_file in csv_files:
-            try:
-                df = pd.read_csv(csv_file)
-                
-                if 'Result' not in df.columns:
-                    continue
-                
-                for _, row in df.iterrows():
-                     symbol = str(row.get('Symbol', '')).strip()
-                     trade_type = str(row.get('Type', '')).strip().upper()
-                     entry_time = str(row.get('Entry_Time', '')).strip()
-                     result = str(row.get('Result', '')).strip().upper() if row.get('Result') else ''
+     """Update sent orders status from CSV files. Returns count of updated orders."""
+     output_path = Path(output_dir)
+     log_path = Path(log_file)
+     
+     sent_keys, sent_orders = load_sent_orders(log_path)
+     
+     if not sent_orders:
+         return 0
+     
+     trades_from_csv = {}
+     
+     if output_path.exists():
+         csv_files = list(output_path.glob("*.csv"))
+         
+         for csv_file in csv_files:
+             try:
+                 df = pd.read_csv(csv_file)
+                 
+                 if 'Result' not in df.columns:
+                     continue
+                 
+                 for _, row in df.iterrows():
+                      symbol = str(row.get('Symbol', '')).strip()
+                      trade_type = str(row.get('Type', '')).strip().upper()
+                      entry_time = str(row.get('Entry_Time', '')).strip()
+                      result = str(row.get('Result', '')).strip().upper() if row.get('Result') else ''
+                      
+                      # Create key: {SYMBOL}|{TYPE}|{ENTRY_TIME}
+                      trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                      
+                      # Save only valid results
+                      if result in ('WIN', 'LOSS', 'OPEN'):
+                          trades_from_csv[trade_key] = result
                      
-                     # Create key: {SYMBOL}|{TYPE}|{ENTRY_TIME}
-                     trade_key = f"{symbol}|{trade_type}|{entry_time}"
-                     
-                     # Save only valid results
-                     if result in ('WIN', 'LOSS', 'OPEN'):
-                         trades_from_csv[trade_key] = result
-                    
-            except Exception:
-                continue
-    
-    # Update order statuses
-    updated_count = 0
-    
-    for order in sent_orders:
-        key = order.get("key", "")
-        if key in trades_from_csv:
-            new_status = trades_from_csv[key]
-            current_status = order.get("status", "")
-            
-            if new_status != current_status:
-                order["status"] = new_status
-                updated_count += 1
-    
-    # Save if any updates
-    if updated_count > 0:
-        save_sent_orders(log_path, sent_orders)
-    
-    return updated_count
+             except Exception:
+                 continue
+     
+     # Update order statuses
+     updated_count = 0
+     
+     for order in sent_orders:
+         key = order.get("key", "")
+         current_status = order.get("status", "")
+         
+         # Skip if already passed/completed
+         if current_status in ('WIN', 'LOSS', 'PASSED'):
+             continue
+         
+         if key in trades_from_csv:
+             new_status = trades_from_csv[key]
+             
+             if new_status != current_status:
+                 order["status"] = new_status
+                 updated_count += 1
+         else:
+             # Order not found in CSV anymore (beyond 500 candle limit)
+             # Mark as PASSED to stop tracking it
+             if current_status == 'OPEN':
+                 order["status"] = 'PASSED'
+                 updated_count += 1
+     
+     # Save if any updates
+     if updated_count > 0:
+         save_sent_orders(log_path, sent_orders)
+     
+     return updated_count
 
 
 def generate_order_key(row: pd.Series) -> str:

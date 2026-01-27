@@ -139,48 +139,53 @@ def generate_process2_panel(state, output_folder: str) -> Panel:
 
 
 def generate_stats_panel(trades: list) -> Panel:
-    """Generate stats panel - show Win/Loss/Open counts"""
-    
-    # Count by result
-    win_count = sum(1 for t in trades if t.get("Result") == "WIN")
-    loss_count = sum(1 for t in trades if t.get("Result") == "LOSS")
-    open_count = sum(1 for t in trades if t.get("Result") == "OPEN")
-    total = len(trades)
-    
-    # Calculate win rate
-    closed_trades = win_count + loss_count
-    win_rate = (win_count / closed_trades * 100) if closed_trades > 0 else 0
-    
-    table = Table(show_header=False, box=None, padding=(0, 2), expand=True)
-    table.add_column("Label", style="dim")
-    table.add_column("Value", justify="right")
-    
-    table.add_row(
-        Text("Win", style="green bold"),
-        Text(str(win_count), style="green bold")
-    )
-    table.add_row(
-        Text("Loss", style="red bold"),
-        Text(str(loss_count), style="red bold")
-    )
-    table.add_row(
-        Text("Open", style="yellow bold"),
-        Text(str(open_count), style="yellow bold")
-    )
-    table.add_row(
-        Text("-" * 10, style="dim"),
-        Text("-" * 5, style="dim")
-    )
-    table.add_row(
-        Text("Total", style="white bold"),
-        Text(str(total), style="white bold")
-    )
-    table.add_row(
-        Text("Win Rate", style="cyan"),
-        Text(f"{win_rate:.1f}%", style="cyan bold")
-    )
-    
-    return Panel(table, title="[bold green]Trade Stats[/bold green]", border_style="green")
+     """Generate stats panel - show Win/Loss/Open/Passed counts"""
+     
+     # Count by result
+     win_count = sum(1 for t in trades if t.get("Result") == "WIN")
+     loss_count = sum(1 for t in trades if t.get("Result") == "LOSS")
+     open_count = sum(1 for t in trades if t.get("Result") == "OPEN")
+     passed_count = sum(1 for t in trades if t.get("Result") == "PASSED")
+     total = len(trades)
+     
+     # Calculate win rate (closed trades only, not passed)
+     closed_trades = win_count + loss_count
+     win_rate = (win_count / closed_trades * 100) if closed_trades > 0 else 0
+     
+     table = Table(show_header=False, box=None, padding=(0, 2), expand=True)
+     table.add_column("Label", style="dim")
+     table.add_column("Value", justify="right")
+     
+     table.add_row(
+         Text("Win", style="green bold"),
+         Text(str(win_count), style="green bold")
+     )
+     table.add_row(
+         Text("Loss", style="red bold"),
+         Text(str(loss_count), style="red bold")
+     )
+     table.add_row(
+         Text("Open", style="yellow bold"),
+         Text(str(open_count), style="yellow bold")
+     )
+     table.add_row(
+         Text("Passed", style="cyan bold"),
+         Text(str(passed_count), style="cyan bold")
+     )
+     table.add_row(
+         Text("-" * 10, style="dim"),
+         Text("-" * 5, style="dim")
+     )
+     table.add_row(
+         Text("Total", style="white bold"),
+         Text(str(total), style="white bold")
+     )
+     table.add_row(
+         Text("Win Rate", style="cyan"),
+         Text(f"{win_rate:.1f}%", style="cyan bold")
+     )
+     
+     return Panel(table, title="[bold green]Trade Stats[/bold green]", border_style="green")
 
 
 def generate_logs_panel(state, state_lock) -> Panel:
