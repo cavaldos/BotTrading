@@ -386,11 +386,7 @@ class BybitDashboard:
                     grouped_orders[f"orphan_{group_key}"] = group_data
                 
                 # Display grouped orders
-                displayed_count = 0
                 for group_key, group_data in grouped_orders.items():
-                    if displayed_count >= 10:  # Max 10 order groups
-                        break
-                    
                     main_order = group_data.get('main')
                     tp_order = group_data.get('tp')
                     sl_order = group_data.get('sl')
@@ -481,11 +477,10 @@ class BybitDashboard:
                         f"[{status_color}]{status}[/{status_color}]",
                         order_time
                     )
-                    displayed_count += 1
             
             # Add info
             info_text = Text(
-                f"📈 Total: {len(orders)} | Displayed: {displayed_count} | 🔄 {self.update_time.strftime('%H:%M:%S')}",
+                f"📈 Total: {len(orders)} | 🔄 {self.update_time.strftime('%H:%M:%S')}",
                 style="dim white"
             )
             
@@ -824,11 +819,12 @@ class BybitDashboard:
         """Create dashboard layout"""
         layout = Layout()
         
-        # Header
+        # Header with current time
+        current_time = datetime.now().strftime('%H:%M | %d/%m/%Y')
         header = Panel(
             Align.center(
                 Text(
-                    "🤖 BYBIT TRADING DASHBOARD",
+                    f"🤖 BYBIT TRADING DASHBOARD | {current_time}",
                     style="bold cyan"
                 )
             ),

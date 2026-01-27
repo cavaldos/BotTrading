@@ -210,8 +210,7 @@ class OKXDashboard:
                     "", "", "", "", "", "", ""
                 )
             else:
-                displayed_count = 0
-                for order in orders[:10]:  # Show top 10
+                for order in orders:
                     symbol = order.get('symbol', 'N/A')
                     side = order.get('side', 'N/A').upper()
                     order_type = order.get('type', 'N/A').upper()
@@ -257,7 +256,6 @@ class OKXDashboard:
                         f"[{status_color}]{status}[/{status_color}]",
                         order_time
                     )
-                    displayed_count += 1
             
             # Add info
             info_text = Text(
@@ -595,8 +593,9 @@ class OKXDashboard:
             Layout(name="footer", size=3)
         )
         
-        # Header
-        title = Text("🚀 OKX Trading Dashboard", style="bold cyan", justify="center")
+        # Header with current time
+        current_time = datetime.now().strftime('%H:%M | %d/%m/%Y')
+        title = Text(f"🚀 OKX Trading Dashboard | {current_time}", style="bold cyan", justify="center")
         layout["header"].update(Panel(title, border_style="cyan"))
         
         # Main area - 2 rows layout (grid 2x2)
