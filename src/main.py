@@ -35,6 +35,9 @@ from src.statistics import (
 # Import config loader
 from src.config import load_config
 
+# Import utility functions
+from src.utils.get_data import remove_all_files
+
 
 # ==============================================================================
 # SYSTEM CONFIG (Default values - can be overridden by data_config.yaml)
@@ -155,6 +158,10 @@ def main():
     # Create output folder if not exists
     output_dir = Path(config.output_folder)
     output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Clear output folder before running
+    print(f"\nClearing output folder: {config.output_folder}")
+    remove_all_files(config.output_folder)
     
     # Find all CSV files in data folder
     data_dir = Path(config.data_folder)

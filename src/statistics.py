@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from numba import njit
+from decimal import Decimal
 
 from src.strategy import STRATEGY_NAME, Signal, Config
 from src.utils.rounding import round_price
@@ -207,8 +208,18 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
         })
     
     df = pd.DataFrame(data)
+    
+    # Custom formatter to avoid floating-point artifacts in CSV
+    def format_price(x):
+        if pd.isna(x):
+            return ''
+        # Convert to string with enough precision, then normalize
+        d = Decimal(str(round(x, 10)))  # Round to 10 decimals first to eliminate artifacts
+        d = d.normalize()
+        return str(d)
+    
     output_path = Path(output_dir) / f"{symbol}_trades.csv"
-    df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False, float_format=format_price)
     return df
 
 
