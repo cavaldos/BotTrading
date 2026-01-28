@@ -243,6 +243,54 @@ def _check_swing_high_jit(highs: np.ndarray, i: int, length: int) -> bool:
 
 
 @njit(cache=True)
+def _check_swing_high_confirmed_jit(highs: np.ndarray, check_idx: int, length: int, current_idx: int) -> bool:
+    """
+    Check if check_idx is a swing high using ONLY data available at current_idx.
+    NO LOOK-AHEAD: Once confirmed, this swing point will NEVER change.
+    
+    A swing high at check_idx is confirmed when:
+    - We have 'length' bars BEFORE check_idx
+    - We have 'length' bars AFTER check_idx (but not beyond current_idx)
+    - It's the highest in that window
+    """
+    # Need at least 'length' bars before
+    if check_idx < length:
+        return False
+    
+    # Need at least 'length' bars after, but not beyond current_idx
+    end_idx = check_idx + length
+    if end_idx > current_idx:
+        return False  # Not enough bars after to confirm
+    
+    # Check if it's the highest in the window [check_idx - length, check_idx + length]
+    for j in range(check_idx - length, end_idx + 1):
+        if j != check_idx and highs[j] >= highs[check_idx]:
+            return False
+    
+    return True
+
+
+@njit(cache=True)
+def _check_swing_low_confirmed_jit(lows: np.ndarray, check_idx: int, length: int, current_idx: int) -> bool:
+    """
+    Check if check_idx is a swing low using ONLY data available at current_idx.
+    NO LOOK-AHEAD: Once confirmed, this swing point will NEVER change.
+    """
+    if check_idx < length:
+        return False
+    
+    end_idx = check_idx + length
+    if end_idx > current_idx:
+        return False
+    
+    for j in range(check_idx - length, end_idx + 1):
+        if j != check_idx and lows[j] <= lows[check_idx]:
+            return False
+    
+    return True
+
+
+@njit(cache=True)
 def _check_swing_low_jit(lows: np.ndarray, i: int, length: int) -> bool:
     """Check if index i is a swing low - JIT optimized."""
     n = len(lows)
@@ -855,20 +903,19 @@ class Strategy:
         opens = df['Open'].values.astype(np.float64)
         n = len(df)
         
-        # ========== PRE-COMPUTE ALL SWING POINTS ==========
-        # This is much faster than checking each bar individually
-        swing_high_indices_arr, swing_low_indices_arr = _precompute_all_swings_jit(
-            highs, lows, self.config.swing_length
-        )
-        internal_high_indices_arr, internal_low_indices_arr = _precompute_all_swings_jit(
-            highs, lows, self.config.eqhl_length
-        )
+        # ========== INCREMENTAL SWING DETECTION (NO LOOK-AHEAD) ==========
+        # Instead of pre-computing all swing points, we detect them incrementally.
+        # A swing point is only confirmed when we have enough bars AFTER it.
+        # Once confirmed, it will NEVER change - eliminating look-ahead bias.
+        #
+        # Key insight: A swing at bar X is confirmed at bar X + swing_length
+        # because we need swing_length bars after X to verify it's the highest/lowest
         
-        # Convert to sets for O(1) lookup
-        swing_high_indices_set = set(swing_high_indices_arr)
-        swing_low_indices_set = set(swing_low_indices_arr)
-        internal_high_indices_set = set(internal_high_indices_arr)
-        internal_low_indices_set = set(internal_low_indices_arr)
+        # Track which indices have been checked (to avoid re-checking)
+        checked_swing_high_indices = set()
+        checked_swing_low_indices = set()
+        checked_internal_high_indices = set()
+        checked_internal_low_indices = set()
         
         # ========== PRE-COMPUTE ALL FVGS ==========
         fvg_indices_arr, fvg_tops_arr, fvg_bottoms_arr, fvg_biases_arr = _precompute_fvg_jit(
@@ -910,46 +957,55 @@ class Strategy:
             current_time = pd.to_datetime(times[current_idx])
             
             # 1. Check if a swing HIGH gets confirmed at this bar
+            # A swing at bar X is confirmed at bar X + swing_length (when we have enough bars after)
             swing_high_idx = current_idx - self.config.swing_length
-            if swing_high_idx >= self.config.swing_length and swing_high_idx in swing_high_indices_set:
-                # Determine type (HH or LH)
-                if last_swing_high is None:
-                    swing_type = 'HH'
-                elif highs[swing_high_idx] > last_swing_high.price:
-                    swing_type = 'HH'
-                else:
-                    swing_type = 'LH'
+            if swing_high_idx >= self.config.swing_length and swing_high_idx not in checked_swing_high_indices:
+                checked_swing_high_indices.add(swing_high_idx)
                 
-                swing = SwingPoint(
-                    price=highs[swing_high_idx],
-                    time=pd.to_datetime(times[swing_high_idx]),
-                    index=swing_high_idx,
-                    type=swing_type,
-                    is_high=True
-                )
-                confirmed_swing_highs.append(swing)
-                last_swing_high = swing
+                # Use incremental check - only uses data up to current_idx
+                if _check_swing_high_confirmed_jit(highs, swing_high_idx, self.config.swing_length, current_idx):
+                    # Determine type (HH or LH)
+                    if last_swing_high is None:
+                        swing_type = 'HH'
+                    elif highs[swing_high_idx] > last_swing_high.price:
+                        swing_type = 'HH'
+                    else:
+                        swing_type = 'LH'
+                    
+                    swing = SwingPoint(
+                        price=highs[swing_high_idx],
+                        time=pd.to_datetime(times[swing_high_idx]),
+                        index=swing_high_idx,
+                        type=swing_type,
+                        is_high=True
+                    )
+                    confirmed_swing_highs.append(swing)
+                    last_swing_high = swing
             
             # 2. Check if a swing LOW gets confirmed at this bar
             swing_low_idx = current_idx - self.config.swing_length
-            if swing_low_idx >= self.config.swing_length and swing_low_idx in swing_low_indices_set:
-                # Determine type (LL or HL)
-                if last_swing_low is None:
-                    swing_type = 'LL'
-                elif lows[swing_low_idx] < last_swing_low.price:
-                    swing_type = 'LL'
-                else:
-                    swing_type = 'HL'
+            if swing_low_idx >= self.config.swing_length and swing_low_idx not in checked_swing_low_indices:
+                checked_swing_low_indices.add(swing_low_idx)
                 
-                swing = SwingPoint(
-                    price=lows[swing_low_idx],
-                    time=pd.to_datetime(times[swing_low_idx]),
-                    index=swing_low_idx,
-                    type=swing_type,
-                    is_high=False
-                )
-                confirmed_swing_lows.append(swing)
-                last_swing_low = swing
+                # Use incremental check - only uses data up to current_idx
+                if _check_swing_low_confirmed_jit(lows, swing_low_idx, self.config.swing_length, current_idx):
+                    # Determine type (LL or HL)
+                    if last_swing_low is None:
+                        swing_type = 'LL'
+                    elif lows[swing_low_idx] < last_swing_low.price:
+                        swing_type = 'LL'
+                    else:
+                        swing_type = 'HL'
+                    
+                    swing = SwingPoint(
+                        price=lows[swing_low_idx],
+                        time=pd.to_datetime(times[swing_low_idx]),
+                        index=swing_low_idx,
+                        type=swing_type,
+                        is_high=False
+                    )
+                    confirmed_swing_lows.append(swing)
+                    last_swing_low = swing
             
             # 3. Detect structure breaks at CURRENT bar
             if current_trend is None and confirmed_swing_highs and confirmed_swing_lows:
@@ -1079,54 +1135,62 @@ class Strategy:
                     if not ob.has_fvg and ob.bias == bias:
                         ob.has_fvg = self._check_fvg_for_ob(ob, all_fvgs)
             
-            # 5. Detect internal swings for EQH/EQL
+            # 5. Detect internal swings for EQH/EQL (incremental, no look-ahead)
             internal_high_idx = current_idx - self.config.eqhl_length
-            if internal_high_idx >= self.config.eqhl_length and internal_high_idx in internal_high_indices_set:
-                # Check for EQH with previous internal highs
-                for prev_ih in confirmed_internal_highs:
-                    if abs(highs[internal_high_idx] - prev_ih.price) < self.config.eqhl_threshold * atr_values[internal_high_idx]:
-                        eqh = EqualHL(
-                            type='EQH',
-                            level=(highs[internal_high_idx] + prev_ih.price) / 2,
-                            time=pd.to_datetime(times[internal_high_idx]),
-                            index=internal_high_idx,
-                            first_pivot_index=prev_ih.index,
-                            second_pivot_index=internal_high_idx
-                        )
-                        all_equal_hls.append(eqh)
-                        break
+            if internal_high_idx >= self.config.eqhl_length and internal_high_idx not in checked_internal_high_indices:
+                checked_internal_high_indices.add(internal_high_idx)
                 
-                confirmed_internal_highs.append(SwingPoint(
-                    price=highs[internal_high_idx],
-                    time=pd.to_datetime(times[internal_high_idx]),
-                    index=internal_high_idx,
-                    type='H',
-                    is_high=True
-                ))
+                # Use incremental check for internal swings
+                if _check_swing_high_confirmed_jit(highs, internal_high_idx, self.config.eqhl_length, current_idx):
+                    # Check for EQH with previous internal highs
+                    for prev_ih in confirmed_internal_highs:
+                        if abs(highs[internal_high_idx] - prev_ih.price) < self.config.eqhl_threshold * atr_values[internal_high_idx]:
+                            eqh = EqualHL(
+                                type='EQH',
+                                level=(highs[internal_high_idx] + prev_ih.price) / 2,
+                                time=pd.to_datetime(times[internal_high_idx]),
+                                index=internal_high_idx,
+                                first_pivot_index=prev_ih.index,
+                                second_pivot_index=internal_high_idx
+                            )
+                            all_equal_hls.append(eqh)
+                            break
+                    
+                    confirmed_internal_highs.append(SwingPoint(
+                        price=highs[internal_high_idx],
+                        time=pd.to_datetime(times[internal_high_idx]),
+                        index=internal_high_idx,
+                        type='H',
+                        is_high=True
+                    ))
             
             internal_low_idx = current_idx - self.config.eqhl_length
-            if internal_low_idx >= self.config.eqhl_length and internal_low_idx in internal_low_indices_set:
-                # Check for EQL with previous internal lows
-                for prev_il in confirmed_internal_lows:
-                    if abs(lows[internal_low_idx] - prev_il.price) < self.config.eqhl_threshold * atr_values[internal_low_idx]:
-                        eql = EqualHL(
-                            type='EQL',
-                            level=(lows[internal_low_idx] + prev_il.price) / 2,
-                            time=pd.to_datetime(times[internal_low_idx]),
-                            index=internal_low_idx,
-                            first_pivot_index=prev_il.index,
-                            second_pivot_index=internal_low_idx
-                        )
-                        all_equal_hls.append(eql)
-                        break
+            if internal_low_idx >= self.config.eqhl_length and internal_low_idx not in checked_internal_low_indices:
+                checked_internal_low_indices.add(internal_low_idx)
                 
-                confirmed_internal_lows.append(SwingPoint(
-                    price=lows[internal_low_idx],
-                    time=pd.to_datetime(times[internal_low_idx]),
-                    index=internal_low_idx,
-                    type='L',
-                    is_high=False
-                ))
+                # Use incremental check for internal swings
+                if _check_swing_low_confirmed_jit(lows, internal_low_idx, self.config.eqhl_length, current_idx):
+                    # Check for EQL with previous internal lows
+                    for prev_il in confirmed_internal_lows:
+                        if abs(lows[internal_low_idx] - prev_il.price) < self.config.eqhl_threshold * atr_values[internal_low_idx]:
+                            eql = EqualHL(
+                                type='EQL',
+                                level=(lows[internal_low_idx] + prev_il.price) / 2,
+                                time=pd.to_datetime(times[internal_low_idx]),
+                                index=internal_low_idx,
+                                first_pivot_index=prev_il.index,
+                                second_pivot_index=internal_low_idx
+                            )
+                            all_equal_hls.append(eql)
+                            break
+                    
+                    confirmed_internal_lows.append(SwingPoint(
+                        price=lows[internal_low_idx],
+                        time=pd.to_datetime(times[internal_low_idx]),
+                        index=internal_low_idx,
+                        type='L',
+                        is_high=False
+                    ))
             
             # 6. Update OB liquidity status
             for ob in active_obs:
