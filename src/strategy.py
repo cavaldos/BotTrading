@@ -184,28 +184,6 @@ class FairValueGap:
 
 
 @dataclass
-class HighestLowest:
-    """Represents the Highest and Lowest prices in a lookback period"""
-    highest_price: float
-    highest_index: int
-    highest_time: datetime
-    
-    lowest_price: float
-    lowest_index: int
-    lowest_time: datetime
-
-
-@dataclass
-class NearestSwing:
-    """Represents the nearest confirmed swing high and swing low before current bar"""
-    swing_high_price: float      # Price of nearest swing high
-    swing_high_index: int        # Index of nearest swing high
-    
-    swing_low_price: float       # Price of nearest swing low
-    swing_low_index: int         # Index of nearest swing low
-
-
-@dataclass
 class Signal:
     """
     Represents a trade signal from strategy.
@@ -275,60 +253,6 @@ def _check_swing_low_jit(lows: np.ndarray, i: int, length: int) -> bool:
         if j != i and lows[j] <= lows[i]:
             return False
     return True
-
-
-@njit(cache=True)
-def _get_highest_jit(highs: np.ndarray, current_idx: int, lookback: int) -> Tuple[float, int]:
-    """
-    Find the highest price within lookback bars before current_idx.
-    Returns (highest_price, highest_index)
-    
-    NOTE: Searches from (current_idx - lookback) to (current_idx - 1), 
-    NOT including current_idx to avoid look-ahead bias.
-    """
-    start_idx = max(0, current_idx - lookback)
-    end_idx = max(0, current_idx)  # Exclude current bar
-    
-    if start_idx >= end_idx:
-        # Not enough data, return start_idx value
-        return highs[start_idx], start_idx
-    
-    highest_price = highs[start_idx]
-    highest_idx = start_idx
-    
-    for i in range(start_idx, end_idx):
-        if highs[i] > highest_price:
-            highest_price = highs[i]
-            highest_idx = i
-    
-    return highest_price, highest_idx
-
-
-@njit(cache=True)
-def _get_lowest_jit(lows: np.ndarray, current_idx: int, lookback: int) -> Tuple[float, int]:
-    """
-    Find the lowest price within lookback bars before current_idx.
-    Returns (lowest_price, lowest_index)
-    
-    NOTE: Searches from (current_idx - lookback) to (current_idx - 1), 
-    NOT including current_idx to avoid look-ahead bias.
-    """
-    start_idx = max(0, current_idx - lookback)
-    end_idx = max(0, current_idx)  # Exclude current bar
-    
-    if start_idx >= end_idx:
-        # Not enough data, return start_idx value
-        return lows[start_idx], start_idx
-    
-    lowest_price = lows[start_idx]
-    lowest_idx = start_idx
-    
-    for i in range(start_idx, end_idx):
-        if lows[i] < lowest_price:
-            lowest_price = lows[i]
-            lowest_idx = i
-    
-    return lowest_price, lowest_idx
 
 
 @njit(cache=True)
@@ -1210,9 +1134,7 @@ class Strategy:
                     ob.has_liquidity = self._check_liquidity_for_ob(ob, all_equal_hls, current_idx)
             
             # 7. Get nearest swing high and swing low (actual fractal points, not just max/min)
-            nearest_swing = self._get_nearest_swings(
-                confirmed_swing_highs, confirmed_swing_lows, current_idx
-            )
+
             
             # 8. Check for entry at CURRENT bar
             # Use list comprehension instead of remove() for O(n) performance
@@ -1239,8 +1161,7 @@ class Strategy:
                             entry_price=closes[current_idx],
                             current_open=opens[current_idx],
                             current_high=highs[current_idx],
-                            current_low=lows[current_idx],
-                            nearest_swing=nearest_swing
+                            current_low=lows[current_idx]
                         )
                         
                         if signal:
@@ -1316,79 +1237,8 @@ class Strategy:
         # Ngược lại, check theo danh sách IDs
         return check_pattern_by_ids_jit(opens, closes, highs, lows, current_idx, is_bullish, pattern_ids)
     
-    def _get_highest_lowest(self, highs: np.ndarray, lows: np.ndarray, times: np.ndarray,
-                           current_idx: int, lookback: int) -> HighestLowest:
-        """
-        Get the highest and lowest prices within a lookback period.
-        
-        Parameters:
-        -----------
-        highs, lows : np.ndarray - Price arrays
-        times : np.ndarray - Time array
-        current_idx : int - Current bar index
-        lookback : int - Number of bars to look back
-        
-        Returns:
-        --------
-        HighestLowest with highest/lowest prices and their indices/times
-        """
-        highest_price, highest_idx = _get_highest_jit(highs, current_idx, lookback)
-        lowest_price, lowest_idx = _get_lowest_jit(lows, current_idx, lookback)
-        
-        return HighestLowest(
-            highest_price=highest_price,
-            highest_index=highest_idx,
-            highest_time=pd.to_datetime(times[highest_idx]),
-            lowest_price=lowest_price,
-            lowest_index=lowest_idx,
-            lowest_time=pd.to_datetime(times[lowest_idx])
-        )
-    
-    def _get_nearest_swings(self, confirmed_swing_highs: List[SwingPoint], 
-                            confirmed_swing_lows: List[SwingPoint],
-                            current_idx: int) -> Optional[NearestSwing]:
-        """
-        Get the nearest confirmed swing high and swing low before current bar.
-        
-        This finds ACTUAL swing points (fractal highs/lows), not just max/min prices.
-        A swing high is a local maximum that is higher than surrounding bars.
-        A swing low is a local minimum that is lower than surrounding bars.
-        
-        Parameters:
-        -----------
-        confirmed_swing_highs : List[SwingPoint] - List of confirmed swing highs
-        confirmed_swing_lows : List[SwingPoint] - List of confirmed swing lows
-        current_idx : int - Current bar index
-        
-        Returns:
-        --------
-        NearestSwing with nearest swing high and swing low prices/indices,
-        or None if no swings are available
-        """
-        # Find nearest swing high (latest one before current_idx)
-        nearest_sh = None
-        for sh in reversed(confirmed_swing_highs):
-            if sh.index < current_idx:
-                nearest_sh = sh
-                break
-        
-        # Find nearest swing low (latest one before current_idx)
-        nearest_sl = None
-        for sl in reversed(confirmed_swing_lows):
-            if sl.index < current_idx:
-                nearest_sl = sl
-                break
-        
-        # Return None if either swing is not available
-        if nearest_sh is None or nearest_sl is None:
-            return None
-        
-        return NearestSwing(
-            swing_high_price=nearest_sh.price,
-            swing_high_index=nearest_sh.index,
-            swing_low_price=nearest_sl.price,
-            swing_low_index=nearest_sl.index
-        )
+
+
     
     def _price_touches_ob(self, ob: OrderBlock, high: float, low: float) -> bool:
         """
@@ -1414,8 +1264,7 @@ class Strategy:
     
     def _create_signal(self, symbol: str, ob: OrderBlock, entry_time: datetime,
                        entry_price: float, current_open: float,
-                       current_high: float, current_low: float,
-                       nearest_swing: Optional[NearestSwing]) -> Optional[Signal]:
+                       current_high: float, current_low: float) -> Optional[Signal]:
         """
         Create a trade signal with SL and TP.
         
@@ -1453,13 +1302,6 @@ class Strategy:
             # TP based on actual risk to maintain RR ratio
             actual_risk = entry - stop_loss
             
-            # Kiểm tra với swing low gần nhất (đáy fractal gần nhất)
-            # Chỉ kéo SL nếu risk nhỏ hơn 0.1% entry
-            sl_pct = (actual_risk / entry * 100) if entry > 0 else 0
-            if sl_pct < self.config.min_sl_pct and nearest_swing is not None and stop_loss > nearest_swing.swing_low_price:
-                stop_loss = nearest_swing.swing_low_price
-                actual_risk = entry - stop_loss
-            
             take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
             
         else:  # BEARISH
@@ -1481,13 +1323,6 @@ class Strategy:
             # TP based on actual risk to maintain RR ratio
             actual_risk = stop_loss - entry
             
-            # Kiểm tra với swing high gần nhất (đỉnh fractal gần nhất)
-            # Chỉ kéo SL nếu risk nhỏ hơn 0.1% entry
-            sl_pct = (actual_risk / entry * 100) if entry > 0 else 0
-            if sl_pct < self.config.min_sl_pct and nearest_swing is not None and stop_loss < nearest_swing.swing_high_price:
-                stop_loss = nearest_swing.swing_high_price
-                actual_risk = stop_loss - entry
-            
             take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
         
         # Validate signal
@@ -1496,10 +1331,10 @@ class Strategy:
         if trade_type == 'SHORT' and stop_loss <= entry:
             return None
         
-        # # Check minimum SL percentage - skip trade if SL is too small
-        # sl_pct = abs(entry - stop_loss) / entry * 100
-        # if sl_pct < self.config.min_sl_pct:
-        #     return None
+        # Check minimum SL percentage - skip trade if SL is too small
+        sl_pct = abs(entry - stop_loss) / entry * 100
+        if sl_pct < self.config.min_sl_pct:
+            return None
         
         return Signal(
             symbol=symbol,
