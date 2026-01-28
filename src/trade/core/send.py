@@ -90,8 +90,8 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
          key = order.get("key", "")
          current_status = order.get("status", "")
          
-         # Skip if already passed/completed
-         if current_status in ('WIN', 'LOSS', 'PASSED'):
+         # Skip only final results (WIN/LOSS)
+         if current_status in ('WIN', 'LOSS'):
              continue
          
          if key in trades_from_csv:
@@ -101,8 +101,7 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
                  order["status"] = new_status
                  updated_count += 1
          else:
-             # Order not found in CSV anymore (beyond 500 candle limit)
-             # Mark as PASSED to stop tracking it
+             # Order not found in CSV -> mark as PASSED
              if current_status == 'OPEN':
                  order["status"] = 'PASSED'
                  updated_count += 1
@@ -115,7 +114,10 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
 
 
 def generate_order_key(row: pd.Series) -> str:
-    return f"{row['Symbol']}|{row['Type']}|{row['Entry_Time']}"
+    symbol = str(row['Symbol']).strip()
+    trade_type = str(row['Type']).strip().upper()
+    entry_time = str(row['Entry_Time']).strip()
+    return f"{symbol}|{trade_type}|{entry_time}"
 
 
 def scan_open_orders(output_dir: Path) -> list:
