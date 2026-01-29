@@ -81,6 +81,9 @@ class Config:
     sl_multiplier: float = 1.05     # Hệ số mở rộng SL (1.0 = bình thường, 1.1 = mở rộng 10% tránh stop hunt)
     min_sl_pct: float = 0.05         # Minimum SL % - không đặt lệnh nếu SL < x% giá entry
     risk_per_trade: float = 10.0    # USD
+
+    # === SIGNAL TIMING ===
+    signal_delay_candles: int = 1   # Delay signal by N closed candles (anti-repainting)
     
     # === REVERSAL PATTERN FILTER ===
     # Mảng các ID cặp pattern muốn sử dụng
@@ -118,6 +121,7 @@ class Config:
             "min_sl_pct": self.min_sl_pct,
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
+            "signal_delay_candles": self.signal_delay_candles,
             "reversal_pattern_ids": self.reversal_pattern_ids,
         }
 
@@ -429,33 +433,23 @@ def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray,
         return -1
     
     if is_bullish:
-        # Find candle with minimum parsed_low (and is trending candle)
-        min_val = parsed_lows[start_idx]
-        min_idx = start_idx
-        for i in range(start_idx + 1, end_idx):
-            if parsed_lows[i] < min_val and _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
-                min_val = parsed_lows[i]
-                min_idx = i
-        
-        # Check if the selected candle is a trending candle
-        if _check_trending_candle_jit(opens, closes, highs, lows, min_idx, body_ratio_threshold):
-            return min_idx
-        else:
-            return -1
+        best_idx = -1
+        best_val = np.inf
+        for i in range(start_idx, end_idx):
+            if _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
+                if parsed_lows[i] < best_val:
+                    best_val = parsed_lows[i]
+                    best_idx = i
+        return best_idx
     else:
-        # Find candle with maximum parsed_high (and is trending candle)
-        max_val = parsed_highs[start_idx]
-        max_idx = start_idx
-        for i in range(start_idx + 1, end_idx):
-            if parsed_highs[i] > max_val and _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
-                max_val = parsed_highs[i]
-                max_idx = i
-        
-        # Check if the selected candle is a trending candle
-        if _check_trending_candle_jit(opens, closes, highs, lows, max_idx, body_ratio_threshold):
-            return max_idx
-        else:
-            return -1
+        best_idx = -1
+        best_val = -np.inf
+        for i in range(start_idx, end_idx):
+            if _check_trending_candle_jit(opens, closes, highs, lows, i, body_ratio_threshold):
+                if parsed_highs[i] > best_val:
+                    best_val = parsed_highs[i]
+                    best_idx = i
+        return best_idx
 
 
 @njit(cache=True)
@@ -737,9 +731,11 @@ def detect_order_blocks(df: pd.DataFrame, structures: List[Structure], atr: pd.S
         )
         
         if ob_index >= 0:
+            ob_high = max(parsed_highs[ob_index], parsed_lows[ob_index])
+            ob_low = min(parsed_highs[ob_index], parsed_lows[ob_index])
             ob = OrderBlock(
-                high=parsed_highs[ob_index],
-                low=parsed_lows[ob_index],
+                high=ob_high,
+                low=ob_low,
                 time=pd.to_datetime(times[ob_index]),
                 index=ob_index,
                 bias=structure.bias,
@@ -890,6 +886,9 @@ class Strategy:
         """
         df = df.copy()
         signals = []
+
+        if self.config.signal_delay_candles < 0:
+            raise ValueError("signal_delay_candles must be >= 0")
         
         # Calculate ATR for entire dataset (uses past data only - no look-ahead)
         atr = calculate_atr(df, period=14)
@@ -954,6 +953,8 @@ class Strategy:
         
         # ========== MAIN LOOP ==========
         for current_idx in range(n):
+            if current_idx <= self.config.signal_delay_candles:
+                continue
             current_time = pd.to_datetime(times[current_idx])
             
             # 1. Check if a swing HIGH gets confirmed at this bar
@@ -1061,9 +1062,11 @@ class Strategy:
                     )
                     
                     if ob_index >= 0:
+                        ob_high = max(parsed_highs[ob_index], parsed_lows[ob_index])
+                        ob_low = min(parsed_highs[ob_index], parsed_lows[ob_index])
                         ob = OrderBlock(
-                            high=parsed_highs[ob_index],
-                            low=parsed_lows[ob_index],
+                            high=ob_high,
+                            low=ob_low,
                             time=pd.to_datetime(times[ob_index]),
                             index=ob_index,
                             bias='BULLISH',
@@ -1106,9 +1109,11 @@ class Strategy:
                     )
                     
                     if ob_index >= 0:
+                        ob_high = max(parsed_highs[ob_index], parsed_lows[ob_index])
+                        ob_low = min(parsed_highs[ob_index], parsed_lows[ob_index])
                         ob = OrderBlock(
-                            high=parsed_highs[ob_index],
-                            low=parsed_lows[ob_index],
+                            high=ob_high,
+                            low=ob_low,
                             time=pd.to_datetime(times[ob_index]),
                             index=ob_index,
                             bias='BEARISH',
@@ -1204,28 +1209,42 @@ class Strategy:
             # Use list comprehension instead of remove() for O(n) performance
             remaining_obs = []
             
+            eval_idx = current_idx - self.config.signal_delay_candles
+            eval_high = highs[eval_idx]
+            eval_low = lows[eval_idx]
+            eval_close = closes[eval_idx]
+            eval_open = opens[eval_idx]
+            eval_time = pd.to_datetime(times[eval_idx])
+
             for ob in active_obs:
-                is_mitigated = self._ob_is_mitigated(ob, highs[current_idx], lows[current_idx], closes[current_idx])
+                is_mitigated = self._ob_is_mitigated(ob, eval_high, eval_low, eval_close)
                 
                 if is_mitigated:
                     ob.is_mitigated = True
                     continue  # Skip to next OB, don't add to remaining_obs
                 
                 # Only check entry if not yet triggered
-                if not ob.entry_triggered and self._price_touches_ob(ob, highs[current_idx], lows[current_idx]):
+                if not ob.entry_triggered and self._price_touches_ob(ob, eval_high, eval_low):
                     # Check if current candle is a reversal pattern
-                    is_reversal = self._is_reversal_candle(opens, closes, highs, lows, 
-                                                           current_idx, ob.bias)
+                    is_reversal = self._is_reversal_candle(
+                        opens,
+                        closes,
+                        highs,
+                        lows,
+                        eval_idx,
+                        ob.bias,
+                        is_closed_candle=True
+                    )
                     
                     if ob.has_fvg and ob.has_liquidity and is_reversal:
                         signal = self._create_signal(
                             symbol=symbol,
                             ob=ob,
-                            entry_time=current_time,
-                            entry_price=closes[current_idx],
-                            current_open=opens[current_idx],
-                            current_high=highs[current_idx],
-                            current_low=lows[current_idx]
+                            entry_time=eval_time,
+                            entry_price=eval_close,
+                            current_open=eval_open,
+                            current_high=eval_high,
+                            current_low=eval_low
                         )
                         
                         if signal:
@@ -1282,13 +1301,16 @@ class Strategy:
         
         return False
     
-    def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, 
-                           lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
+    def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
+                           lows: np.ndarray, current_idx: int, ob_bias: str,
+                           is_closed_candle: bool = True) -> bool:
         """
         Check if current candle is a reversal pattern (bullish or bearish based on ob_bias).
         
         Uses JIT-compiled function from reversal_patterns module for performance.
         """
+        if not is_closed_candle:
+            return False
         is_bullish = (ob_bias == 'BULLISH')
         
         # Chuyển list thành numpy array cho JIT function
@@ -1419,3 +1441,4 @@ class Strategy:
             stop_loss=round_price(stop_loss),
             take_profit=round_price(take_profit)
         )
+    
