@@ -1395,10 +1395,21 @@ class Strategy:
         if trade_type == 'SHORT' and stop_loss <= entry:
             return None
         
-        # Check minimum SL percentage - skip trade if SL is too small
+        # Check minimum SL percentage - adjust SL if too small
         sl_pct = abs(entry - stop_loss) / entry * 100
         if sl_pct < self.config.min_sl_pct:
-            return None
+            # Adjust SL to meet minimum requirement
+            min_sl_distance = entry * self.config.min_sl_pct / 100
+            if trade_type == 'LONG':
+                stop_loss = entry - min_sl_distance
+            else:
+                stop_loss = entry + min_sl_distance
+            # Recalculate TP with new SL
+            actual_risk = abs(entry - stop_loss)
+            if trade_type == 'LONG':
+                take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
+            else:
+                take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
         
         return Signal(
             symbol=symbol,
