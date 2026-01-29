@@ -11,6 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from rich.align import Align
+from rich.columns import Columns
 
 from src.trade.okx.exchange import get_exchange
 from src.utils.console_logger import get_logs
@@ -34,6 +35,11 @@ class OKXDashboard:
         self.orders_data = []
         self.positions_data = []
         self.update_time = datetime.now()
+        
+        # Initial balance tracking for session comparison
+        self._initial_balance: Optional[float] = None
+        self._initial_balance_time: Optional[datetime] = None
+        self._current_estimated_total: float = 0.0
 
     def _get_account_balance(self) -> dict:
         """Lấy thông tin số dư tài khoản OKX
@@ -74,6 +80,57 @@ class OKXDashboard:
         
         return {'total': total_balance, 'available': available_balance}
 
+    def _create_session_tracking_table(self, current_total: float) -> Table:
+        """Create table for session balance tracking"""
+        tracking_table = Table(show_header=True, header_style="bold yellow", box=None)
+        tracking_table.add_column("Session Stats", style="cyan", width=18)
+        tracking_table.add_column("Value", justify="right", style="green", width=18)
+        
+        # Save initial balance on first call
+        if self._initial_balance is None:
+            self._initial_balance = current_total
+            self._initial_balance_time = datetime.now()
+        
+        # Calculate changes
+        balance_change = current_total - self._initial_balance
+        if self._initial_balance > 0:
+            change_pct = (balance_change / self._initial_balance) * 100
+        else:
+            change_pct = 0.0
+        
+        # Session duration
+        if self._initial_balance_time:
+            duration = datetime.now() - self._initial_balance_time
+            hours, remainder = divmod(int(duration.total_seconds()), 3600)
+            minutes, seconds = divmod(remainder, 60)
+            duration_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        else:
+            duration_str = "00:00:00"
+        
+        # Colors for change
+        change_color = "green" if balance_change >= 0 else "red"
+        change_symbol = "+" if balance_change >= 0 else ""
+        
+        tracking_table.add_row("Initial Balance", f"${self._initial_balance:,.2f}")
+        tracking_table.add_row("Current Balance", f"${current_total:,.2f}")
+        tracking_table.add_row("", "")
+        tracking_table.add_row(
+            "Session Change",
+            f"[{change_color}]{change_symbol}${balance_change:,.2f}[/{change_color}]"
+        )
+        tracking_table.add_row(
+            "Change %",
+            f"[{change_color}]{change_symbol}{change_pct:.2f}%[/{change_color}]"
+        )
+        tracking_table.add_row("", "")
+        tracking_table.add_row("Session Duration", duration_str)
+        tracking_table.add_row(
+            "Started At",
+            self._initial_balance_time.strftime('%H:%M:%S') if self._initial_balance_time else "N/A"
+        )
+        
+        return tracking_table
+
     def _create_balance_panel(self) -> Panel:
         """Create panel displaying account balance"""
         try:
@@ -113,7 +170,7 @@ class OKXDashboard:
             # Create balance table
             balance_table = Table(show_header=True, header_style="bold magenta", box=None)
             balance_table.add_column("Type", style="cyan", width=15)
-            balance_table.add_column("Value (USDT)", justify="right", style="green", width=20)
+            balance_table.add_column("Value (USDT)", justify="right", style="green", width=18)
             
             balance_table.add_row("Total (stable)", f"${total_stable:,.2f}")
             
@@ -153,13 +210,22 @@ class OKXDashboard:
             balance_table.add_row("", "")  # empty spacer
             balance_table.add_row("Estimated Total (USD)", f"${estimated_total:,.2f}", style="bold")
             
+            # Update current estimated total for session tracking
+            self._current_estimated_total = estimated_total
+            
+            # Create session tracking table on the right side
+            tracking_table = self._create_session_tracking_table(estimated_total)
+            
+            # Combine both tables side by side using Columns
+            combined = Columns([balance_table, tracking_table], padding=(0, 2), expand=True)
+            
             # Add update info
             update_text = Text(
                 f"🔄 Last update: {self.update_time.strftime('%H:%M:%S')}",
                 style="dim white"
             )
             
-            group = Group(balance_table, "", Align.right(update_text))
+            group = Group(combined, "", Align.right(update_text))
             
             return Panel(
                 group,
