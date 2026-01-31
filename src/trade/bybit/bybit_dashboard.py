@@ -1,6 +1,6 @@
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import ccxt
@@ -568,10 +568,8 @@ class BybitDashboard:
     
     def _get_closed_pnl_records(self, limit: int = 30) -> list:
         """Fetch closed PnL history from Bybit v5 API (max 7 days per request)"""
-        from datetime import timedelta
-        
         all_records = []
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         days = 7
         
         end_time = int(now.timestamp() * 1000)
@@ -586,7 +584,7 @@ class BybitDashboard:
         
         try:
             result = self.exchange.privateGetV5PositionClosedPnl(params)
-            if result.get('retCode') == 0:
+            if str(result.get('retCode')) == '0':
                 records = result.get('result', {}).get('list', [])
                 all_records.extend(records)
         except Exception:
