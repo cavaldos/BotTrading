@@ -2,7 +2,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from src.trade.bybit.exchange import get_exchange, format_symbol
 
 
@@ -25,7 +25,7 @@ def get_closed_pnl_history(
     exchange = get_exchange()
     
     all_records = []
-    now = datetime.now()
+    now = datetime.now(timezone.utc)
     
     chunks = (days + 6) // 7
     
@@ -54,7 +54,7 @@ def get_closed_pnl_history(
         try:
             result = exchange.privateGetV5PositionClosedPnl(params)
             
-            if result.get('retCode') != 0:
+            if str(result.get('retCode')) != '0':
                 print(f"Error: {result.get('retMsg')}")
                 continue
             
