@@ -115,9 +115,13 @@ def _is_hammer_jit(open_price: float, close_price: float, high: float, low: floa
     lower_shadow = body_bottom - low
     upper_shadow = high - body_top
     
+    min_body = 0.05 * candle_range
+    if body < min_body:
+        return False
+    
     return (body / candle_range < 0.3 and 
-            lower_shadow >= body * 2 and 
-            upper_shadow <= body)
+            lower_shadow >= 0.6 * candle_range and 
+            upper_shadow <= 0.1 * candle_range)
 
 
 @njit(cache=True)
@@ -141,9 +145,13 @@ def _is_inverted_hammer_jit(open_price: float, close_price: float, high: float, 
     lower_shadow = body_bottom - low
     upper_shadow = high - body_top
     
+    min_body = 0.05 * candle_range
+    if body < min_body:
+        return False
+    
     return (body / candle_range < 0.3 and 
-            upper_shadow >= body * 2 and 
-            lower_shadow <= body)
+            upper_shadow >= 0.6 * candle_range and 
+            lower_shadow <= 0.1 * candle_range)
 
 
 @njit(cache=True)
@@ -167,9 +175,13 @@ def _is_shooting_star_jit(open_price: float, close_price: float, high: float, lo
     lower_shadow = body_bottom - low
     upper_shadow = high - body_top
     
+    min_body = 0.05 * candle_range
+    if body < min_body:
+        return False
+    
     return (body / candle_range < 0.3 and 
-            upper_shadow >= body * 2 and 
-            lower_shadow <= body)
+            upper_shadow >= 0.6 * candle_range and 
+            lower_shadow <= 0.1 * candle_range)
 
 
 @njit(cache=True)
@@ -193,9 +205,13 @@ def _is_hanging_man_jit(open_price: float, close_price: float, high: float, low:
     lower_shadow = body_bottom - low
     upper_shadow = high - body_top
     
+    min_body = 0.05 * candle_range
+    if body < min_body:
+        return False
+    
     return (body / candle_range < 0.3 and 
-            lower_shadow >= body * 2 and 
-            upper_shadow <= body)
+            lower_shadow >= 0.6 * candle_range and 
+            upper_shadow <= 0.1 * candle_range)
 
 
 @njit(cache=True)
@@ -265,7 +281,7 @@ def _is_bearish_belt_hold_jit(open_price: float, close_price: float,
 @njit(cache=True)
 def _is_tweezer_bottom_jit(prev_open: float, prev_close: float, prev_high: float, prev_low: float,
                             curr_open: float, curr_close: float, curr_high: float, curr_low: float,
-                            tolerance: float = 0.001) -> bool:
+                            tolerance: float = 0.003) -> bool:
     """
     Tweezer Bottom: Two candles with matching lows - first bearish, second bullish.
     Bullish reversal pattern.
@@ -293,8 +309,8 @@ def _is_tweezer_bottom_jit(prev_open: float, prev_close: float, prev_high: float
 
 @njit(cache=True)
 def _is_tweezer_top_jit(prev_open: float, prev_close: float, prev_high: float, prev_low: float,
-                         curr_open: float, curr_close: float, curr_high: float, curr_low: float,
-                         tolerance: float = 0.001) -> bool:
+                          curr_open: float, curr_close: float, curr_high: float, curr_low: float,
+                          tolerance: float = 0.003) -> bool:
     """
     Tweezer Top: Two candles with matching highs - first bullish, second bearish.
     Bearish reversal pattern.
@@ -389,9 +405,9 @@ def _is_piercing_line_jit(prev_open: float, prev_close: float,
     if curr_open >= prev_close:
         return False
     
-    # Current closes above 50% of previous body
+    # Current closes above 50% of previous body but below previous open
     prev_mid = (prev_open + prev_close) / 2
-    return curr_close > prev_mid
+    return curr_close > prev_mid and curr_close < prev_open
 
 
 @njit(cache=True)
@@ -414,14 +430,14 @@ def _is_dark_cloud_cover_jit(prev_open: float, prev_close: float,
     if curr_open <= prev_close:
         return False
     
-    # Current closes below 50% of previous body
+    # Current closes below 50% of previous body but above previous open
     prev_mid = (prev_open + prev_close) / 2
-    return curr_close < prev_mid
+    return curr_close < prev_mid and curr_close > prev_open
 
 
 @njit(cache=True)
 def _is_bullish_harami_jit(prev_open: float, prev_close: float, prev_high: float, prev_low: float,
-                            curr_open: float, curr_close: float) -> bool:
+                            curr_open: float, curr_close: float, curr_high: float, curr_low: float) -> bool:
     """
     Bullish Harami: Previous bearish (long), current bullish (small) contained within prev body.
     Bullish reversal pattern.
@@ -429,11 +445,15 @@ def _is_bullish_harami_jit(prev_open: float, prev_close: float, prev_high: float
     # Previous must be bearish with substantial body
     prev_body = abs(prev_close - prev_open)
     prev_range = prev_high - prev_low
-    if prev_close >= prev_open or (prev_range > 0 and prev_body < 0.3 * prev_range):
+    if prev_close >= prev_open or (prev_range > 0 and prev_body < 0.5 * prev_range):
         return False
     
     # Current must be bullish
     if curr_close <= curr_open:
+        return False
+    
+    curr_body = abs(curr_close - curr_open)
+    if curr_body >= 0.5 * prev_body:
         return False
     
     # Current contained within previous body
@@ -444,7 +464,7 @@ def _is_bullish_harami_jit(prev_open: float, prev_close: float, prev_high: float
 
 @njit(cache=True)
 def _is_bearish_harami_jit(prev_open: float, prev_close: float, prev_high: float, prev_low: float,
-                            curr_open: float, curr_close: float) -> bool:
+                            curr_open: float, curr_close: float, curr_high: float, curr_low: float) -> bool:
     """
     Bearish Harami: Previous bullish (long), current bearish (small) contained within prev body.
     Bearish reversal pattern.
@@ -452,11 +472,15 @@ def _is_bearish_harami_jit(prev_open: float, prev_close: float, prev_high: float
     # Previous must be bullish with substantial body
     prev_body = abs(prev_close - prev_open)
     prev_range = prev_high - prev_low
-    if prev_close <= prev_open or (prev_range > 0 and prev_body < 0.3 * prev_range):
+    if prev_close <= prev_open or (prev_range > 0 and prev_body < 0.5 * prev_range):
         return False
     
     # Current must be bearish
     if curr_close >= curr_open:
+        return False
+    
+    curr_body = abs(curr_close - curr_open)
+    if curr_body >= 0.5 * prev_body:
         return False
     
     # Current contained within previous body
@@ -547,26 +571,31 @@ def _is_morning_star_jit(opens: np.ndarray, closes: np.ndarray,
     if idx < 2:
         return False
     
-    o1, c1, l1 = opens[idx - 2], closes[idx - 2], lows[idx - 2]
+    o1, c1, h1, l1 = opens[idx - 2], closes[idx - 2], highs[idx - 2], lows[idx - 2]
     o2, c2, h2, l2 = opens[idx - 1], closes[idx - 1], highs[idx - 1], lows[idx - 1]
     o3, c3 = opens[idx], closes[idx]
     
-    # First bearish
-    if c1 >= o1:
+    # First bearish with substantial body
+    body1 = abs(c1 - o1)
+    range1 = h1 - l1
+    if c1 >= o1 or (range1 > 0 and body1 < 0.5 * range1):
         return False
     
-    # Second small (doji-like)
+    # Second small (star)
     range2 = h2 - l2
     body2 = abs(c2 - o2)
-    if range2 == 0 or body2 / range2 > 0.5:
+    if range2 == 0 or body2 / range2 > 0.3:
         return False
     
-    # Third bullish
-    if c3 <= o3:
+    # Third bullish with substantial body
+    body3 = abs(c3 - o3)
+    range3 = highs[idx] - lows[idx]
+    if c3 <= o3 or (range3 > 0 and body3 < 0.5 * range3):
         return False
     
-    # Second gaps down below first low
-    if min(o2, c2) >= l1:
+    # Second gaps down below first close
+    star_body_high = max(o2, c2)
+    if star_body_high >= c1:
         return False
     
     # Third closes above 50% of first body
@@ -584,26 +613,31 @@ def _is_evening_star_jit(opens: np.ndarray, closes: np.ndarray,
     if idx < 2:
         return False
     
-    o1, c1, h1 = opens[idx - 2], closes[idx - 2], highs[idx - 2]
+    o1, c1, h1, l1 = opens[idx - 2], closes[idx - 2], highs[idx - 2], lows[idx - 2]
     o2, c2, h2, l2 = opens[idx - 1], closes[idx - 1], highs[idx - 1], lows[idx - 1]
     o3, c3 = opens[idx], closes[idx]
     
-    # First bullish
-    if c1 <= o1:
+    # First bullish with substantial body
+    body1 = abs(c1 - o1)
+    range1 = h1 - l1
+    if c1 <= o1 or (range1 > 0 and body1 < 0.5 * range1):
         return False
     
-    # Second small (doji-like)
+    # Second small (star)
     range2 = h2 - l2
     body2 = abs(c2 - o2)
-    if range2 == 0 or body2 / range2 > 0.5:
+    if range2 == 0 or body2 / range2 > 0.3:
         return False
     
-    # Third bearish
-    if c3 >= o3:
+    # Third bearish with substantial body
+    body3 = abs(c3 - o3)
+    range3 = highs[idx] - lows[idx]
+    if c3 >= o3 or (range3 > 0 and body3 < 0.5 * range3):
         return False
     
-    # Second gaps up above first high
-    if max(o2, c2) <= h1:
+    # Second gaps up above first close
+    star_body_low = min(o2, c2)
+    if star_body_low <= c1:
         return False
     
     # Third closes below 50% of first body
@@ -669,10 +703,10 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
                 return True
             if _is_piercing_line_jit(o_prev, c_prev, o_curr, c_curr):
                 return True
-            if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr):
+            if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr, h_curr, l_curr):
                 return True
             if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev, 
-                                      o_curr, c_curr, h_curr, l_curr, 0.001):
+                                      o_curr, c_curr, h_curr, l_curr, 0.003):
                 return True
         
         # Three candle patterns (need 2 previous candles)
@@ -704,10 +738,10 @@ def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
                 return True
             if _is_dark_cloud_cover_jit(o_prev, c_prev, o_curr, c_curr):
                 return True
-            if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr):
+            if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr, h_curr, l_curr):
                 return True
             if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
-                                   o_curr, c_curr, h_curr, l_curr, 0.001):
+                                   o_curr, c_curr, h_curr, l_curr, 0.003):
                 return True
         
         # Three candle patterns (need 2 previous candles)
@@ -822,10 +856,10 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
         elif pid == 6:
             if has_prev:
                 if is_bullish:
-                    if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr):
+                    if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr, h_curr, l_curr):
                         return True
                 else:
-                    if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr):
+                    if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev, o_curr, c_curr, h_curr, l_curr):
                         return True
         
         # ID 7: Morning Star (bullish) / Evening Star (bearish)
@@ -843,11 +877,11 @@ def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
             if has_prev:
                 if is_bullish:
                     if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev, 
-                                              o_curr, c_curr, h_curr, l_curr, 0.001):
+                                              o_curr, c_curr, h_curr, l_curr, 0.003):
                         return True
                 else:
                     if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
-                                           o_curr, c_curr, h_curr, l_curr, 0.001):
+                                           o_curr, c_curr, h_curr, l_curr, 0.003):
                         return True
         
         # ID 9: Three Outside Up (bullish) / Three Outside Down (bearish)
