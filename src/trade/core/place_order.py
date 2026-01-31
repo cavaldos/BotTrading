@@ -1,13 +1,9 @@
-import os
-import sys
 import yaml
-import pandas as pd
 from datetime import datetime
 from pathlib import Path
 
 
 from src.trade.bybit.order_executor import validate_and_place_order as bybit_place_order, bybit_format_order_message
-from src.trade.okx.order_executor import validate_and_place_order as okx_place_order, okx_format_order_message
 
 
 
@@ -34,81 +30,44 @@ def place_order(
     entry_time: str,
     leverage: int = 20,
     risk_per_trade: float = risk_per_trade,
-    exchanges: list = None,
 ) -> dict:
     """    
     Args:
         risk_per_trade: load from config
-        exchanges:  ['bybit', 'okx']
     
     Returns:
-        dict: result of placing order on each exchange
+        dict: result of placing order on Bybit
     """
-    
-    if exchanges is None:
-        exchanges = ['bybit', 'okx'] 
-    
     order_type = order_type.strip().upper()
     side = 'buy' if order_type in ('BUY', 'LONG') else 'sell'
     
-    results = {
+    result = {
         'success': False,
         'bybit': None,
-        'okx': None,
-        'any_success': False,
     }
     
-    # Đặt lệnh trên Bybit
-    if 'bybit' in exchanges:
-        try:
-            bybit_result = bybit_place_order(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                leverage=leverage,
-                risk_per_trade=risk_per_trade,
-            )
-            results['bybit'] = bybit_result
-            if bybit_result.get('success'):
-                results['any_success'] = True
-        except Exception as e:
-            results['bybit'] = {
-                'success': False,
-                'error': str(e),
-                'exchange': 'Bybit',
-            }
+    try:
+        bybit_result = bybit_place_order(
+            symbol=symbol,
+            side=side,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            leverage=leverage,
+            risk_per_trade=risk_per_trade,
+        )
+        result['bybit'] = bybit_result
+        result['success'] = bybit_result.get('success', False)
+    except Exception as e:
+        result['bybit'] = {
+            'success': False,
+            'error': str(e),
+            'exchange': 'Bybit',
+        }
     
-    # Đặt lệnh trên OKX
-    if 'okx' in exchanges:
-        try:
-            okx_result = okx_place_order(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                leverage=leverage,
-                risk_per_trade=risk_per_trade,
-            )
-            results['okx'] = okx_result
-            if okx_result.get('success'):
-                results['any_success'] = True
-        except Exception as e:
-            results['okx'] = {
-                'success': False,
-                'error': str(e),
-                'exchange': 'OKX',
-            }
-    
-    # Đánh dấu success nếu ít nhất 1 sàn thành công
-    results['success'] = results['any_success']
-    
-    return results 
+    return result 
 
 if __name__ == "__main__":
-    # Test place_order function
     order_result = place_order(
         symbol="BCHUSDT_1m",
         order_type="LONG",
@@ -118,16 +77,9 @@ if __name__ == "__main__":
         entry_time=datetime.utcnow().isoformat(),
         leverage=10,
         risk_per_trade=5,
-        exchanges=['bybit', 'okx'],
     )
 
-    # Bybit result
     if order_result.get('bybit'):
         print("\n[BYBIT]")
         print(bybit_format_order_message(order_result.get('bybit')))
-    
-    # OKX result
-    if order_result.get('okx'):
-        print("\n[OKX]")
-        print(okx_format_order_message(order_result.get('okx')))
     

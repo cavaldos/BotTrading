@@ -3,10 +3,59 @@ from typing import Optional
 
 import ccxt
 from dotenv import load_dotenv
+from src.utils.rounding import round_price
 
 load_dotenv()
 
 _exchange_instance: Optional[ccxt.binance] = None
+
+
+def calculate_position_size(
+    entry_price: float,
+    stop_loss: float,
+    leverage: int,
+    risk_per_trade: float = 5,
+    side: str = 'buy',
+    skip_validation: bool = False,
+) -> dict:
+    """
+    Calculate position size and margin for a trade.
+
+    Formula:
+    - price_diff = abs(entry_price - stop_loss)
+    - quantity = risk_per_trade / price_diff
+    - notional = quantity × entry_price
+    - margin = notional / leverage
+    """
+    if leverage <= 0:
+        raise ValueError("Leverage phải > 0")
+
+    if not skip_validation:
+        if side.lower() == 'buy':
+            if entry_price <= stop_loss:
+                raise ValueError("LONG: Entry price phải cao hơn stop loss")
+        else:
+            if entry_price >= stop_loss:
+                raise ValueError("SHORT: Stop loss phải cao hơn entry price")
+
+    price_diff = abs(entry_price - stop_loss)
+    if price_diff == 0:
+        raise ValueError("Entry price và stop loss không được bằng nhau")
+
+    quantity = risk_per_trade / price_diff
+    notional_value = quantity * entry_price
+    margin_required = notional_value / leverage
+    actual_risk = price_diff * quantity
+
+    return {
+        'quantity': round(quantity, 4),
+        'margin_required': round_price(margin_required),
+        'notional_value': round_price(notional_value),
+        'actual_risk': round_price(actual_risk),
+        'price_diff': round_price(price_diff),
+        'leverage': leverage,
+        'side': side.lower(),
+    }
 
 
 def create_binance_exchange(api_key: str, secret: str) -> ccxt.binance:

@@ -505,19 +505,19 @@ class BybitDashboard:
                         amount_str = "N/A"
                     
                     try:
-                        price_str = f"${float(price):,.2f}" if price else "$0"
+                        price_str = f"${float(price):,.4f}" if price else "$0"
                     except (ValueError, TypeError):
                         price_str = "N/A"
                     
                     # Format TP
                     try:
-                        tp_str = f"${float(tp_price):,.2f}" if tp_price else "-"
+                        tp_str = f"${float(tp_price):,.4f}" if tp_price else "-"
                     except (ValueError, TypeError):
                         tp_str = "-"
                     
                     # Format SL
                     try:
-                        sl_str = f"${float(sl_price):,.2f}" if sl_price else "-"
+                        sl_str = f"${float(sl_price):,.4f}" if sl_price else "-"
                     except (ValueError, TypeError):
                         sl_str = "-"
                     
@@ -566,221 +566,127 @@ class BybitDashboard:
                 border_style="red"
             )
     
+    def _get_closed_pnl_records(self, limit: int = 30) -> list:
+        """Fetch closed PnL history from Bybit v5 API (max 7 days per request)"""
+        from datetime import timedelta
+        
+        all_records = []
+        now = datetime.now()
+        days = 7
+        
+        end_time = int(now.timestamp() * 1000)
+        start_time = int((now - timedelta(days=days)).timestamp() * 1000)
+        
+        params = {
+            'category': 'linear',
+            'limit': limit,
+            'startTime': start_time,
+            'endTime': end_time,
+        }
+        
+        try:
+            result = self.exchange.privateGetV5PositionClosedPnl(params)
+            if result.get('retCode') == 0:
+                records = result.get('result', {}).get('list', [])
+                all_records.extend(records)
+        except Exception:
+            pass
+        
+        all_records.sort(key=lambda x: int(x.get('createdTime', 0)), reverse=True)
+        return all_records[:limit]
+
     def _create_orders_history_panel(self) -> Panel:
-        """Create panel displaying order history with scrolling"""
+        """Create panel displaying closed PnL history (Realized P&L)"""
         try:
             if not self.exchange:
                 return Panel(
                     "[red]❌ Exchange not initialized[/red]",
-                    title="[bold green]📜 Order History[/bold green]",
+                    title="[bold green]📜 P&L History[/bold green]",
                     border_style="green"
                 )
             
-            # Fetch closed and canceled orders (Bybit 5/02 update)
-            closed_orders = []
-            try:
-                closed = self.exchange.fetch_closed_orders()
-                closed_orders.extend(closed)
-            except Exception:
-                pass
+            records = self._get_closed_pnl_records(limit=25)
             
-            try:
-                canceled = self.exchange.fetch_canceled_orders()
-                closed_orders.extend(canceled)
-            except Exception:
-                pass
-            
-            # Sort by time descending (newest first)
-            closed_orders.sort(
-                key=lambda x: x.get('timestamp', 0), 
-                reverse=True
-            )
-            
-            orders_table = Table(
+            pnl_table = Table(
                 show_header=True,
                 header_style="bold green",
                 box=None,
                 padding=(0, 1)
             )
-            orders_table.add_column("Symbol", style="cyan", width=12)
-            orders_table.add_column("Side", style="magenta", width=6)
-            orders_table.add_column("Type", style="blue", width=8)
-            orders_table.add_column("Amount", justify="right", width=12)
-            orders_table.add_column("Filled", justify="right", width=10)
-            orders_table.add_column("Avg Price", justify="right", style="blue", width=12)
-            orders_table.add_column("Price", justify="right", style="green", width=12)
-            orders_table.add_column("Fee", justify="right", style="yellow", width=10)
-            orders_table.add_column("P&L", justify="right", width=12)
-            orders_table.add_column("ROI %", justify="right", width=10)
-            orders_table.add_column("Time", style="dim", width=10)
+            pnl_table.add_column("Symbol", style="cyan", width=12)
+            pnl_table.add_column("Side", style="magenta", width=6)
+            pnl_table.add_column("Entry", justify="right", style="blue", width=12)
+            pnl_table.add_column("Exit", justify="right", style="yellow", width=12)
+            pnl_table.add_column("Qty", justify="right", width=12)
+            pnl_table.add_column("Realized P&L", justify="right", width=14)
+            pnl_table.add_column("Time", style="dim", width=18)
             
-            if not closed_orders:
-                 orders_table.add_row(
-                     "[dim]No order history[/dim]",
-                     "",
-                     "",
-                     "",
-                     "",
-                     "",
-                     "",
-                     "",
-                     "",
-                     "",
-                     ""
-                 )
+            total_pnl = 0.0
+            total_profit = 0.0
+            total_loss = 0.0
+            
+            if not records:
+                pnl_table.add_row(
+                    "[dim]No P&L history[/dim]", "", "", "", "", "", ""
+                )
             else:
-                 # Display all orders, newest first
-                 for order in closed_orders:
-                     symbol = order.get('symbol', 'N/A')
-                     side = order.get('side', 'N/A').upper()
-                     order_type = order.get('type', 'N/A').upper()
-                     amount = order.get('amount') or 0
-                     filled = order.get('filled') or 0
-                     price = order.get('price') or 0
-                     cost = order.get('cost', 0) or 0
-                     fee = order.get('fee', {})
-                     
-                     # Calculate average fill price
-                     avg_price = 0
-                     filled_str = "0"
-                     avg_price_str = "N/A"
-                     
-                     try:
-                         filled_float = float(filled) if filled else 0
-                         cost_float = float(cost) if cost else 0
-                         
-                         if filled_float > 0 and cost_float > 0:
-                             avg_price = cost_float / filled_float
-                             filled_str = f"{filled_float:,.4f}"
-                             avg_price_str = f"${avg_price:,.2f}"
-                         else:
-                             filled_str = f"{filled_float:,.4f}"
-                     except (ValueError, TypeError):
-                         filled_str = "N/A"
-                     
-                     # Format amount and price safely
-                     try:
-                         amount_str = f"{float(amount):,.4f}" if amount else "0"
-                     except (ValueError, TypeError):
-                         amount_str = "N/A"
-                     
-                     try:
-                         price_str = f"${float(price):,.2f}" if price else "$0"
-                     except (ValueError, TypeError):
-                         price_str = "N/A"
-                     
-                     # Extract fee info
-                     fee_value = 0
-                     fee_str = "$0"
-                     if isinstance(fee, dict):
-                         fee_value = float(fee.get('cost', 0) or 0)
-                         if fee_value:
-                             fee_str = f"${fee_value:,.2f}"
-                     
-                     # Calculate P&L and ROI
-                     pnl_value = None
-                     pnl_display = "N/A"
-                     pnl_color = "dim"
-                     roi_display = "N/A"
-                     roi_color = "dim"
-                     
-                     try:
-                         order_info = order.get('info', {})
-                         
-                         # Check if this is a position-closing order (reduceOnly, TP/SL)
-                         is_reduce_only = order.get('reduceOnly', False)
-                         stop_order_type = order_info.get('stopOrderType', '')
-                         is_position_close = is_reduce_only or stop_order_type in ('TakeProfit', 'StopLoss')
-                         
-                         if is_position_close:
-                             # Position closing order - calculate P&L from entry/exit prices
-                             entry_price = float(order_info.get('price', 0) or 0)
-                             exit_price = float(order_info.get('avgPrice', 0) or 0)
-                             qty = float(order_info.get('cumExecQty', filled) or 0)
-                             
-                             if entry_price > 0 and exit_price > 0 and qty > 0:
-                                 if side == "BUY":
-                                     # Closing SHORT position
-                                     pnl_value = (entry_price - exit_price) * qty
-                                 else:
-                                     # Closing LONG position
-                                     pnl_value = (exit_price - entry_price) * qty
-                                 
-                                 # Subtract fees
-                                 fee_cost = float(order_info.get('cumExecFee', 0) or 0)
-                                 if fee_cost:
-                                     pnl_value -= fee_cost
-                         else:
-                             # Regular opening order - compare cost vs expected value
-                             cost_float = float(cost) if cost else 0
-                             avg_price_calc = float(order_info.get('avgPrice', 0) or 0)
-                             qty = float(order_info.get('cumExecQty', filled) or 0)
-                             
-                             # For regular orders, P&L is minimal at fill
-                             if cost_float > 0 and avg_price_calc > 0 and qty > 0:
-                                 expected_cost = avg_price_calc * qty
-                                 pnl_value = cost_float - expected_cost
-                         
-                         # Only display if we have meaningful data
-                         if pnl_value is not None and abs(pnl_value) > 0.01:
-                             pnl_color = "green" if pnl_value >= 0 else "red"
-                             pnl_symbol = "+" if pnl_value >= 0 else ""
-                             pnl_display = f"[{pnl_color}]{pnl_symbol}${abs(pnl_value):,.2f}[/{pnl_color}]"
-                             
-                             # Calculate ROI % only if we have positive entry cost
-                             entry_cost = float(order_info.get('cumExecValue', cost) or cost or 0)
-                             if entry_cost > 0:
-                                 roi_pct = (pnl_value / entry_cost) * 100
-                                 roi_color = "green" if roi_pct >= 0 else "red"
-                                 roi_symbol = "+" if roi_pct >= 0 else ""
-                                 roi_display = f"[{roi_color}]{roi_symbol}{roi_pct:.2f}%[/{roi_color}]"
-                     except (ValueError, TypeError, ZeroDivisionError):
-                         pass
-                     
-                     # Format time
-                     timestamp = order.get('timestamp', 0)
-                     if timestamp:
-                         order_time = datetime.fromtimestamp(timestamp/1000).strftime('%H:%M:%S')
-                     else:
-                         order_time = 'N/A'
-                     
-                     # Color side
-                     side_color = "green" if side == "BUY" else "red"
-                     
-                     orders_table.add_row(
-                         symbol,
-                         f"[{side_color}]{side}[/{side_color}]",
-                         order_type,
-                         amount_str,
-                         filled_str,
-                         avg_price_str,
-                         price_str,
-                         fee_str,
-                         pnl_display,
-                         roi_display,
-                         order_time
-                     )
+                for record in records:
+                    symbol = record.get('symbol', 'N/A')
+                    side = record.get('side', 'N/A').upper()
+                    entry_price = float(record.get('avgEntryPrice', 0) or 0)
+                    exit_price = float(record.get('avgExitPrice', 0) or 0)
+                    qty = float(record.get('qty', 0) or 0)
+                    closed_pnl = float(record.get('closedPnl', 0) or 0)
+                    total_pnl += closed_pnl
+                    if closed_pnl >= 0:
+                        total_profit += closed_pnl
+                    else:
+                        total_loss += closed_pnl
+                    
+                    created_time = int(record.get('createdTime', 0))
+                    time_str = datetime.fromtimestamp(created_time / 1000).strftime('%m-%d %H:%M') if created_time else 'N/A'
+                    
+                    side_color = "green" if side == "BUY" else "red"
+                    pnl_color = "green" if closed_pnl >= 0 else "red"
+                    pnl_symbol = "+" if closed_pnl >= 0 else ""
+                    
+                    pnl_table.add_row(
+                        symbol,
+                        f"[{side_color}]{side}[/{side_color}]",
+                        f"${entry_price:,.2f}",
+                        f"${exit_price:,.2f}",
+                        f"{qty:,.4f}",
+                        f"[{pnl_color}]{pnl_symbol}{closed_pnl:,.4f}[/{pnl_color}]",
+                        time_str
+                    )
             
-            # Add info
+            total_color = "green" if total_pnl >= 0 else "red"
+            total_symbol = "+" if total_pnl >= 0 else ""
             info_text = Text(
-                f"📊 Total: {len(closed_orders)} orders | 🔄 {self.update_time.strftime('%H:%M:%S')}",
-                style="dim white"
+                f"💰 Total: ",
+                style="white"
             )
+            info_text.append(f"{total_symbol}${total_pnl:,.2f}", style=total_color)
+            info_text.append(f" | ", style="dim white")
+            info_text.append(f"Win: +${total_profit:,.2f}", style="green")
+            info_text.append(f" | ", style="dim white")
+            info_text.append(f"Loss: ${total_loss:,.2f}", style="red")
+            info_text.append(f" | Trades: {len(records)} | 🔄 {self.update_time.strftime('%H:%M:%S')}", style="dim white")
             
-            group = Group(orders_table, "", Align.right(info_text))
+            group = Group(info_text, "", pnl_table)
             
             return Panel(
                 group,
-                title="[bold green]📜 Order History (All - Newest First)[/bold green]",
+                title="[bold green]📜 P&L History (Realized)[/bold green]",
                 border_style="green",
                 padding=(1, 2),
-                height=None  # Allow flexible height for scrolling
+                height=None
             )
             
         except Exception as e:
             return Panel(
                 f"[red]❌ Error: {str(e)}[/red]",
-                title="[bold green]📜 Order History[/bold green]",
+                title="[bold green]📜 P&L History[/bold green]",
                 border_style="red"
             )
     
@@ -910,16 +816,16 @@ class BybitDashboard:
             Layout(name="right")
         )
         
-        # Left column: Balance + Order History (stacked vertically)
+        # Left column: Balance + Positions (stacked vertically)
         layout["left"].split_column(
-            Layout(self._create_balance_panel(), name="balance", size=18),
-            Layout(self._create_orders_history_panel(), name="history")
+            Layout(self._create_balance_panel(), name="balance", size=20),
+            Layout(self._create_positions_panel(), name="positions")
         )
         
-        # Right column: Open Orders + Positions (stacked vertically)
+        # Right column: Open Orders + P&L History (stacked vertically)
         layout["right"].split_column(
             Layout(self._create_orders_panel(), name="orders", size=15),
-            Layout(self._create_positions_panel(), name="positions")
+            Layout(self._create_orders_history_panel(), name="history")
         )
         
         return layout
