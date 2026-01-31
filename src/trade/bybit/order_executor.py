@@ -15,7 +15,7 @@ from src.trade.bybit.exchange import (
     set_position_sl_tp,
     get_position_mode,
 )
-from src.trade.bybit.risk_calculator import clean_symbol, adjust_levels_for_slippage, validate_slippage
+from src.trade.bybit.risk_calculator import clean_symbol, adjust_levels_for_slippage_v2, validate_slippage
 from src.utils.rounding import round_price
 
 
@@ -100,19 +100,24 @@ def validate_and_place_order(
             actual_entry = result.get('entry_price') or entry_price
             current_quantity = result.get('position_info', {}).get('quantity', 0)
             
-            # Tính slippage info (để log)
-            slippage_info = adjust_levels_for_slippage(
+            # Tính slippage và điều chỉnh SL/TP theo logic v2:
+            # - Entry xấu: Giữ SL, tính lại TP theo RR mới
+            # - Entry tốt: Dịch SL giữ khoảng cách, tính TP theo RR
+            slippage_info = adjust_levels_for_slippage_v2(
                 expected_entry=entry_price,
                 actual_entry=actual_entry,
                 expected_sl=stop_loss,
-                expected_tp=take_profit,
                 side=side.lower(),
+                rr_ratio=risk_reward_ratio,
             )
             result['slippage_info'] = slippage_info
             
+            # Cập nhật SL/TP đã điều chỉnh
+            stop_loss = slippage_info['adjusted_sl']
+            take_profit = slippage_info['adjusted_tp']
+            
             # ========== ĐIỀU CHỈNH QUANTITY ĐỂ GIỮ RISK CỐ ĐỊNH ==========
-            # Giữ nguyên SL/TP gốc (giữ RR ratio)
-            # Điều chỉnh quantity để risk = risk_per_trade chính xác
+            # SL/TP đã được điều chỉnh ở trên, giờ tính quantity để risk = risk_per_trade
             
             actual_distance_to_sl = abs(actual_entry - stop_loss)
             
@@ -167,13 +172,13 @@ def validate_and_place_order(
             if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
                 result['slippage_warning'] = f"⚠️ Slippage cao: {slippage_info['slippage_pct']:.3f}%"
             
-            # Đặt SL/TP GỐC (không điều chỉnh) để giữ RR ratio
+            # Đặt SL/TP đã điều chỉnh theo slippage
             sl_tp_result = set_position_sl_tp(
                 exchange=exchange,
                 symbol=clean_sym,
                 side=side.lower(),
-                stop_loss=stop_loss,      # SL gốc
-                take_profit=take_profit,  # TP gốc
+                stop_loss=stop_loss,
+                take_profit=take_profit,
             )
             
             if sl_tp_result['success']:
