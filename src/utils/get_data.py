@@ -18,6 +18,48 @@ def _get_exchange_from_env():
     return os.getenv('EXCHANGE', 'binance').lower()
 
 
+def _get_current_module():
+    return EXCHANGES[_get_exchange_from_env()]
+
+
+# Re-export all public functions from the selected exchange module
+def get_binance_candles(*args, **kwargs):
+    return _get_current_module().get_binance_candles(*args, **kwargs)
+
+def get_latest_candles(*args, **kwargs):
+    return _get_current_module().get_latest_candles(*args, **kwargs)
+
+def save_to_csv(*args, **kwargs):
+    return _get_current_module().save_to_csv(*args, **kwargs)
+
+def get_and_save_data(*args, **kwargs):
+    return _get_current_module().get_and_save_data(*args, **kwargs)
+
+def get_and_save_multiple_data(*args, **kwargs):
+    return _get_current_module().get_and_save_multiple_data(*args, **kwargs)
+
+def fetch_and_save_candles(*args, **kwargs):
+    return _get_current_module().fetch_and_save_candles(*args, **kwargs)
+
+def fetch_and_save_candles_parallel(*args, **kwargs):
+    return _get_current_module().fetch_and_save_candles_parallel(*args, **kwargs)
+
+def append_latest_candle(*args, **kwargs):
+    return _get_current_module().append_latest_candle(*args, **kwargs)
+
+def append_latest_candle_parallel(*args, **kwargs):
+    return _get_current_module().append_latest_candle_parallel(*args, **kwargs)
+
+def getdata_by_date(*args, **kwargs):
+    return _get_current_module().getdata_by_date(*args, **kwargs)
+
+def getdata_by_candles(*args, **kwargs):
+    return _get_current_module().getdata_by_candles(*args, **kwargs)
+
+def getdata(*args, **kwargs):
+    return _get_current_module().getdata(*args, **kwargs)
+
+
 def get_data_module(exchange: str = None):
     if exchange is None:
         exchange = _get_exchange_from_env()

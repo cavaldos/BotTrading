@@ -36,7 +36,7 @@ from src.statistics import (
 from src.config import load_config
 
 # Import utility functions
-from src.utils.get_data import remove_all_files
+from src.utils.remove_all_files import remove_all_files
 
 
 # ==============================================================================
