@@ -7,6 +7,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 MAX_ORDER_AGE_MINUTES = 3
+SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
 
 
 from src.trade.core.notify import send_entry_telegram
@@ -130,6 +131,44 @@ def is_order_too_old(entry_time_str: str, max_age_minutes: int = MAX_ORDER_AGE_M
         return False
 
 
+def load_skipped_orders(log_file: Path) -> set:
+    """Load skipped order keys from log file."""
+    if not log_file.exists():
+        return set()
+    try:
+        with open(log_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return set(data.get("skipped_keys", []))
+    except:
+        return set()
+
+
+def save_skipped_order(log_file: Path, order_key: str, reason: str, entry_time: str) -> None:
+    """Save a skipped order to log file."""
+    try:
+        if log_file.exists():
+            with open(log_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            data = {"skipped_keys": [], "skipped_orders": []}
+        
+        if order_key not in data.get("skipped_keys", []):
+            data.setdefault("skipped_keys", []).append(order_key)
+            data.setdefault("skipped_orders", []).append({
+                "key": order_key,
+                "reason": reason,
+                "entry_time": entry_time,
+                "skipped_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+            data["last_updated"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            with open(log_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+    except:
+        pass
+
+
 def scan_open_orders(output_dir: Path) -> list:
     """Scan all CSV files in output_dir and filter OPEN orders."""
     open_orders = []
@@ -197,14 +236,16 @@ async def send_entry_notifications_async(row, risk_per_trade: float, timeout: fl
         raise
 
 
-def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
+def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str = SKIPPED_ORDERS_FILE) -> int:
     """Check for new OPEN orders and send notifications. Returns count of new orders sent."""
     output_path = Path(output_dir)
     log_path = Path(log_file)
+    skipped_path = Path(skipped_file)
     
     update_order_status_from_csv(output_dir, log_file)
     
     sent_keys, sent_orders = load_sent_orders(log_path)
+    skipped_keys = load_skipped_orders(skipped_path)
     open_orders = scan_open_orders(output_path)
     
     new_sent_count = 0
@@ -212,12 +253,13 @@ def check_and_send_open_orders(output_dir: str, log_file: str) -> int:
     for row in open_orders:
         order_key = generate_order_key(row)
         
-        if order_key in sent_keys:
+        if order_key in sent_keys or order_key in skipped_keys:
             continue
         
         entry_time_str = str(row['Entry_Time']).strip()
         if is_order_too_old(entry_time_str):
             print(f"Skipping old order {row['Symbol']} - Entry time: {entry_time_str} (older than {MAX_ORDER_AGE_MINUTES} minutes)")
+            save_skipped_order(skipped_path, order_key, f"Order too old (>{MAX_ORDER_AGE_MINUTES} min)", entry_time_str)
             continue
         
         try:
