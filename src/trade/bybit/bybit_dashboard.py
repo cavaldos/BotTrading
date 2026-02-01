@@ -630,7 +630,17 @@ class BybitDashboard:
             else:
                 for record in records:
                     symbol = record.get('symbol', 'N/A')
-                    side = record.get('side', 'N/A').upper()
+                    # Bybit API trả về side của LỆNH ĐÓNG position, không phải side gốc
+                    # BUY để đóng = position gốc là SELL (SHORT)
+                    # SELL để đóng = position gốc là BUY (LONG)
+                    close_side = record.get('side', 'N/A').upper()
+                    if close_side == 'BUY':
+                        side = 'SELL'  # Đóng bằng BUY → Position gốc là SHORT
+                    elif close_side == 'SELL':
+                        side = 'BUY'   # Đóng bằng SELL → Position gốc là LONG
+                    else:
+                        side = close_side
+                    
                     entry_price = float(record.get('avgEntryPrice', 0) or 0)
                     exit_price = float(record.get('avgExitPrice', 0) or 0)
                     qty = float(record.get('qty', 0) or 0)
