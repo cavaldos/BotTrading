@@ -258,7 +258,7 @@ def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str
         
         entry_time_str = str(row['Entry_Time']).strip()
         if is_order_too_old(entry_time_str):
-            print(f"Skipping old order {row['Symbol']} - Entry time: {entry_time_str} (older than {MAX_ORDER_AGE_MINUTES} minutes)")
+            # (f"Skipping old order {row['Symbol']} - Entry time: {entry_time_str} (older than {MAX_ORDER_AGE_MINUTES} minutes)")
             save_skipped_order(skipped_path, order_key, f"Order too old (>{MAX_ORDER_AGE_MINUTES} min)", entry_time_str)
             continue
         
