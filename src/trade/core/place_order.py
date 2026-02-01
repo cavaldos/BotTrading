@@ -19,6 +19,7 @@ def load_config() -> dict:
 
 CONFIG = load_config()
 risk_per_trade = CONFIG.get("strategy", {}).get("risk_per_trade", 5)
+risk_reward_ratio = CONFIG.get("strategy", {}).get("risk_reward_ratio", 2.0)
 
 
 def place_order(
@@ -55,6 +56,7 @@ def place_order(
             take_profit=take_profit,
             leverage=leverage,
             risk_per_trade=risk_per_trade,
+            risk_reward_ratio=risk_reward_ratio,
         )
         result['bybit'] = bybit_result
         result['success'] = bybit_result.get('success', False)

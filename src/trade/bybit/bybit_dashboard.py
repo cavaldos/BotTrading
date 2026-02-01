@@ -712,6 +712,7 @@ class BybitDashboard:
             positions_table.add_column("Entry", justify="right", style="blue", width=14)
             positions_table.add_column("Mark Price", justify="right", width=14)
             positions_table.add_column("PnL %", justify="right", width=10)
+            positions_table.add_column("PnL (USD)", justify="right", width=14)
             
             # Filter positions with size > 0
             active_positions = [p for p in positions if abs(float(p.get('contracts', 0) or 0)) > 0]
@@ -719,6 +720,7 @@ class BybitDashboard:
             if not active_positions:
                 positions_table.add_row(
                     "[dim]No open positions[/dim]",
+                    "",
                     "",
                     "",
                     "",
@@ -754,6 +756,7 @@ class BybitDashboard:
                     side_color = "green" if side == "LONG" else "red"
                     pnl_color = "green" if pnl_pct >= 0 else "red"
                     pnl_symbol = "+" if pnl_pct >= 0 else ""
+                    pnl_usd_symbol = "+" if unrealised_pnl >= 0 else ""
                     
                     positions_table.add_row(
                         symbol,
@@ -761,7 +764,8 @@ class BybitDashboard:
                         f"{contracts:,.4f}",
                         f"${entry_price:,.2f}",
                         f"${mark_price:,.2f}",
-                        f"[{pnl_color}]{pnl_symbol}{pnl_pct:.2f}%[/{pnl_color}]"
+                        f"[{pnl_color}]{pnl_symbol}{pnl_pct:.2f}%[/{pnl_color}]",
+                        f"[{pnl_color}]{pnl_usd_symbol}${unrealised_pnl:,.2f}[/{pnl_color}]"
                     )
             
             info_text = Text(

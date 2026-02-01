@@ -69,6 +69,9 @@ def validate_and_place_order(
                 'symbol': clean_sym,
             }
         
+        original_stop_loss = stop_loss
+        original_take_profit = take_profit
+
         # Tính take_profit tự động nếu không được truyền vào
         if take_profit is None:
             if side.lower() == 'buy':  # LONG
@@ -81,6 +84,8 @@ def validate_and_place_order(
                 take_profit = entry_price - reward
             
             take_profit = round_price(take_profit)
+
+        original_take_profit = take_profit
         
         # Đặt lệnh market order
         result = place_market_order_with_sl(
@@ -91,6 +96,9 @@ def validate_and_place_order(
             stop_loss=stop_loss,
             risk_per_trade=risk_per_trade,
         )
+
+        result['original_sl'] = original_stop_loss
+        result['original_tp'] = original_take_profit
         
         if result['success']:
             # Đợi position settle trên server (1-2 giây)
@@ -112,9 +120,11 @@ def validate_and_place_order(
             )
             result['slippage_info'] = slippage_info
             
-            # Cập nhật SL/TP đã điều chỉnh
+            # Cập nhật SL/TP đã điều chỉnh (ghi đè giá trị gốc trong result)
             stop_loss = slippage_info['adjusted_sl']
             take_profit = slippage_info['adjusted_tp']
+            result['stop_loss'] = stop_loss
+            result['take_profit'] = take_profit
             
             # ========== ĐIỀU CHỈNH QUANTITY ĐỂ GIỮ RISK CỐ ĐỊNH ==========
             # SL/TP đã được điều chỉnh ở trên, giờ tính quantity để risk = risk_per_trade
@@ -122,44 +132,62 @@ def validate_and_place_order(
             actual_distance_to_sl = abs(actual_entry - stop_loss)
             
             if actual_distance_to_sl > 0:
-                # Quantity cần thiết để risk = risk_per_trade với giá fill thực tế
+                # Quantity cần thiết để risk = risk_per_trade với giá fill thực tế và SL đã điều chỉnh
                 correct_quantity = risk_per_trade / actual_distance_to_sl
                 correct_quantity = round(correct_quantity, 4)
                 
-                excess_quantity = round(current_quantity - correct_quantity, 4)
+                quantity_diff = round(current_quantity - correct_quantity, 4)
+                formatted_symbol = format_symbol(clean_sym)
                 
-                # Nếu đang hold nhiều hơn cần thiết → đóng bớt
-                if excess_quantity > 0.0001:  # Có dư đáng kể
+                # Lấy positionIdx cho hedge mode
+                position_mode = get_position_mode(exchange, clean_sym)
+                if side.lower() == 'buy':
+                    position_idx = position_mode['position_idx_long']
+                else:
+                    position_idx = position_mode['position_idx_short']
+                
+                if quantity_diff > 0.0001:
+                    # Đang hold NHIỀU hơn cần → đóng bớt
                     try:
-                        # Đóng bớt position để giảm risk
                         close_side = 'sell' if side.lower() == 'buy' else 'buy'
-                        formatted_symbol = format_symbol(clean_sym)
-                        
-                        # Lấy positionIdx cho hedge mode
-                        position_mode = get_position_mode(exchange, clean_sym)
-                        if side.lower() == 'buy':
-                            position_idx = position_mode['position_idx_long']
-                        else:
-                            position_idx = position_mode['position_idx_short']
-                        
                         reduce_order = exchange.create_market_order(
                             symbol=formatted_symbol,
                             side=close_side,
-                            amount=excess_quantity,
+                            amount=quantity_diff,
                             params={
                                 'positionIdx': position_idx,
                                 'reduceOnly': True,
                             }
                         )
-                        
-                        result['quantity_adjusted'] = True
+                        result['quantity_adjusted'] = 'reduced'
                         result['original_quantity'] = current_quantity
                         result['final_quantity'] = correct_quantity
-                        result['reduced_quantity'] = excess_quantity
-                        result['reduce_order'] = reduce_order
-                        
+                        result['adjusted_amount'] = quantity_diff
+                        result['adjust_order'] = reduce_order
                     except Exception as e:
                         result['quantity_adjust_error'] = str(e)
+                        result['final_quantity'] = current_quantity
+                        
+                elif quantity_diff < -0.0001:
+                    # Đang hold ÍT hơn cần → mở thêm
+                    try:
+                        add_amount = abs(quantity_diff)
+                        add_order = exchange.create_market_order(
+                            symbol=formatted_symbol,
+                            side=side.lower(),
+                            amount=add_amount,
+                            params={
+                                'positionIdx': position_idx,
+                            }
+                        )
+                        result['quantity_adjusted'] = 'increased'
+                        result['original_quantity'] = current_quantity
+                        result['final_quantity'] = correct_quantity
+                        result['adjusted_amount'] = add_amount
+                        result['adjust_order'] = add_order
+                    except Exception as e:
+                        result['quantity_adjust_error'] = str(e)
+                        result['final_quantity'] = current_quantity
                 else:
                     result['quantity_adjusted'] = False
                     result['final_quantity'] = current_quantity
@@ -183,14 +211,8 @@ def validate_and_place_order(
             
             if sl_tp_result['success']:
                 result['sl_tp_result'] = sl_tp_result
-                result['stop_loss'] = stop_loss
-                result['take_profit'] = take_profit
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
-        
-        # Thêm thông tin TP vào result
-        if take_profit:
-            result['take_profit'] = take_profit
         
         return result
         
@@ -290,6 +312,7 @@ if __name__ == '__main__':
         # TP auto = 100000 + (1000 * 2) = 102000
         leverage=20,
         risk_per_trade=5,
+        risk_reward_ratio=2.0,
     )
     print(bybit_format_order_message(result))
     
