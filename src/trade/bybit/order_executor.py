@@ -86,8 +86,9 @@ def validate_and_place_order(
 
         original_take_profit = take_profit
         
-        # Đặt lệnh market order trực tiếp với giá hiện tại
-        # Không cần expected_entry, sẽ lấy giá thị trường để tính quantity
+        # Đặt lệnh market order
+        # Tính volume dựa trên entry/SL dự kiến để đảm bảo risk = risk_per_trade
+        # Volume này sẽ được giữ cố định, không điều chỉnh khi giá thực tế khác
         result = place_market_order_with_sl(
             exchange=exchange,
             symbol=clean_sym,
@@ -95,7 +96,7 @@ def validate_and_place_order(
             leverage=leverage,
             stop_loss=stop_loss,
             risk_per_trade=risk_per_trade,
-            expected_entry=None,  # Để None, hàm sẽ tự lấy giá thị trường hiện tại
+            expected_entry=entry_price,  # Dùng entry dự kiến để tính volume cố định
         )
 
         result['original_sl'] = original_stop_loss
