@@ -94,6 +94,7 @@ def validate_and_place_order(
             leverage=leverage,
             stop_loss=stop_loss,
             risk_per_trade=risk_per_trade,
+            expected_entry=entry_price,  # Truyền giá entry dự kiến để tính quantity chính xác
         )
 
         result['original_sl'] = original_stop_loss
@@ -127,21 +128,26 @@ def validate_and_place_order(
             result['take_profit'] = take_profit
             
             # ========== TÍNH ACTUAL RISK ==========
-            # Quantity đã được tính với worst-case entry trong place_market_order_with_sl
-            # Nên actual risk sẽ <= risk_per_trade (trừ khi slippage vượt quá max_slippage_pct)
+            # Quantity đã được tính với expected_entry và expected_sl từ signal
+            # Logic điều chỉnh SL/TP:
+            # - Entry xấu: Giữ SL gốc → risk_distance tăng → actual_risk > risk_per_trade
+            # - Entry tốt: Dịch SL → giữ risk_distance → actual_risk = risk_per_trade
             actual_distance_to_sl = abs(actual_entry - stop_loss)
             actual_risk = current_quantity * actual_distance_to_sl
             result['actual_risk'] = round(actual_risk, 2)
             result['final_quantity'] = current_quantity
             
-            # Lưu thông tin worst-case calculation để debug
-            result['worst_entry_used'] = position_info.get('worst_entry')
-            result['max_slippage_pct'] = position_info.get('max_slippage_pct', 0.3)
+            # Tính expected profit nếu TP hit
+            actual_distance_to_tp = abs(take_profit - actual_entry)
+            expected_profit = current_quantity * actual_distance_to_tp
+            result['expected_profit'] = round(expected_profit, 2)
             
-            # Cảnh báo nếu slippage quá lớn (vượt quá max_slippage_pct đã tính)
-            max_slippage = position_info.get('max_slippage_pct', 0.3)
-            if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=max_slippage):
-                result['slippage_warning'] = f"⚠️ Slippage vượt quá {max_slippage}%: {slippage_info['slippage_pct']:.3f}%"
+            # Lưu thông tin để debug
+            result['expected_entry_used'] = position_info.get('expected_entry')
+            
+            # Cảnh báo nếu slippage quá lớn (> 0.5%)
+            if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
+                result['slippage_warning'] = f"⚠️ Slippage cao: {slippage_info['slippage_pct']:.3f}%"
             
             # Đặt SL/TP đã điều chỉnh theo slippage
             sl_tp_result = set_position_sl_tp(

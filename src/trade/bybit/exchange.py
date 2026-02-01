@@ -398,7 +398,7 @@ def place_market_order_with_sl(
     leverage: int = 20,
     stop_loss: float = None,
     risk_per_trade: float = 5,
-    max_slippage_pct: float = 0.3,
+    expected_entry: float = None,
 ) -> dict:
     """
     Place a market order with a stop loss.
@@ -410,10 +410,8 @@ def place_market_order_with_sl(
         leverage: Leverage (default 20)
         stop_loss: Stop loss price (required)
         risk_per_trade: Risk amount in USD (default 5)
-        max_slippage_pct: Maximum expected slippage % (default 0.3%)
-            - Quantity được tính với worst-case entry để đảm bảo risk <= risk_per_trade
-            - LONG: worst_entry = current_price * (1 + slippage)
-            - SHORT: worst_entry = current_price * (1 - slippage)
+        expected_entry: Giá entry dự kiến từ signal (dùng để tính quantity)
+            - Nếu None, sử dụng current_price
 
     Returns:
         dict: Order information
@@ -448,19 +446,13 @@ def place_market_order_with_sl(
             'error': 'Không lấy được giá hiện tại từ sàn',
         }
     
-    # Tính worst-case entry price để đảm bảo risk <= risk_per_trade
-    # Khi bị slippage xấu nhất, quantity đã tính sẵn vẫn giữ risk trong giới hạn
-    if side.lower() == 'buy':  # LONG
-        # Worst case: mua cao hơn dự kiến → khoảng cách đến SL lớn hơn
-        worst_entry = current_price * (1 + max_slippage_pct / 100)
-    else:  # SHORT
-        # Worst case: bán thấp hơn dự kiến → khoảng cách đến SL lớn hơn
-        worst_entry = current_price * (1 - max_slippage_pct / 100)
+    # Sử dụng expected_entry từ signal để tính quantity
+    # Điều này đảm bảo risk = risk_per_trade khi SL được điều chỉnh đúng
+    entry_for_calculation = expected_entry if expected_entry else current_price
     
-    # Tính kích thước vị trí với worst-case entry
-    # Điều này đảm bảo kể cả khi slippage xảy ra, risk vẫn <= risk_per_trade
+    # Tính kích thước vị trí với expected entry từ signal
     position_info = calculate_position_size(
-        entry_price=worst_entry,
+        entry_price=entry_for_calculation,
         stop_loss=stop_loss,
         leverage=leverage,
         risk_per_trade=risk_per_trade,
@@ -468,10 +460,9 @@ def place_market_order_with_sl(
         skip_validation=True,  # Skip SL validation cho market order
     )
     
-    # Lưu thông tin worst_entry để debug
-    position_info['worst_entry'] = round(worst_entry, 4)
+    # Lưu thông tin để debug
+    position_info['expected_entry'] = entry_for_calculation
     position_info['current_price'] = current_price
-    position_info['max_slippage_pct'] = max_slippage_pct
     
     # Đặt lệnh market order
     try:
