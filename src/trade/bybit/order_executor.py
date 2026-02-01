@@ -13,6 +13,7 @@ from src.trade.bybit.exchange import (
     validate_symbol,
     place_market_order_with_sl,
     set_position_sl_tp,
+    get_position_mode,
 )
 from src.trade.bybit.risk_calculator import clean_symbol, adjust_levels_for_slippage_v2, validate_slippage
 from src.utils.rounding import round_price
@@ -127,17 +128,60 @@ def validate_and_place_order(
             result['stop_loss'] = stop_loss
             result['take_profit'] = take_profit
             
-            # ========== TÍNH ACTUAL RISK ==========
-            # Quantity đã được tính với expected_entry và expected_sl từ signal
-            # Logic điều chỉnh SL/TP:
-            # - Entry xấu: Giữ SL gốc → risk_distance tăng → actual_risk > risk_per_trade
-            # - Entry tốt: Dịch SL → giữ risk_distance → actual_risk = risk_per_trade
+            # ========== ĐIỀU CHỈNH QUANTITY ĐỂ GIỮ RISK CỐ ĐỊNH ==========
+            # Khi entry xấu (SL giữ nguyên), risk_distance tăng → cần giảm quantity
+            # Khi entry tốt (SL dịch xa), risk_distance giữ nguyên → không cần điều chỉnh
+            
             actual_distance_to_sl = abs(actual_entry - stop_loss)
+            original_distance = abs(entry_price - original_stop_loss)
+            
+            # Tính quantity đúng để risk = risk_per_trade
+            if actual_distance_to_sl > 0:
+                correct_quantity = risk_per_trade / actual_distance_to_sl
+                correct_quantity = round(correct_quantity, 4)
+                
+                quantity_diff = round(current_quantity - correct_quantity, 4)
+                
+                # Chỉ điều chỉnh nếu đang hold NHIỀU hơn cần (entry xấu)
+                if quantity_diff > 0.0001:
+                    try:
+                        formatted_symbol = format_symbol(clean_sym)
+                        
+                        # Lấy positionIdx cho hedge mode
+                        position_mode = get_position_mode(exchange, clean_sym)
+                        if side.lower() == 'buy':
+                            position_idx = position_mode['position_idx_long']
+                        else:
+                            position_idx = position_mode['position_idx_short']
+                        
+                        # Đóng bớt position để giảm risk
+                        close_side = 'sell' if side.lower() == 'buy' else 'buy'
+                        reduce_order = exchange.create_market_order(
+                            symbol=formatted_symbol,
+                            side=close_side,
+                            amount=quantity_diff,
+                            params={
+                                'positionIdx': position_idx,
+                                'reduceOnly': True,
+                            }
+                        )
+                        result['quantity_adjusted'] = 'reduced'
+                        result['original_quantity'] = current_quantity
+                        result['final_quantity'] = correct_quantity
+                        result['adjusted_amount'] = quantity_diff
+                        current_quantity = correct_quantity  # Cập nhật để tính risk đúng
+                    except Exception as e:
+                        result['quantity_adjust_error'] = str(e)
+                else:
+                    result['quantity_adjusted'] = False
+                    result['final_quantity'] = current_quantity
+            else:
+                result['final_quantity'] = current_quantity
+            
+            # Tính actual risk và expected profit sau điều chỉnh
             actual_risk = current_quantity * actual_distance_to_sl
             result['actual_risk'] = round(actual_risk, 2)
-            result['final_quantity'] = current_quantity
             
-            # Tính expected profit nếu TP hit
             actual_distance_to_tp = abs(take_profit - actual_entry)
             expected_profit = current_quantity * actual_distance_to_tp
             result['expected_profit'] = round(expected_profit, 2)

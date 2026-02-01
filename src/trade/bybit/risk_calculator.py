@@ -94,12 +94,18 @@ def adjust_levels_for_slippage_v2(
 ) -> dict:
     """
     Điều chỉnh SL/TP theo logic:
-    - Entry xấu hơn (LONG: cao hơn, SHORT: thấp hơn): Giữ SL, tính lại TP theo RR mới
-    - Entry tốt hơn (LONG: thấp hơn, SHORT: cao hơn): Dịch SL giữ khoảng cách, tính TP theo RR
+    - Luôn dịch SL để giữ khoảng cách risk cố định với entry thực tế
+    - NHƯNG: SL thực tế không được "gần" hơn SL gốc
+      + LONG: adjusted_sl <= expected_sl (SL không được cao hơn)
+      + SHORT: adjusted_sl >= expected_sl (SL không được thấp hơn)
     
-    Ví dụ LONG: entry=20, sl=15, RR=2 → TP=30
-    - Entry=21 (xấu): SL=15, risk=6, TP=21+(6*2)=33
-    - Entry=19 (tốt): SL=14 (giữ distance=5), TP=19+(5*2)=29
+    Ví dụ LONG: entry=20, sl=15, RR=2
+    - Entry=21 (xấu): SL lý tưởng=16, nhưng 16>15 nên SL=15, risk=6, TP=21+(6*2)=33
+    - Entry=19 (tốt): SL=14 (14<15 OK), risk=5, TP=19+(5*2)=29
+    
+    Ví dụ SHORT: entry=100, sl=105, RR=2
+    - Entry=99 (xấu): SL lý tưởng=104, nhưng 104<105 nên SL=105, risk=6, TP=99-(6*2)=87
+    - Entry=101 (tốt): SL=106 (106>105 OK), risk=5, TP=101-(5*2)=91
     
     Args:
         expected_entry: Giá entry dự kiến
@@ -116,13 +122,17 @@ def adjust_levels_for_slippage_v2(
     if side.lower() == 'buy':  # LONG
         slippage = actual_entry - expected_entry
         
-        if actual_entry >= expected_entry:
-            # Entry cao hơn (xấu) → Giữ SL, tính lại TP
+        # Tính SL lý tưởng (giữ khoảng cách cố định)
+        ideal_sl = actual_entry - original_distance
+        
+        # LONG: SL không được CAO hơn expected_sl
+        if ideal_sl > expected_sl:
+            # Entry xấu (cao hơn) → SL lý tưởng cao hơn SL gốc → dùng SL gốc
             adjusted_sl = expected_sl
             new_risk_distance = actual_entry - adjusted_sl
         else:
-            # Entry thấp hơn (tốt) → Dịch SL xuống giữ khoảng cách
-            adjusted_sl = actual_entry - original_distance
+            # Entry tốt hoặc vừa → dùng SL lý tưởng (thấp hơn hoặc bằng SL gốc)
+            adjusted_sl = ideal_sl
             new_risk_distance = original_distance
         
         # Tính TP theo RR ratio
@@ -131,13 +141,17 @@ def adjust_levels_for_slippage_v2(
     else:  # SHORT
         slippage = expected_entry - actual_entry
         
-        if actual_entry <= expected_entry:
-            # Entry thấp hơn (xấu cho SHORT) → Giữ SL, tính lại TP
+        # Tính SL lý tưởng (giữ khoảng cách cố định)
+        ideal_sl = actual_entry + original_distance
+        
+        # SHORT: SL không được THẤP hơn expected_sl
+        if ideal_sl < expected_sl:
+            # Entry xấu (thấp hơn) → SL lý tưởng thấp hơn SL gốc → dùng SL gốc
             adjusted_sl = expected_sl
             new_risk_distance = adjusted_sl - actual_entry
         else:
-            # Entry cao hơn (tốt cho SHORT) → Dịch SL lên giữ khoảng cách
-            adjusted_sl = actual_entry + original_distance
+            # Entry tốt hoặc vừa → dùng SL lý tưởng (cao hơn hoặc bằng SL gốc)
+            adjusted_sl = ideal_sl
             new_risk_distance = original_distance
         
         # Tính TP theo RR ratio
