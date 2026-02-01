@@ -13,9 +13,8 @@ from src.trade.bybit.exchange import (
     validate_symbol,
     place_market_order_with_sl,
     set_position_sl_tp,
-    get_position_mode,
 )
-from src.trade.bybit.risk_calculator import clean_symbol, adjust_levels_for_slippage_v2, validate_slippage
+from src.trade.bybit.risk_calculator import clean_symbol
 from src.utils.rounding import round_price
 
 
@@ -87,7 +86,8 @@ def validate_and_place_order(
 
         original_take_profit = take_profit
         
-        # Đặt lệnh market order
+        # Đặt lệnh market order trực tiếp với giá hiện tại
+        # Không cần expected_entry, sẽ lấy giá thị trường để tính quantity
         result = place_market_order_with_sl(
             exchange=exchange,
             symbol=clean_sym,
@@ -95,14 +95,14 @@ def validate_and_place_order(
             leverage=leverage,
             stop_loss=stop_loss,
             risk_per_trade=risk_per_trade,
-            expected_entry=entry_price,  # Truyền giá entry dự kiến để tính quantity chính xác
+            expected_entry=None,  # Để None, hàm sẽ tự lấy giá thị trường hiện tại
         )
 
         result['original_sl'] = original_stop_loss
         result['original_tp'] = original_take_profit
         
         if result['success']:
-            # Đợi position settle trên server (1-2 giây)
+            # Đợi position settle trên server
             time.sleep(2)
             
             # Lấy giá fill thực tế từ sàn
@@ -110,75 +110,13 @@ def validate_and_place_order(
             position_info = result.get('position_info', {})
             current_quantity = position_info.get('quantity', 0)
             
-            # Tính slippage và điều chỉnh SL/TP theo logic v2:
-            # - Entry xấu: Giữ SL, tính lại TP theo RR mới
-            # - Entry tốt: Dịch SL giữ khoảng cách, tính TP theo RR
-            slippage_info = adjust_levels_for_slippage_v2(
-                expected_entry=entry_price,
-                actual_entry=actual_entry,
-                expected_sl=stop_loss,
-                side=side.lower(),
-                rr_ratio=risk_reward_ratio,
-            )
-            result['slippage_info'] = slippage_info
-            
-            # Cập nhật SL/TP đã điều chỉnh (ghi đè giá trị gốc trong result)
-            stop_loss = slippage_info['adjusted_sl']
-            take_profit = slippage_info['adjusted_tp']
+            # Giữ nguyên SL/TP gốc, không điều chỉnh theo slippage
             result['stop_loss'] = stop_loss
             result['take_profit'] = take_profit
+            result['final_quantity'] = current_quantity
             
-            # ========== ĐIỀU CHỈNH QUANTITY ĐỂ GIỮ RISK CỐ ĐỊNH ==========
-            # Khi entry xấu (SL giữ nguyên), risk_distance tăng → cần giảm quantity
-            # Khi entry tốt (SL dịch xa), risk_distance giữ nguyên → không cần điều chỉnh
-            
+            # Tính actual risk và expected profit với giá entry thực tế
             actual_distance_to_sl = abs(actual_entry - stop_loss)
-            original_distance = abs(entry_price - original_stop_loss)
-            
-            # Tính quantity đúng để risk = risk_per_trade
-            if actual_distance_to_sl > 0:
-                correct_quantity = risk_per_trade / actual_distance_to_sl
-                correct_quantity = round(correct_quantity, 4)
-                
-                quantity_diff = round(current_quantity - correct_quantity, 4)
-                
-                # Chỉ điều chỉnh nếu đang hold NHIỀU hơn cần (entry xấu)
-                if quantity_diff > 0.0001:
-                    try:
-                        formatted_symbol = format_symbol(clean_sym)
-                        
-                        # Lấy positionIdx cho hedge mode
-                        position_mode = get_position_mode(exchange, clean_sym)
-                        if side.lower() == 'buy':
-                            position_idx = position_mode['position_idx_long']
-                        else:
-                            position_idx = position_mode['position_idx_short']
-                        
-                        # Đóng bớt position để giảm risk
-                        close_side = 'sell' if side.lower() == 'buy' else 'buy'
-                        reduce_order = exchange.create_market_order(
-                            symbol=formatted_symbol,
-                            side=close_side,
-                            amount=quantity_diff,
-                            params={
-                                'positionIdx': position_idx,
-                                'reduceOnly': True,
-                            }
-                        )
-                        result['quantity_adjusted'] = 'reduced'
-                        result['original_quantity'] = current_quantity
-                        result['final_quantity'] = correct_quantity
-                        result['adjusted_amount'] = quantity_diff
-                        current_quantity = correct_quantity  # Cập nhật để tính risk đúng
-                    except Exception as e:
-                        result['quantity_adjust_error'] = str(e)
-                else:
-                    result['quantity_adjusted'] = False
-                    result['final_quantity'] = current_quantity
-            else:
-                result['final_quantity'] = current_quantity
-            
-            # Tính actual risk và expected profit sau điều chỉnh
             actual_risk = current_quantity * actual_distance_to_sl
             result['actual_risk'] = round(actual_risk, 2)
             
@@ -186,14 +124,16 @@ def validate_and_place_order(
             expected_profit = current_quantity * actual_distance_to_tp
             result['expected_profit'] = round(expected_profit, 2)
             
-            # Lưu thông tin để debug
-            result['expected_entry_used'] = position_info.get('expected_entry')
+            # Tính slippage để thông báo (không điều chỉnh)
+            if entry_price > 0:
+                slippage_pct = ((actual_entry - entry_price) / entry_price) * 100
+                result['slippage_info'] = {
+                    'expected_entry': entry_price,
+                    'actual_entry': actual_entry,
+                    'slippage_pct': round(slippage_pct, 4),
+                }
             
-            # Cảnh báo nếu slippage quá lớn (> 0.5%)
-            if not validate_slippage(slippage_info['slippage_pct'], max_slippage_pct=0.5):
-                result['slippage_warning'] = f"⚠️ Slippage cao: {slippage_info['slippage_pct']:.3f}%"
-            
-            # Đặt SL/TP đã điều chỉnh theo slippage
+            # Đặt SL/TP gốc (không điều chỉnh)
             sl_tp_result = set_position_sl_tp(
                 exchange=exchange,
                 symbol=clean_sym,
@@ -236,10 +176,8 @@ def bybit_format_order_message(order_result: dict) -> str:
     stop_loss = order_result.get('stop_loss') or 0
     take_profit = order_result.get('take_profit') or 0
     
-    # Lấy thông tin slippage
+    # Lấy thông tin slippage (chỉ để hiển thị, không điều chỉnh)
     slippage_info = order_result.get('slippage_info', {})
-    original_sl = order_result.get('original_sl', stop_loss)
-    original_tp = order_result.get('original_tp', take_profit)
     slippage_pct = slippage_info.get('slippage_pct', 0)
     expected_entry = slippage_info.get('expected_entry', entry_price)
     
@@ -249,7 +187,7 @@ def bybit_format_order_message(order_result: dict) -> str:
     leverage = position_info.get('leverage', 'N/A')
     contracts = order_result.get('contracts', position_info.get('quantity', 0))
     
-    # Tính Risk/Reward ratio
+    # Tính Risk/Reward ratio thực tế
     rr_ratio = 0
     if side == 'BUY':  # LONG
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
@@ -267,12 +205,13 @@ def bybit_format_order_message(order_result: dict) -> str:
     
     # Thêm thông tin slippage nếu có
     slippage_line = ""
-    adjusted_line = ""
     if slippage_pct != 0:
         slippage_emoji = "⚠️" if abs(slippage_pct) > 0.3 else "ℹ️"
         slippage_line = f"\n├─ Slippage: {slippage_emoji} {slippage_pct:+.3f}%"
-        if original_sl != stop_loss or original_tp != take_profit:
-            adjusted_line = f"\n├─ (SL/TP đã điều chỉnh từ ${original_sl:,.4f} / ${original_tp:,.4f})"
+    
+    # Lấy actual risk và expected profit
+    actual_risk = order_result.get('actual_risk', 0)
+    expected_profit = order_result.get('expected_profit', 0)
     
     message = f"""✅ THÀNH CÔNG
 
@@ -284,8 +223,10 @@ def bybit_format_order_message(order_result: dict) -> str:
 ├─ Actual Entry:   ${entry_price:,.4f}{slippage_line}
 │
 ├─ SL:     ${stop_loss:,.4f}
-├─ TP:     ${take_profit:,.4f}{adjusted_line}
+├─ TP:     ${take_profit:,.4f}
 │
+├─ Risk:   ${actual_risk:.2f}
+├─ Profit: ${expected_profit:.2f}
 └─ RR:     1:{rr_ratio:.2f}"""
     
     return message
