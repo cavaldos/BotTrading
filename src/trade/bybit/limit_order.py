@@ -238,9 +238,6 @@ bybit_format_limit_order_message = format_limit_order_message
 
 
 def cancel_limit_order(symbol: str, order_id: str) -> dict:
-    """
-    Hủy lệnh limit đang chờ.
-    """
     try:
         clean_sym = clean_symbol(symbol)
         exchange = get_exchange()
@@ -257,6 +254,11 @@ def cancel_limit_order(symbol: str, order_id: str) -> dict:
             'symbol': clean_symbol(symbol),
             'order_id': order_id,
         }
+
+
+def cancel_limit_order_by_id(order_id: str) -> dict:
+    from src.trade.bybit.tool.order_manager import cancel_order_by_id
+    return cancel_order_by_id(order_id)
 
 
 def check_limit_order_status(symbol: str, order_id: str) -> dict:
@@ -282,18 +284,19 @@ def check_limit_order_status(symbol: str, order_id: str) -> dict:
 
 
 if __name__ == '__main__':
-    print("="*70)
-    print("Test validate_and_place_limit_order()")
-    print("="*70)
+    # print("="*70)
+    # print("Test validate_and_place_limit_order()")
+    # print("="*70)
     
-    print("\n[TEST] LIMIT order")
-    result = validate_and_place_limit_order(
-        symbol='ETHUSDT_1m',
-        side='sell',
-        entry_price=2353,
-        stop_loss=2363,
-        leverage=20,
-        risk_per_trade=50,
-        risk_reward_ratio=1.0,
-    )
-    print(format_limit_order_message(result))
+    # print("\n[TEST] LIMIT order")
+    # result = validate_and_place_limit_order(
+    #     symbol='ETHUSDT_1m',
+    #     side='sell',
+    #     entry_price=2353,
+    #     stop_loss=2363,
+    #     leverage=20,
+    #     risk_per_trade=50,
+    #     risk_reward_ratio=1.0,
+    # )
+    # print(format_limit_order_message(result))
+    cancel_limit_order_by_id(order_id='dca8b34b-a77e-4fed-929a-8ba6afa2d580')
