@@ -27,7 +27,16 @@ def create_bybit_demo_exchange(api_key: str, secret: str) -> ccxt.bybit:
     return exchange
 
 
-def calculate_position_size(entry_price: float, stop_loss: float, leverage: int, risk_per_trade: float = 5, side: str = 'buy', skip_validation: bool = False) -> dict:
+def calculate_position_size(
+    entry_price: float,
+    stop_loss: float,
+    leverage: int,
+    risk_per_trade: float = 5,
+    side: str = 'buy',
+    skip_validation: bool = False,
+    exchange: ccxt.bybit = None,
+    symbol: str = None,
+) -> dict:
     """
     Calculate position size and margin for a trade.
 
@@ -44,6 +53,8 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
         risk_per_trade: Maximum risk in USD
         side: 'buy' for LONG, 'sell' for SHORT
         skip_validation: Skip SL position validation (for market orders)
+        exchange: CCXT exchange instance (for precision rounding)
+        symbol: Symbol for precision lookup (e.g., 'BTC/USDT:USDT')
 
     Returns:
         dict: Position information (quantity, margin, notional_value)
@@ -65,20 +76,50 @@ def calculate_position_size(entry_price: float, stop_loss: float, leverage: int,
     
     # quantity = risk_per_trade / price_diff
     # Nếu giá chạm stop_loss, lỗ = price_diff * quantity = risk_per_trade
-    quantity = risk_per_trade / price_diff
+    raw_quantity = risk_per_trade / price_diff
+    
+    # Round quantity theo precision của sàn (nếu có exchange và symbol)
+    if exchange and symbol:
+        # Lấy precision từ market info
+        market = exchange.markets.get(symbol, {})
+        amount_precision = market.get('precision', {}).get('amount')
+        min_amount = market.get('limits', {}).get('amount', {}).get('min', 0)
+        
+        if amount_precision:
+            # Sử dụng decimal_to_precision với TRUNCATE để đảm bảo không vượt quá risk
+            from ccxt import decimal_to_precision, TRUNCATE
+            quantity_str = decimal_to_precision(
+                raw_quantity, 
+                TRUNCATE, 
+                amount_precision, 
+                exchange.precisionMode
+            )
+            quantity = float(quantity_str)
+        else:
+            quantity = round(raw_quantity, 4)
+        
+        # Đảm bảo quantity >= min_amount
+        if quantity < min_amount:
+            quantity = min_amount
+    else:
+        # Fallback: round 4 chữ số (legacy behavior)
+        quantity = round(raw_quantity, 4)
     
     # Margin = notional_value / leverage
     notional_value = quantity * entry_price
     margin_required = notional_value / leverage
     
-    # Kiểm tra thực tế rủi ro
+    # Tính lại actual_risk sau khi round quantity
     actual_risk = price_diff * quantity
     
     return {
-        'quantity': round(quantity, 4),
+        'quantity': quantity,
+        'raw_quantity': raw_quantity,  # Quantity trước khi round
         'margin_required': round_price(margin_required),
         'notional_value': round_price(notional_value),
         'actual_risk': round_price(actual_risk),
+        'expected_risk': risk_per_trade,
+        'risk_diff_pct': round((actual_risk - risk_per_trade) / risk_per_trade * 100, 2) if risk_per_trade > 0 else 0,
         'price_diff': round_price(price_diff),
         'leverage': leverage,
         'side': side.lower(),
@@ -451,6 +492,7 @@ def place_market_order_with_sl(
     entry_for_calculation = expected_entry if expected_entry else current_price
     
     # Tính kích thước vị trí với expected entry từ signal
+    # Sử dụng exchange.amount_to_precision để round đúng theo sàn
     position_info = calculate_position_size(
         entry_price=entry_for_calculation,
         stop_loss=stop_loss,
@@ -458,6 +500,8 @@ def place_market_order_with_sl(
         risk_per_trade=risk_per_trade,
         side=side,
         skip_validation=True,  # Skip SL validation cho market order
+        exchange=exchange,
+        symbol=symbol,
     )
     
     # Lưu thông tin để debug
@@ -573,6 +617,7 @@ def place_limit_order_with_sl(
         price_warning = f"SHORT limit: entry ({entry_price}) < current ({current_price}), lệnh có thể fill ngay như market"
     
     # Tính kích thước vị trí với entry price
+    # Sử dụng exchange.amount_to_precision để round đúng theo sàn
     position_info = calculate_position_size(
         entry_price=entry_price,
         stop_loss=stop_loss,
@@ -580,6 +625,8 @@ def place_limit_order_with_sl(
         risk_per_trade=risk_per_trade,
         side=side,
         skip_validation=False,  # Validate SL cho limit order
+        exchange=exchange,
+        symbol=symbol,
     )
     
     # Lưu thông tin để debug
