@@ -381,15 +381,16 @@ class BybitDashboard:
                 header_style="bold yellow",
                 box=None
             )
-            orders_table.add_column("Symbol", style="cyan", width=12)
+            orders_table.add_column("Coin", style="cyan", width=5)
             orders_table.add_column("Side", style="magenta", width=6)
             orders_table.add_column("Type", style="blue", width=6)
-            orders_table.add_column("Quantity", justify="right", width=12)
-            orders_table.add_column("Price", justify="right", style="green", width=5)
-            orders_table.add_column("TP", justify="right", style="cyan", width=8)
+            orders_table.add_column("Qty", justify="right", width=10)
+            orders_table.add_column("Price", justify="right", style="green", width=10)
+            orders_table.add_column("TP", justify="right", style="cyan", width=10)
             orders_table.add_column("SL", justify="right", style="red", width=10)
-            orders_table.add_column("Status", style="yellow", width=10)
-            orders_table.add_column("Time", style="dim", width=10)
+            orders_table.add_column("RR", justify="right", style="magenta", width=8)
+            orders_table.add_column("Status", style="yellow", width=8)
+            orders_table.add_column("Time", style="dim", width=8)
             
             if not orders:
                 orders_table.add_row(
@@ -469,6 +470,8 @@ class BybitDashboard:
                     
                     try:
                         symbol = main_order.get('symbol', 'N/A')
+                        # Extract coin name from symbol (e.g., BTC from BTC/USDT)
+                        coin = symbol.split('/')[0] if '/' in symbol else symbol
                         side = main_order.get('side', 'N/A').upper()
                         order_type = main_order.get('type', 'N/A').upper()
                         amount = main_order.get('amount') or 0
@@ -505,26 +508,47 @@ class BybitDashboard:
                         amount_str = "N/A"
                     
                     try:
-                        price_str = f"${float(price):,.4f}" if price else "$0"
+                        price_str = f"${float(price):,.2f}" if price else "$0"
                     except (ValueError, TypeError):
                         price_str = "N/A"
                     
                     # Format TP
                     try:
-                        tp_str = f"${float(tp_price):,.4f}" if tp_price else "-"
+                        tp_str = f"${float(tp_price):,.2f}" if tp_price else "-"
                     except (ValueError, TypeError):
                         tp_str = "-"
                     
                     # Format SL
                     try:
-                        sl_str = f"${float(sl_price):,.4f}" if sl_price else "-"
+                        sl_str = f"${float(sl_price):,.2f}" if sl_price else "-"
                     except (ValueError, TypeError):
                         sl_str = "-"
                     
-                    # Format time
+                    # Calculate RR (Risk/Reward) ratio
+                    rr_str = "-"
+                    try:
+                        price_f = float(price) if price else None
+                        tp_f = float(tp_price) if tp_price else None
+                        sl_f = float(sl_price) if sl_price else None
+                        
+                        if price_f and tp_f and sl_f:
+                            if side == "BUY":
+                                reward = tp_f - price_f
+                                risk = price_f - sl_f
+                            else:  # SELL
+                                reward = price_f - tp_f
+                                risk = sl_f - price_f
+                            
+                            if risk and risk > 0:
+                                rr_ratio = reward / risk
+                                rr_str = f"{rr_ratio:.2f}"
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        rr_str = "-"
+                    
+                    # Format time (HH:MM only)
                     timestamp = main_order.get('timestamp', 0)
                     if timestamp:
-                        order_time = datetime.fromtimestamp(timestamp/1000).strftime('%H:%M:%S')
+                        order_time = datetime.fromtimestamp(timestamp/1000).strftime('%H:%M')
                     else:
                         order_time = 'N/A'
                     
@@ -533,13 +557,14 @@ class BybitDashboard:
                     status_color = "green" if status == "OPEN" else "yellow"
                     
                     orders_table.add_row(
-                        symbol,
+                        coin,
                         f"[{side_color}]{side}[/{side_color}]",
                         order_type,
                         amount_str,
                         price_str,
                         tp_str,
                         sl_str,
+                        rr_str,
                         f"[{status_color}]{status}[/{status_color}]",
                         order_time
                     )
