@@ -389,17 +389,22 @@ def set_position_sl_tp(
         
         # Xây dựng params cho API v5
         # Endpoint: POST /v5/position/trading-stop
+        # Sử dụng Stop Limit thay vì Stop Market để tránh slippage
         params = {
             'category': 'linear',  # USDT perpetual
             'symbol': api_symbol,
             'positionIdx': position_idx,
             'stopLoss': str(stop_loss),
             'slTriggerBy': 'LastPrice',
+            'slOrderType': 'Limit',  # Stop Limit thay vì Stop Market
+            'slLimitPrice': str(stop_loss),  # Giá limit = trigger price
         }
         
         if take_profit:
             params['takeProfit'] = str(take_profit)
             params['tpTriggerBy'] = 'LastPrice'
+            params['tpOrderType'] = 'Limit'  # TP cũng dùng Limit
+            params['tpLimitPrice'] = str(take_profit)
         
         # Sử dụng API v5 endpoint
         result = exchange.privatePostV5PositionTradingStop(params)
@@ -652,16 +657,21 @@ def place_limit_order_with_sl(
         
         # Thêm SL/TP vào lệnh limit nếu có
         # Bybit hỗ trợ đặt SL/TP cùng lúc với lệnh entry
+        # Sử dụng Stop Limit thay vì Stop Market để tránh slippage
         if stop_loss:
             order_params['stopLoss'] = {
                 'triggerPrice': str(stop_loss),
                 'slTriggerBy': 'LastPrice',
+                'slOrderType': 'Limit',  # Stop Limit thay vì Stop Market
+                'slLimitPrice': str(stop_loss),  # Giá limit = trigger price
             }
         
         if take_profit:
             order_params['takeProfit'] = {
                 'triggerPrice': str(take_profit),
                 'tpTriggerBy': 'LastPrice',
+                'tpOrderType': 'Limit',  # TP cũng dùng Limit
+                'tpLimitPrice': str(take_profit),
             }
         
         # Đặt lệnh limit với positionIdx
