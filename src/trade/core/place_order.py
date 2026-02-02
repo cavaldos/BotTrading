@@ -1,23 +1,21 @@
-import yaml
+import yaml  # pyright: ignore[reportMissingModuleSource]
 import time
 from datetime import datetime
 from pathlib import Path
 
-
-from src.trade.bybit.order_executor import (
-    validate_and_place_order as bybit_place_order,
+from src.trade.bybit.market_order import (
+    validate_and_place_order as bybit_place_market_order,
+    format_market_order_message as bybit_format_market_message,
+)
+from src.trade.bybit.limit_order import (
     validate_and_place_limit_order as bybit_place_limit_order,
-    bybit_format_order_message,
-    bybit_format_limit_order_message,
+    format_limit_order_message as bybit_format_limit_message,
     cancel_limit_order as bybit_cancel_limit_order,
     check_limit_order_status as bybit_check_limit_order_status,
 )
 
 
-
-# Load config
 def load_config() -> dict:
-    """Load configuration from config.yaml"""
     config_path = Path(__file__).parent.parent / "config.yaml"
     if not config_path.exists():
         return {}
@@ -30,7 +28,7 @@ risk_per_trade = CONFIG.get("strategy", {}).get("risk_per_trade", 5)
 risk_reward_ratio = CONFIG.get("strategy", {}).get("risk_reward_ratio", 2.0)
 
 
-def place_order(
+def place_market_order(
     symbol: str,
     order_type: str,
     entry_price: float,
@@ -41,14 +39,6 @@ def place_order(
     risk_per_trade: float = risk_per_trade,
     signal_timestamp: float = None,
 ) -> dict:
-    """    
-    Args:
-        risk_per_trade: load from config
-        signal_timestamp: Thời điểm nhận tín hiệu (time.time()), dùng để đo latency
-    
-    Returns:
-        dict: result of placing order on Bybit
-    """
     order_type = order_type.strip().upper()
     side = 'buy' if order_type in ('BUY', 'LONG') else 'sell'
     
@@ -58,7 +48,7 @@ def place_order(
     }
     
     try:
-        bybit_result = bybit_place_order(
+        bybit_result = bybit_place_market_order(
             symbol=symbol,
             side=side,
             entry_price=entry_price,
@@ -90,27 +80,10 @@ def place_limit_order(
     entry_time: str = None,
     leverage: int = 20,
     risk_per_trade: float = risk_per_trade,
+    risk_reward_ratio: float = risk_reward_ratio,
     signal_timestamp: float = None,
     time_in_force: str = 'GTC',
 ) -> dict:
-    """
-    Đặt lệnh LIMIT trên Bybit.
-    
-    Args:
-        symbol: Symbol giao dịch (e.g., 'BTCUSDT_1m')
-        order_type: 'BUY', 'LONG', 'SELL', 'SHORT'
-        entry_price: Giá limit để vào lệnh
-        stop_loss: Giá stop loss
-        take_profit: Giá take profit (optional, tự tính nếu None)
-        entry_time: Thời gian entry (optional)
-        leverage: Đòn bẩy (default 20)
-        risk_per_trade: Rủi ro USD (load from config)
-        signal_timestamp: Thời điểm nhận tín hiệu (time.time()), dùng để đo latency
-        time_in_force: 'GTC', 'IOC', 'FOK', 'PostOnly' (default 'GTC')
-    
-    Returns:
-        dict: result of placing limit order on Bybit with order_id
-    """
     order_type = order_type.strip().upper()
     side = 'buy' if order_type in ('BUY', 'LONG') else 'sell'
     
@@ -147,16 +120,6 @@ def place_limit_order(
 
 
 def cancel_order(symbol: str, order_id: str) -> dict:
-    """
-    Hủy lệnh limit đang chờ.
-    
-    Args:
-        symbol: Symbol giao dịch
-        order_id: ID của lệnh cần hủy
-    
-    Returns:
-        dict: Kết quả hủy lệnh
-    """
     result = {
         'success': False,
         'bybit': None,
@@ -176,16 +139,6 @@ def cancel_order(symbol: str, order_id: str) -> dict:
 
 
 def check_order_status(symbol: str, order_id: str) -> dict:
-    """
-    Kiểm tra trạng thái lệnh.
-    
-    Args:
-        symbol: Symbol giao dịch
-        order_id: ID của lệnh cần kiểm tra
-    
-    Returns:
-        dict: Trạng thái lệnh
-    """
     result = {
         'success': False,
         'bybit': None,
@@ -215,10 +168,11 @@ if __name__ == "__main__":
         take_profit=None,
         entry_time=datetime.utcnow().isoformat(),
         leverage=10,
+        risk_reward_ratio=2.0,
         risk_per_trade=5,
     )
 
     if order_result.get('bybit'):
         print("\n[BYBIT]")
-        print(bybit_format_order_message(order_result.get('bybit')))
+        print(bybit_format_limit_message(order_result.get('bybit')))
     
