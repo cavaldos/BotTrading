@@ -37,6 +37,7 @@ class Trade:
     entry_price: float
     stop_loss: float
     take_profit: float
+    rr_ratio: Optional[float] = None
     
     # Exit info (calculated by TradeSimulator)
     exit_time: Optional[datetime] = None
@@ -156,6 +157,11 @@ class TradeSimulator:
                 entry_idx, is_long, signal.stop_loss, signal.take_profit,
                 data_highs, data_lows, data_closes, data_times
             )
+
+            rr_ratio = None
+            sl_distance = abs(signal.entry_price - signal.stop_loss)
+            if sl_distance > 0:
+                rr_ratio = abs(signal.take_profit - signal.entry_price) / sl_distance
             
             # Convert exit time back to datetime
             exit_ts = pd.Timestamp(data_times[exit_idx], unit='ns')
@@ -168,6 +174,7 @@ class TradeSimulator:
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit,
+                rr_ratio=rr_ratio,
                 exit_time=exit_time_dt,
                 exit_price=exit_price,
                 result=result_map[result_code]
@@ -202,6 +209,7 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
             'Entry_Price': round_price(t.entry_price),
             'Stop_Loss': round_price(t.stop_loss),
             'Take_Profit': round_price(t.take_profit),
+            'RR': round(t.rr_ratio, 2) if t.rr_ratio is not None else None,
             'Exit_Time': t.exit_time,
             'Exit_Price': round_price(t.exit_price) if t.exit_price else None,
             'Result': result
@@ -234,6 +242,10 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             'open_trades': 0,
             'win_rate': 0.0,
             'avg_sl_percent': 0.0,
+            'avg_rr': 0.0,
+            'total_rr_wins': 0.0,
+            'total_rr': 0.0,
+            'rr_count': 0,
             'longest_win_streak': 0,
             'longest_loss_streak': 0
         }
@@ -257,6 +269,11 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             sl_pct = abs(t.entry_price - t.stop_loss) / t.entry_price * 100
             sl_percentages.append(sl_pct)
     avg_sl_percent = sum(sl_percentages) / len(sl_percentages) if sl_percentages else 0
+
+    rr_values = [t.rr_ratio for t in trades if t.rr_ratio is not None]
+    avg_rr = sum(rr_values) / len(rr_values) if rr_values else 0
+    total_rr = sum(rr_values) if rr_values else 0
+    total_rr_wins = sum(t.rr_ratio for t in trades if t.result == 'WIN' and t.rr_ratio is not None)
     
     # Calculate streaks
     longest_win_streak = 0
@@ -282,6 +299,10 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         'open_trades': open_count,
         'win_rate': round(win_rate, 2),
         'avg_sl_percent': round(avg_sl_percent, 2),
+        'avg_rr': round(avg_rr, 2),
+        'total_rr_wins': total_rr_wins,
+        'total_rr': total_rr,
+        'rr_count': len(rr_values),
         'longest_win_streak': longest_win_streak,
         'longest_loss_streak': longest_loss_streak
     }
@@ -303,9 +324,12 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     total_open = sum(s['open_trades'] for s in all_summaries)
     total_closed = total_wins + total_losses
     overall_win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0
+    total_rr_wins = sum(s['total_rr_wins'] for s in all_summaries)
+    total_rr = sum(s['total_rr'] for s in all_summaries)
+    total_rr_count = sum(s['rr_count'] for s in all_summaries)
+    overall_avg_rr = total_rr / total_rr_count if total_rr_count > 0 else 0
     
-    # Get RR ratio and SL multiplier from config
-    rr_ratio = config.risk_reward_ratio
+    # Get SL multiplier from config
     sl_multiplier = config.sl_multiplier
     
     # Group summaries by timeframe
@@ -336,8 +360,8 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # Add results grouped by timeframe
     for timeframe in sorted_timeframes:
         for summary in timeframe_groups[timeframe]:
-            # ROE = (Wins * RR Ratio) - Losses
-            roe = (summary['wins'] * rr_ratio) - summary['losses']
+            # ROE = (Sum RR Wins) - Losses
+            roe = summary['total_rr_wins'] - summary['losses']
             row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
                 summary['symbol'],
                 summary['total_trades'],
@@ -346,7 +370,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
                 summary['open_trades'],
                 f"*{summary['win_rate']}%*",
                 f"{summary['avg_sl_percent']}%",
-                f"{rr_ratio}",
+                f"{summary['avg_rr']}",
                 f"{sl_multiplier}",
                 f"{round(roe, 2)}",
                 summary['longest_win_streak'],
@@ -355,8 +379,8 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
             lines.append(row)
     
     # Add overall summary
-    # ROE = (Total Wins * RR Ratio) - Total Losses
-    overall_roe = (total_wins * rr_ratio) - total_losses
+    # ROE = (Total RR Wins) - Total Losses
+    overall_roe = total_rr_wins - total_losses
     
     # Calculate overall streaks and average SL percent
     overall_longest_win_streak = 0
@@ -377,7 +401,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         total_open,
         f"*{round(overall_win_rate, 2)}%*",
         f"{round(overall_avg_sl_percent, 2)}%",
-        f"{rr_ratio}",
+        f"{round(overall_avg_rr, 2)}",
         f"{sl_multiplier}",
         f"{round(overall_roe, 2)}",
         overall_longest_win_streak,
