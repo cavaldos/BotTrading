@@ -119,14 +119,15 @@ def generate_order_key(row: pd.Series) -> str:
 
 
 def is_order_too_old(entry_time_str: str, max_age_minutes: int = MAX_ORDER_AGE_MINUTES) -> bool:
-    """Check if order is too old (entry_time is in GMT, compare with current GMT time)."""
+    """Check if order is too old (entry_time is UTC+0, compare with current GMT+7 time)."""
     try:
         entry_time = datetime.strptime(entry_time_str.strip(), '%Y-%m-%d %H:%M:%S')
         entry_time_utc = entry_time.replace(tzinfo=timezone.utc)
+        local_tz = timezone(timedelta(hours=7))
+        entry_time_local = entry_time_utc.astimezone(local_tz)
+        current_time_local = datetime.now(local_tz)
         
-        current_time_utc = datetime.now(timezone.utc)
-        
-        age = current_time_utc - entry_time_utc
+        age = current_time_local - entry_time_local
         return age > timedelta(minutes=max_age_minutes)
     except Exception:
         return False
@@ -193,7 +194,7 @@ def scan_open_orders(output_dir: Path) -> list:
                 open_orders.append(row)
                 
         except Exception as e:
-            print(f"Error scanning {csv_file}: {e}")
+            # print(f"Error scanning {csv_file}: {e}")
             continue
     
     return open_orders
@@ -282,12 +283,22 @@ def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str
             
             if order_result.get('bybit'):
                 bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
+
+            bybit_order_id = None
+            if order_result.get('bybit'):
+                bybit_order = order_result['bybit']
+                bybit_order_id = (
+                    bybit_order.get('order_id')
+                    or bybit_order.get('order', {}).get('id')
+                    or bybit_order.get('order', {}).get('info', {}).get('orderId')
+                )
             
             combined_result = f"{bybit_msg}\n\n{okx_msg}".strip()
             asyncio.run(send_entry_notifications_async(row, risk_per_trade, combined_result=combined_result))
             
             order_detail = {
                 "key": order_key,
+                "order_id": bybit_order_id,
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
                 "take_profit": float(row['Take_Profit']),
