@@ -500,6 +500,235 @@ def place_market_order_with_sl(
         }
 
 
+def place_limit_order_with_sl(
+    exchange: ccxt.bybit,
+    symbol: str,
+    side: str = 'buy',
+    leverage: int = 20,
+    entry_price: float = None,
+    stop_loss: float = None,
+    take_profit: float = None,
+    risk_per_trade: float = 5,
+    time_in_force: str = 'GTC',
+    reduce_only: bool = False,
+) -> dict:
+    """
+    Place a limit order with stop loss and take profit.
+
+    Args:
+        exchange: CCXT bybit instance
+        symbol: Symbol (e.g., 'BTCUSDT' or 'BTC/USDT:USDT')
+        side: 'buy' for long, 'sell' for short
+        leverage: Leverage (default 20)
+        entry_price: Limit price for entry (required)
+        stop_loss: Stop loss price (required)
+        take_profit: Take profit price (optional)
+        risk_per_trade: Risk amount in USD (default 5)
+        time_in_force: Order time in force - 'GTC' (Good Till Cancel), 
+                       'IOC' (Immediate Or Cancel), 'FOK' (Fill Or Kill), 
+                       'PostOnly' (default 'GTC')
+        reduce_only: If True, only reduce position (default False)
+
+    Returns:
+        dict: Order information including order_id for tracking
+    """
+    if not entry_price:
+        raise ValueError("Phải nhập entry_price cho limit order")
+    if not stop_loss:
+        raise ValueError("Phải nhập stop_loss")
+    
+    # Format symbol
+    symbol = format_symbol(symbol)
+    
+    # Bật Hedge Mode để có thể long và short cùng lúc
+    hedge_result = enable_hedge_mode(exchange, symbol)
+    
+    # Detect Position Mode sau khi enable
+    position_mode = get_position_mode(exchange, symbol)
+    
+    # Xác định positionIdx cho lệnh
+    if side.lower() == 'buy':
+        position_idx = position_mode['position_idx_long']
+    else:
+        position_idx = position_mode['position_idx_short']
+    
+    # Lấy giá hiện tại để tham khảo
+    ticker = exchange.fetch_ticker(symbol)
+    current_price = ticker.get('last')
+    
+    # Validate current_price
+    if current_price is None:
+        return {
+            'success': False,
+            'error': 'Không lấy được giá hiện tại từ sàn',
+        }
+    
+    # Validate limit price logic
+    # LONG: entry_price nên <= current_price (mua thấp hơn)
+    # SHORT: entry_price nên >= current_price (bán cao hơn)
+    price_warning = None
+    if side.lower() == 'buy' and entry_price > current_price:
+        price_warning = f"LONG limit: entry ({entry_price}) > current ({current_price}), lệnh có thể fill ngay như market"
+    elif side.lower() == 'sell' and entry_price < current_price:
+        price_warning = f"SHORT limit: entry ({entry_price}) < current ({current_price}), lệnh có thể fill ngay như market"
+    
+    # Tính kích thước vị trí với entry price
+    position_info = calculate_position_size(
+        entry_price=entry_price,
+        stop_loss=stop_loss,
+        leverage=leverage,
+        risk_per_trade=risk_per_trade,
+        side=side,
+        skip_validation=False,  # Validate SL cho limit order
+    )
+    
+    # Lưu thông tin để debug
+    position_info['entry_price'] = entry_price
+    position_info['current_price'] = current_price
+    
+    # Đặt lệnh limit order
+    try:
+        # Set leverage trước (nếu cần)
+        try:
+            exchange.set_leverage(leverage, symbol)
+        except Exception:
+            pass
+        
+        # Build order params
+        order_params = {
+            'positionIdx': position_idx,
+            'timeInForce': time_in_force,
+        }
+        
+        if reduce_only:
+            order_params['reduceOnly'] = True
+        
+        # Thêm SL/TP vào lệnh limit nếu có
+        # Bybit hỗ trợ đặt SL/TP cùng lúc với lệnh entry
+        if stop_loss:
+            order_params['stopLoss'] = {
+                'triggerPrice': str(stop_loss),
+                'slTriggerBy': 'LastPrice',
+            }
+        
+        if take_profit:
+            order_params['takeProfit'] = {
+                'triggerPrice': str(take_profit),
+                'tpTriggerBy': 'LastPrice',
+            }
+        
+        # Đặt lệnh limit với positionIdx
+        order = exchange.create_limit_order(
+            symbol=symbol,
+            side=side,
+            amount=position_info['quantity'],
+            price=entry_price,
+            params=order_params,
+        )
+        
+        # Extract order info
+        order_id = order.get('id') or order.get('info', {}).get('orderId')
+        order_status = order.get('status', 'open')
+        
+        result = {
+            'success': True,
+            'order': order,
+            'order_id': order_id,
+            'order_status': order_status,
+            'order_type': 'limit',
+            'position_info': position_info,
+            'entry_price': entry_price,
+            'current_price': current_price,
+            'stop_loss': stop_loss,
+            'take_profit': take_profit,
+            'position_mode': position_mode['mode'],
+            'position_idx': position_idx,
+            'time_in_force': time_in_force,
+        }
+        
+        if price_warning:
+            result['price_warning'] = price_warning
+        
+        return result
+        
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'position_info': position_info,
+        }
+
+
+def cancel_order(
+    exchange: ccxt.bybit,
+    symbol: str,
+    order_id: str,
+) -> dict:
+    """
+    Cancel an open order.
+
+    Args:
+        exchange: CCXT bybit instance
+        symbol: Symbol (e.g., 'BTCUSDT' or 'BTC/USDT:USDT')
+        order_id: Order ID to cancel
+
+    Returns:
+        dict: Result of cancellation
+    """
+    try:
+        symbol = format_symbol(symbol)
+        result = exchange.cancel_order(order_id, symbol)
+        
+        return {
+            'success': True,
+            'order_id': order_id,
+            'result': result,
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'order_id': order_id,
+        }
+
+
+def get_order_status(
+    exchange: ccxt.bybit,
+    symbol: str,
+    order_id: str,
+) -> dict:
+    """
+    Get the status of an order.
+
+    Args:
+        exchange: CCXT bybit instance
+        symbol: Symbol (e.g., 'BTCUSDT' or 'BTC/USDT:USDT')
+        order_id: Order ID to check
+
+    Returns:
+        dict: Order status information
+    """
+    try:
+        symbol = format_symbol(symbol)
+        order = exchange.fetch_order(order_id, symbol)
+        
+        return {
+            'success': True,
+            'order_id': order_id,
+            'status': order.get('status'),
+            'filled': order.get('filled', 0),
+            'remaining': order.get('remaining', 0),
+            'average': order.get('average'),
+            'order': order,
+        }
+    except Exception as e:
+        return {
+            'success': False,
+            'error': str(e),
+            'order_id': order_id,
+        }
+
+
 if __name__ == '__main__':
     exchange = get_exchange()
     

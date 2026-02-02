@@ -14,7 +14,7 @@ SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
 from src.trade.core.notify import send_entry_telegram
 from src.trade.core.discord_notify import send_entry_discord
 
-from .place_order import place_order, bybit_format_order_message, risk_per_trade
+from .place_order import place_limit_order as place_order, bybit_format_order_message, risk_per_trade
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
