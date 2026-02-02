@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import time
 import asyncio
 import pandas as pd
 from datetime import datetime, timezone, timedelta
@@ -263,6 +264,9 @@ def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str
             continue
         
         try:
+            # Ghi nhận thời điểm bắt đầu xử lý order (signal detected)
+            signal_timestamp = time.time()
+            
             order_result = place_order(
                 symbol=row['Symbol'],
                 order_type=row['Type'],
@@ -271,6 +275,7 @@ def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str
                 take_profit=None,
                 entry_time=row['Entry_Time'],
                 risk_per_trade=risk_per_trade,
+                signal_timestamp=signal_timestamp,
             )
             bybit_msg = ""
             okx_msg = ""

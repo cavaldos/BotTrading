@@ -1,4 +1,5 @@
 import yaml
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -31,10 +32,12 @@ def place_order(
     entry_time: str,
     leverage: int = 20,
     risk_per_trade: float = risk_per_trade,
+    signal_timestamp: float = None,
 ) -> dict:
     """    
     Args:
         risk_per_trade: load from config
+        signal_timestamp: Thời điểm nhận tín hiệu (time.time()), dùng để đo latency
     
     Returns:
         dict: result of placing order on Bybit
@@ -57,6 +60,7 @@ def place_order(
             leverage=leverage,
             risk_per_trade=risk_per_trade,
             risk_reward_ratio=risk_reward_ratio,
+            signal_timestamp=signal_timestamp,
         )
         result['bybit'] = bybit_result
         result['success'] = bybit_result.get('success', False)

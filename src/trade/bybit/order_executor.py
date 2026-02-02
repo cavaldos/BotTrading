@@ -27,6 +27,7 @@ def validate_and_place_order(
     leverage: int = 20,
     risk_per_trade: float = 5,
     risk_reward_ratio: float = 2.0,
+    signal_timestamp: float = None,
 ) -> dict:
     """
     Args:
@@ -38,11 +39,19 @@ def validate_and_place_order(
         leverage: Đòn bẩy
         risk_per_trade: Rủi ro USD
         risk_reward_ratio: Tỉ lệ Risk:Reward (mặc định 2.0 = RR 1:2)
+        signal_timestamp: Thời điểm nhận tín hiệu (time.time()), dùng để đo latency
     
     Returns:
         dict: Kết quả đặt lệnh
     """
     try:
+        # Bắt đầu đếm thời gian thực thi
+        execution_start = time.time()
+        
+        # Nếu có signal_timestamp, tính thời gian từ khi nhận tín hiệu
+        signal_to_execution_start = None
+        if signal_timestamp is not None:
+            signal_to_execution_start = execution_start - signal_timestamp
         # Validate required inputs
         if entry_price is None or stop_loss is None:
             return {
@@ -103,6 +112,10 @@ def validate_and_place_order(
         result['original_tp'] = original_take_profit
         
         if result['success']:
+            # Ghi nhận thời điểm đặt lệnh thành công (trước khi sleep)
+            order_filled_time = time.time()
+            order_execution_time = order_filled_time - execution_start
+            
             # Đợi position settle trên server
             time.sleep(2)
             
@@ -147,6 +160,19 @@ def validate_and_place_order(
                 result['sl_tp_result'] = sl_tp_result
             else:
                 result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
+            
+            # Thêm thông tin timing
+            total_execution_time = time.time() - execution_start
+            result['timing'] = {
+                'order_execution_seconds': round(order_execution_time, 3),
+                'total_execution_seconds': round(total_execution_time, 3),
+            }
+            
+            # Thêm thời gian từ signal nếu có
+            if signal_timestamp is not None:
+                signal_to_order_filled = order_filled_time - signal_timestamp
+                result['timing']['signal_to_order_seconds'] = round(signal_to_order_filled, 3)
+                result['timing']['signal_to_execution_start_seconds'] = round(signal_to_execution_start, 3)
         
         return result
         
@@ -214,6 +240,21 @@ def bybit_format_order_message(order_result: dict) -> str:
     actual_risk = order_result.get('actual_risk', 0)
     expected_profit = order_result.get('expected_profit', 0)
     
+    # Lấy thông tin timing
+    timing = order_result.get('timing', {})
+    timing_line = ""
+    if timing:
+        order_exec = timing.get('order_execution_seconds', 0)
+        signal_to_order = timing.get('signal_to_order_seconds')
+        
+        if signal_to_order is not None:
+            # Có signal timestamp - hiển thị đầy đủ
+            timing_line = f"\n│\n├─ ⏱️ Signal → Order: {signal_to_order:.2f}s"
+            timing_line += f"\n├─ ⏱️ Order Execution: {order_exec:.2f}s"
+        else:
+            # Chỉ có thời gian execution
+            timing_line = f"\n│\n├─ ⏱️ Order Execution: {order_exec:.2f}s"
+    
     message = f"""✅ THÀNH CÔNG
 
 {side_emoji} {side_text} {symbol}
@@ -228,7 +269,7 @@ def bybit_format_order_message(order_result: dict) -> str:
 │
 ├─ Risk:   ${actual_risk:.2f}
 ├─ Profit: ${expected_profit:.2f}
-└─ RR:     1:{rr_ratio:.2f}"""
+└─ RR:     1:{rr_ratio:.2f}{timing_line}"""
     
     return message
 
