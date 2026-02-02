@@ -188,7 +188,7 @@ class OutputFolderHandler(FileSystemEventHandler):
         self.output_folder = output_folder
         self.log_file = log_file
         self.last_processed = 0
-        self.debounce_seconds = 2
+        self.debounce_seconds = 0.1
     
     def on_any_event(self, event):
         if event.is_directory:
