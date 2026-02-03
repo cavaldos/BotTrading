@@ -11,11 +11,10 @@ MAX_ORDER_AGE_MINUTES = 10
 SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
 
 
-from src.trade.core.notify import send_entry_telegram
 from src.trade.core.discord_notify import send_entry_discord
 
-from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
-# from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
+# from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
+from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -204,23 +203,25 @@ def scan_open_orders_from_files(csv_files: list[Path]) -> list:
     return open_orders
 
 
-async def send_entry_notifications_async(row, risk_per_trade: float, timeout: float = 60, combined_result: str = None):
-    """Send entry notifications to Telegram and Discord asynchronously."""
+async def send_entry_notifications_async(
+    row,
+    risk_per_trade: float,
+    timeout: float = 60,
+    combined_result: str | None = None,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+):
+    """Send entry notifications to Discord asynchronously."""
     try:
-        params_tele = {
-            "type": row['Type'],
-            "entry": float(row['Entry_Price']),
-            "stoploss": float(row['Stop_Loss']),
-            "takeprofit": float(row['Take_Profit']),
-            "time": row['Entry_Time'],
-            "name_coin": row['Symbol'],
-            "risk_per_trade": risk_per_trade
-        }
+        entry_value = float(entry_price) if entry_price is not None else float(row['Entry_Price'])
+        stop_loss_value = float(stop_loss) if stop_loss is not None else float(row['Stop_Loss'])
+        take_profit_value = float(take_profit) if take_profit is not None else float(row['Take_Profit'])
         params_dis = {
             "type": row['Type'],
-            "entry": float(row['Entry_Price']),
-            "stoploss": float(row['Stop_Loss']),
-            "takeprofit": float(row['Take_Profit']),
+            "entry": entry_value,
+            "stoploss": stop_loss_value,
+            "takeprofit": take_profit_value,
             "time": row['Entry_Time'],
             "name_coin": row['Symbol'],
             "result": combined_result,
@@ -229,7 +230,6 @@ async def send_entry_notifications_async(row, risk_per_trade: float, timeout: fl
         
         await asyncio.wait_for(
             asyncio.gather(
-                asyncio.to_thread(send_entry_telegram, **params_tele),
                 asyncio.to_thread(send_entry_discord, **params_dis),
                 return_exceptions=True
             ),
@@ -295,10 +295,22 @@ def check_and_send_open_orders(
                 signal_timestamp=signal_timestamp,
             )
             bybit_msg = ""
-            okx_msg = ""
             
             if order_result.get('bybit'):
                 bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
+
+            notify_entry = float(row['Entry_Price'])
+            notify_stop_loss = float(row['Stop_Loss'])
+            notify_take_profit = float(row['Take_Profit'])
+            if order_result.get('bybit', {}).get('success'):
+                bybit_order = order_result['bybit']
+                notify_entry = (
+                    bybit_order.get('entry_price')
+                    or bybit_order.get('slippage_info', {}).get('actual_entry')
+                    or notify_entry
+                )
+                notify_stop_loss = bybit_order.get('stop_loss') or notify_stop_loss
+                notify_take_profit = bybit_order.get('take_profit') or notify_take_profit
 
             bybit_order_id = None
             if order_result.get('bybit'):
@@ -309,8 +321,17 @@ def check_and_send_open_orders(
                     or bybit_order.get('order', {}).get('info', {}).get('orderId')
                 )
             
-            combined_result = f"{bybit_msg}\n\n{okx_msg}".strip()
-            asyncio.run(send_entry_notifications_async(row, risk_per_trade, combined_result=combined_result))
+            combined_result = bybit_msg.strip()
+            asyncio.run(
+                send_entry_notifications_async(
+                    row,
+                    risk_per_trade,
+                    combined_result=combined_result,
+                    entry_price=notify_entry,
+                    stop_loss=notify_stop_loss,
+                    take_profit=notify_take_profit,
+                )
+            )
             
             order_detail = {
                 "key": order_key,
