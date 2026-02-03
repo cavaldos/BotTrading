@@ -79,9 +79,9 @@ def print_pnl_history(symbol: str = None, limit: int = 50, days: int = 7):
         print("Không có lịch sử giao dịch nào.")
         return
     
-    print("\n" + "=" * 120)
-    print(f"{'Symbol':<15} {'Side':<6} {'Entry Price':<14} {'Exit Price':<14} {'Qty':<12} {'PnL (USDT)':<15} {'Time'}")
-    print("=" * 120)
+    print("\n" + "=" * 160)
+    print(f"{'Order ID':<40} {'Symbol':<15} {'Side':<6} {'Entry Price':<14} {'Exit Price':<14} {'Qty':<12} {'PnL (USDT)':<15} {'Time'}")
+    print("=" * 160)
     
     total_pnl = 0.0
     
@@ -104,19 +104,20 @@ def print_pnl_history(symbol: str = None, limit: int = 50, days: int = 7):
         closed_pnl = float(record.get('closedPnl', 0))
         total_pnl += closed_pnl
         
+        order_id = record.get('orderId', '')
         created_time = int(record.get('createdTime', 0))
         time_str = datetime.fromtimestamp(created_time / 1000).strftime('%Y-%m-%d %H:%M:%S')
         
         pnl_color = '\033[92m' if closed_pnl >= 0 else '\033[91m'
         reset_color = '\033[0m'
         
-        print(f"{symbol_name:<15} {side:<6} {entry_price:<14.4f} {exit_price:<14.4f} {qty:<12.4f} {pnl_color}{closed_pnl:<+15.4f}{reset_color} {time_str}")
+        print(f"{order_id:<40} {symbol_name:<15} {side:<6} {entry_price:<14.4f} {exit_price:<14.4f} {qty:<12.4f} {pnl_color}{closed_pnl:<+15.4f}{reset_color} {time_str}")
     
-    print("=" * 120)
+    print("=" * 160)
     total_color = '\033[92m' if total_pnl >= 0 else '\033[91m'
-    print(f"{'TOTAL PnL:':<63} {total_color}{total_pnl:<+15.4f}\033[0m")
+    print(f"{'TOTAL PnL:':<103} {total_color}{total_pnl:<+15.4f}\033[0m")
     print(f"Số lượng giao dịch: {len(records)}")
-    print("=" * 120 + "\n")
+    print("=" * 160 + "\n")
 
 
 if __name__ == '__main__':
