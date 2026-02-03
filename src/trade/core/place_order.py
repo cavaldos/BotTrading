@@ -37,6 +37,7 @@ def place_market_order(
     entry_time: str,
     leverage: int = 20,
     risk_per_trade: float = risk_per_trade,
+    risk_reward_ratio: float = risk_reward_ratio,
     signal_timestamp: float = None,
 ) -> dict:
     order_type = order_type.strip().upper()
