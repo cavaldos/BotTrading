@@ -93,19 +93,19 @@ def adjust_levels_for_slippage_v2(
     rr_ratio: float = 2.0,
 ) -> dict:
     """
-    Điều chỉnh SL/TP theo logic:
-    - Luôn dịch SL để giữ khoảng cách risk cố định với entry thực tế
-    - NHƯNG: SL thực tế không được "gần" hơn SL gốc
-      + LONG: adjusted_sl <= expected_sl (SL không được cao hơn)
-      + SHORT: adjusted_sl >= expected_sl (SL không được thấp hơn)
+    Điều chỉnh SL/TP để DUY TRÌ risk distance cố định dựa trên actual entry.
     
-    Ví dụ LONG: entry=20, sl=15, RR=2
-    - Entry=21 (xấu): SL lý tưởng=16, nhưng 16>15 nên SL=15, risk=6, TP=21+(6*2)=33
-    - Entry=19 (tốt): SL=14 (14<15 OK), risk=5, TP=19+(5*2)=29
+    QUAN TRỌNG: Luôn di chuyển SL theo actual entry để đảm bảo:
+    - Khoảng cách entry → SL luôn = original_distance
+    - Actual risk = Expected risk (vì quantity đã được tính từ original_distance)
     
-    Ví dụ SHORT: entry=100, sl=105, RR=2
-    - Entry=99 (xấu): SL lý tưởng=104, nhưng 104<105 nên SL=105, risk=6, TP=99-(6*2)=87
-    - Entry=101 (tốt): SL=106 (106>105 OK), risk=5, TP=101-(5*2)=91
+    Ví dụ LONG: entry=100, sl=95, risk_distance=5, RR=2
+    - Entry=102 (xấu): SL=102-5=97, TP=102+(5*2)=112, actual_risk vẫn = expected
+    - Entry=98 (tốt): SL=98-5=93, TP=98+(5*2)=108
+    
+    Ví dụ SHORT: entry=100, sl=105, risk_distance=5, RR=2
+    - Entry=98 (xấu): SL=98+5=103, TP=98-(5*2)=88
+    - Entry=102 (tốt): SL=102+5=107, TP=102-(5*2)=92
     
     Args:
         expected_entry: Giá entry dự kiến
@@ -122,18 +122,10 @@ def adjust_levels_for_slippage_v2(
     if side.lower() == 'buy':  # LONG
         slippage = actual_entry - expected_entry
         
-        # Tính SL lý tưởng (giữ khoảng cách cố định)
-        ideal_sl = actual_entry - original_distance
-        
-        # LONG: SL không được CAO hơn expected_sl
-        if ideal_sl > expected_sl:
-            # Entry xấu (cao hơn) → SL lý tưởng cao hơn SL gốc → dùng SL gốc
-            adjusted_sl = expected_sl
-            new_risk_distance = actual_entry - adjusted_sl
-        else:
-            # Entry tốt hoặc vừa → dùng SL lý tưởng (thấp hơn hoặc bằng SL gốc)
-            adjusted_sl = ideal_sl
-            new_risk_distance = original_distance
+        # LUÔN duy trì khoảng cách risk cố định
+        # SL = actual_entry - original_distance
+        adjusted_sl = actual_entry - original_distance
+        new_risk_distance = original_distance
         
         # Tính TP theo RR ratio
         adjusted_tp = actual_entry + (new_risk_distance * rr_ratio)
@@ -141,18 +133,10 @@ def adjust_levels_for_slippage_v2(
     else:  # SHORT
         slippage = expected_entry - actual_entry
         
-        # Tính SL lý tưởng (giữ khoảng cách cố định)
-        ideal_sl = actual_entry + original_distance
-        
-        # SHORT: SL không được THẤP hơn expected_sl
-        if ideal_sl < expected_sl:
-            # Entry xấu (thấp hơn) → SL lý tưởng thấp hơn SL gốc → dùng SL gốc
-            adjusted_sl = expected_sl
-            new_risk_distance = adjusted_sl - actual_entry
-        else:
-            # Entry tốt hoặc vừa → dùng SL lý tưởng (cao hơn hoặc bằng SL gốc)
-            adjusted_sl = ideal_sl
-            new_risk_distance = original_distance
+        # LUÔN duy trì khoảng cách risk cố định
+        # SL = actual_entry + original_distance
+        adjusted_sl = actual_entry + original_distance
+        new_risk_distance = original_distance
         
         # Tính TP theo RR ratio
         adjusted_tp = actual_entry - (new_risk_distance * rr_ratio)
@@ -160,6 +144,11 @@ def adjust_levels_for_slippage_v2(
     slippage_pct = 0
     if expected_entry and expected_entry != 0:
         slippage_pct = round((slippage / expected_entry) * 100, 3)
+    
+    # Tính actual risk so với expected (để tracking)
+    # Vì quantity = risk_per_trade / original_distance
+    # actual_risk = quantity * new_risk_distance = risk_per_trade (khi new_risk_distance = original_distance)
+    risk_maintained = abs(new_risk_distance - original_distance) < 0.0001
     
     return {
         'expected_entry': round_price(expected_entry),
@@ -170,6 +159,8 @@ def adjust_levels_for_slippage_v2(
         'adjusted_sl': round_price(adjusted_sl),
         'adjusted_tp': round_price(adjusted_tp),
         'new_risk_distance': round_price(new_risk_distance),
+        'original_distance': round_price(original_distance),
+        'risk_maintained': risk_maintained,
         'rr_ratio': rr_ratio,
         'side': side.upper(),
     }

@@ -173,7 +173,8 @@ def format_limit_order_message(order_result: dict) -> str:
     leverage = position_info.get('leverage', 'N/A')
     contracts = order_result.get('contracts', position_info.get('quantity', 0))
     
-    rr_ratio = 0
+    # Tính RR thực tế từ entry, SL, TP
+    actual_rr_ratio = 0
     if side == 'BUY':
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
         reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
@@ -182,7 +183,7 @@ def format_limit_order_message(order_result: dict) -> str:
         reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
     
     if risk > 0 and reward > 0:
-        rr_ratio = reward / risk
+        actual_rr_ratio = reward / risk
     
     side_emoji = "🟢" if side == "BUY" else "🔴"
     side_text = "LONG" if side == "BUY" else "SHORT"
@@ -228,7 +229,7 @@ def format_limit_order_message(order_result: dict) -> str:
 │
 ├─ Risk:   ${expected_risk:.2f}
 ├─ Profit: ${expected_profit:.2f}
-└─ RR:     1:{rr_ratio:.2f}{timing_line}"""
+└─ RR:     1:{actual_rr_ratio:.2f}{timing_line}"""
     
     return message
 

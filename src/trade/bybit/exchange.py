@@ -527,11 +527,17 @@ def place_market_order_with_sl(
             }
         )
         
+        # Lấy giá fill thực tế từ order result
+        # Ưu tiên: average (giá fill trung bình) > price > current_price
+        actual_fill_price = order.get('average') or order.get('price') or current_price
+        
         return {
             'success': True,
             'order': order,
             'position_info': position_info,
-            'entry_price': current_price,
+            'entry_price': actual_fill_price,  # Sử dụng actual fill price
+            'expected_entry': entry_for_calculation,  # Giá dự kiến từ signal
+            'current_price': current_price,
             'stop_loss': stop_loss,
             'position_mode': position_mode['mode'],
             'position_idx': position_idx,
@@ -683,6 +689,10 @@ def place_limit_order_with_sl(
         order_id = order.get('id') or order.get('info', {}).get('orderId')
         order_status = order.get('status', 'open')
         
+        # For limit orders, entry_price is the limit price (not fill yet)
+        # actual_fill_price sẽ được cập nhật khi order filled
+        actual_fill_price = order.get('average') or order.get('price') or entry_price
+        
         result = {
             'success': True,
             'order': order,
@@ -691,6 +701,7 @@ def place_limit_order_with_sl(
             'order_type': 'limit',
             'position_info': position_info,
             'entry_price': entry_price,
+            'actual_fill_price': actual_fill_price,
             'current_price': current_price,
             'stop_loss': stop_loss,
             'take_profit': take_profit,

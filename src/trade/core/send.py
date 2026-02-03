@@ -15,8 +15,8 @@ SENT_ORDERS_METADATA_KEY = "_metadata"
 
 from src.trade.core.discord_notify import send_entry_discord
 
-# from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
-from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
+# from .place_order import risk_per_trade, risk_reward_ratio, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
+from .place_order import risk_per_trade, risk_reward_ratio, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -260,6 +260,12 @@ def check_and_send_open_orders(
                 )
             
             combined_result = bybit_msg.strip()
+            
+            # Lấy configured_rr từ sl_tp_adjustment nếu có
+            configured_rr = risk_reward_ratio  # Default từ config
+            if order_result.get('bybit', {}).get('sl_tp_adjustment'):
+                configured_rr = order_result['bybit']['sl_tp_adjustment'].get('rr_ratio', risk_reward_ratio)
+            
             send_entry_discord(
                 type=row['Type'],
                 entry=notify_entry,
@@ -269,6 +275,7 @@ def check_and_send_open_orders(
                 name_coin=row['Symbol'],
                 result=combined_result,
                 risk_per_trade=risk_per_trade,
+                configured_rr=configured_rr,
             )
             
             order_detail = {

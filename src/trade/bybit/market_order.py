@@ -108,7 +108,9 @@ def validate_and_place_order(
             # Tăng thời gian chờ để position được tạo hoàn toàn
             time.sleep(3)
             
+            # Sử dụng actual entry từ order result (đã được fix trong exchange.py)
             actual_entry = result.get('entry_price') or entry_price
+            expected_entry_from_signal = result.get('expected_entry') or entry_price
             position_info = result.get('position_info', {})
             current_quantity = position_info.get('quantity', 0)
 
@@ -119,8 +121,9 @@ def validate_and_place_order(
                 if risk_distance > 0 and reward_distance > 0:
                     rr_ratio_for_adjustment = reward_distance / risk_distance
 
+            # Sử dụng expected_entry từ signal để tính slippage
             sl_tp_adjustment = adjust_levels_for_slippage_v2(
-                expected_entry=entry_price,
+                expected_entry=expected_entry_from_signal,
                 actual_entry=actual_entry,
                 expected_sl=stop_loss,
                 side=side.lower(),
@@ -228,7 +231,8 @@ def format_market_order_message(order_result: dict) -> str:
     leverage = position_info.get('leverage', 'N/A')
     contracts = order_result.get('contracts', position_info.get('quantity', 0))
     
-    rr_ratio = 0
+    # Tính RR thực tế từ actual entry, adjusted SL, adjusted TP
+    actual_rr_ratio = 0
     if side == 'BUY':
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
         reward = abs(take_profit - entry_price) if take_profit and entry_price else 0
@@ -237,7 +241,11 @@ def format_market_order_message(order_result: dict) -> str:
         reward = abs(entry_price - take_profit) if entry_price and take_profit else 0
     
     if risk > 0 and reward > 0:
-        rr_ratio = reward / risk
+        actual_rr_ratio = reward / risk
+    
+    # Lấy RR đã cấu hình từ sl_tp_adjustment nếu có
+    sl_tp_adjustment = order_result.get('sl_tp_adjustment', {})
+    configured_rr = sl_tp_adjustment.get('rr_ratio', actual_rr_ratio)
     
     side_emoji = "🟢" if side == "BUY" else "🔴"
     side_text = "LONG" if side == "BUY" else "SHORT"
@@ -249,6 +257,16 @@ def format_market_order_message(order_result: dict) -> str:
     
     actual_risk = order_result.get('actual_risk', 0)
     expected_profit = order_result.get('expected_profit', 0)
+    expected_risk = position_info.get('expected_risk', actual_risk)
+    
+    # So sánh actual risk với expected risk
+    risk_diff_pct = 0
+    if expected_risk > 0:
+        risk_diff_pct = ((actual_risk - expected_risk) / expected_risk) * 100
+    
+    risk_warning = ""
+    if abs(risk_diff_pct) > 5:  # Nếu risk chênh > 5%
+        risk_warning = f" ⚠️ ({risk_diff_pct:+.1f}% so với cấu hình)"
     
     timing = order_result.get('timing', {})
     timing_line = ""
@@ -274,9 +292,9 @@ def format_market_order_message(order_result: dict) -> str:
 ├─ SL:     ${stop_loss:,.4f}
 ├─ TP:     ${take_profit:,.4f}
 │
-├─ Risk:   ${actual_risk:.2f}
+├─ Risk:   ${actual_risk:.2f}{risk_warning}
 ├─ Profit: ${expected_profit:.2f}
-└─ RR:     1:{rr_ratio:.2f}{timing_line}"""
+└─ RR:     1:{actual_rr_ratio:.2f} (cấu hình: 1:{configured_rr:.2f}){timing_line}"""
     
     return message
 
