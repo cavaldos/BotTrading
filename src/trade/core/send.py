@@ -7,7 +7,7 @@ import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-MAX_ORDER_AGE_MINUTES = 3
+MAX_ORDER_AGE_MINUTES = 10
 SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
 
 
