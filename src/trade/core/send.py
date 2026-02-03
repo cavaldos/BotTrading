@@ -1,14 +1,16 @@
 import os
 import sys
-import json
 import time
-import asyncio
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional, List
+
+from src.utils.JsonDB import JsonDB
 
 MAX_ORDER_AGE_MINUTES = 10
 SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
+SENT_ORDERS_METADATA_KEY = "_metadata"
 
 
 from src.trade.core.discord_notify import send_entry_discord
@@ -18,35 +20,19 @@ from .place_order import risk_per_trade, place_market_order as place_order, bybi
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
-    """Load sent orders from log file. Returns (order keys set, order details list)."""
-    if not log_file.exists():
-        return set(), []
-    
-    try:
-        with open(log_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            orders = data.get("sent_orders", [])
-            
-            # Support both old format (list of strings) and new format (list of dicts)
-            if orders and isinstance(orders[0], str):
-                return set(orders), []
-            else:
-                keys = set(order.get("key", "") for order in orders)
-                return keys, orders
-    except:
-        return set(), []
+    """Load sent orders from log file using JsonDB. Returns (order keys set, order details list)."""
+    db = JsonDB(str(log_file))
+    orders = [item for item in db.all() if item.get("key")]
+    keys = set(order.get("key", "") for order in orders)
+    return keys, orders
 
 
 def save_sent_orders(log_file: Path, sent_orders: list) -> None:
-    """Save sent orders to log file in JSON format with timestamp."""
-    try:
-        with open(log_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                "sent_orders": sent_orders,
-                "last_updated": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }, f, indent=2, ensure_ascii=False)
-    except:
-        pass
+    """Save sent orders to log file using JsonDB."""
+    with JsonDB(str(log_file)) as db:
+        db.clear()
+        for order in sent_orders:
+            db.add(order)
 
 
 def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
@@ -134,41 +120,23 @@ def is_order_too_old(entry_time_str: str, max_age_minutes: int = MAX_ORDER_AGE_M
 
 
 def load_skipped_orders(log_file: Path) -> set:
-    """Load skipped order keys from log file."""
-    if not log_file.exists():
-        return set()
-    try:
-        with open(log_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return set(data.get("skipped_keys", []))
-    except:
-        return set()
+    """Load skipped order keys from log file using JsonDB."""
+    db = JsonDB(str(log_file))
+    return set(order.get("key", "") for order in db.all() if order.get("key"))
 
 
 def save_skipped_order(log_file: Path, order_key: str, reason: str, entry_time: str) -> None:
-    """Save a skipped order to log file."""
-    try:
-        if log_file.exists():
-            with open(log_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        else:
-            log_file.parent.mkdir(parents=True, exist_ok=True)
-            data = {"skipped_keys": [], "skipped_orders": []}
-        
-        if order_key not in data.get("skipped_keys", []):
-            data.setdefault("skipped_keys", []).append(order_key)
-            data.setdefault("skipped_orders", []).append({
+    """Save a skipped order to log file using JsonDB."""
+    with JsonDB(str(log_file)) as db:
+        # Check if order already exists
+        existing = db.find_one(key=order_key)
+        if not existing:
+            db.add({
                 "key": order_key,
                 "reason": reason,
                 "entry_time": entry_time,
                 "skipped_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             })
-            data["last_updated"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            with open(log_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-    except:
-        pass
 
 
 def scan_open_orders(output_dir: Path) -> list:
@@ -203,50 +171,11 @@ def scan_open_orders_from_files(csv_files: list[Path]) -> list:
     return open_orders
 
 
-async def send_entry_notifications_async(
-    row,
-    risk_per_trade: float,
-    timeout: float = 60,
-    combined_result: str | None = None,
-    entry_price: float | None = None,
-    stop_loss: float | None = None,
-    take_profit: float | None = None,
-):
-    """Send entry notifications to Discord asynchronously."""
-    try:
-        entry_value = float(entry_price) if entry_price is not None else float(row['Entry_Price'])
-        stop_loss_value = float(stop_loss) if stop_loss is not None else float(row['Stop_Loss'])
-        take_profit_value = float(take_profit) if take_profit is not None else float(row['Take_Profit'])
-        params_dis = {
-            "type": row['Type'],
-            "entry": entry_value,
-            "stoploss": stop_loss_value,
-            "takeprofit": take_profit_value,
-            "time": row['Entry_Time'],
-            "name_coin": row['Symbol'],
-            "result": combined_result,
-            "risk_per_trade": risk_per_trade
-        }
-        
-        await asyncio.wait_for(
-            asyncio.gather(
-                asyncio.to_thread(send_entry_discord, **params_dis),
-                return_exceptions=True
-            ),
-            timeout=timeout
-        )
-    except asyncio.TimeoutError:
-        print(f"Timeout sending notifications for {row['Symbol']}, but continuing...")
-    except Exception as e:
-        print(f"Error sending notifications for {row['Symbol']}: {e}")
-        raise
-
-
 def check_and_send_open_orders(
     output_dir: str,
     log_file: str,
     skipped_file: str = SKIPPED_ORDERS_FILE,
-    changed_files: list[Path] | None = None,
+    changed_files: Optional[List[Path]] = None,
     update_status: bool = True,
 ) -> int:
     """Check for new OPEN orders and send notifications. Returns count of new orders sent."""
@@ -322,15 +251,15 @@ def check_and_send_open_orders(
                 )
             
             combined_result = bybit_msg.strip()
-            asyncio.run(
-                send_entry_notifications_async(
-                    row,
-                    risk_per_trade,
-                    combined_result=combined_result,
-                    entry_price=notify_entry,
-                    stop_loss=notify_stop_loss,
-                    take_profit=notify_take_profit,
-                )
+            send_entry_discord(
+                type=row['Type'],
+                entry=notify_entry,
+                stoploss=notify_stop_loss,
+                takeprofit=notify_take_profit,
+                time=row['Entry_Time'],
+                name_coin=row['Symbol'],
+                result=combined_result,
+                risk_per_trade=risk_per_trade,
             )
             
             order_detail = {
