@@ -231,7 +231,7 @@ def format_market_order_message(order_result: dict) -> str:
     leverage = position_info.get('leverage', 'N/A')
     contracts = order_result.get('contracts', position_info.get('quantity', 0))
     
-    # Tính RR thực tế từ actual entry, adjusted SL, adjusted TP
+    # Tính RR thực tế từ Entry/SL/TP đặt trên sàn
     actual_rr_ratio = 0
     if side == 'BUY':
         risk = abs(entry_price - stop_loss) if entry_price and stop_loss else 0
@@ -242,10 +242,6 @@ def format_market_order_message(order_result: dict) -> str:
     
     if risk > 0 and reward > 0:
         actual_rr_ratio = reward / risk
-    
-    # Lấy RR đã cấu hình từ sl_tp_adjustment nếu có
-    sl_tp_adjustment = order_result.get('sl_tp_adjustment', {})
-    configured_rr = sl_tp_adjustment.get('rr_ratio', actual_rr_ratio)
     
     side_emoji = "🟢" if side == "BUY" else "🔴"
     side_text = "LONG" if side == "BUY" else "SHORT"
@@ -294,7 +290,7 @@ def format_market_order_message(order_result: dict) -> str:
 │
 ├─ Risk:   ${actual_risk:.2f}{risk_warning}
 ├─ Profit: ${expected_profit:.2f}
-└─ RR:     1:{actual_rr_ratio:.2f} (cấu hình: 1:{configured_rr:.2f}){timing_line}"""
+└─ RR:     1:{actual_rr_ratio:.2f}{timing_line}"""
     
     return message
 

@@ -30,8 +30,10 @@ def send_custom_message(message: str, timeout: int = 5, retries: int = 3) -> Non
     # Silent mode - avoid dashboard flicker
 
 
-def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None, risk_per_trade = 5, configured_rr = None):
+def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None, risk_per_trade = 5):
     """Send trade entry notification to Discord.
+    
+    RR ratio được tính từ Entry/SL/TP thực tế đặt trên sàn.
     """
     time_obj = datetime.strptime(time, '%Y-%m-%d %H:%M:%S')
     new_time = time_obj + timedelta(hours=7)
@@ -47,14 +49,11 @@ def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, resul
     sl_diff_percent = (abs(sl_diff) / entry) * 100
     tp_diff_percent = (abs(tp_diff) / entry) * 100
     
+    # Tính RR từ Entry/SL/TP thực tế
     risk = abs(sl_diff)
     reward = abs(tp_diff)
     actual_rr_ratio = reward / risk if risk > 0 else 0
-    
-    # Hiển thị RR: nếu có configured_rr thì hiển thị cả 2
     rr_display = f"1:{actual_rr_ratio:.2f}"
-    if configured_rr is not None and abs(configured_rr - actual_rr_ratio) > 0.01:
-        rr_display = f"1:{actual_rr_ratio:.2f} (cấu hình: 1:{configured_rr:.2f})"
 
     type_upper = type.upper()
 
