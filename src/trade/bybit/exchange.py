@@ -531,9 +531,13 @@ def place_market_order_with_sl(
         # Ưu tiên: average (giá fill trung bình) > price > current_price
         actual_fill_price = order.get('average') or order.get('price') or current_price
         
+        # Extract order_id từ Bybit response
+        order_id = order.get('id') or order.get('info', {}).get('orderId')
+        
         return {
             'success': True,
             'order': order,
+            'order_id': order_id,
             'position_info': position_info,
             'entry_price': actual_fill_price,  # Sử dụng actual fill price
             'expected_entry': entry_for_calculation,  # Giá dự kiến từ signal

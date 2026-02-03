@@ -253,11 +253,7 @@ def check_and_send_open_orders(
             bybit_order_id = None
             if order_result.get('bybit'):
                 bybit_order = order_result['bybit']
-                bybit_order_id = (
-                    bybit_order.get('order_id')
-                    or bybit_order.get('order', {}).get('id')
-                    or bybit_order.get('order', {}).get('info', {}).get('orderId')
-                )
+                bybit_order_id = bybit_order.get('order_id')
             
             combined_result = bybit_msg.strip()
             
