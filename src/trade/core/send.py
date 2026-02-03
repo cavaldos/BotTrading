@@ -174,30 +174,33 @@ def save_skipped_order(log_file: Path, order_key: str, reason: str, entry_time: 
 
 def scan_open_orders(output_dir: Path) -> list:
     """Scan all CSV files in output_dir and filter OPEN orders."""
-    open_orders = []
-    
     if not output_dir.exists():
-        return open_orders
-    
+        return []
+
     csv_files = list(output_dir.glob("*.csv"))
-    
+    return scan_open_orders_from_files(csv_files)
+
+
+def scan_open_orders_from_files(csv_files: list[Path]) -> list:
+    """Scan specific CSV files and filter OPEN orders."""
+    open_orders = []
+
     for csv_file in csv_files:
         try:
             df = pd.read_csv(csv_file)
-            
+
             if 'Result' not in df.columns:
                 continue
-            
+
             df['Result'] = df['Result'].fillna('').astype(str).str.strip().str.upper()
             open_df = df[df['Result'] == 'OPEN']
-            
+
             for _, row in open_df.iterrows():
                 open_orders.append(row)
-                
-        except Exception as e:
-            # print(f"Error scanning {csv_file}: {e}")
+
+        except Exception:
             continue
-    
+
     return open_orders
 
 
@@ -239,17 +242,29 @@ async def send_entry_notifications_async(row, risk_per_trade: float, timeout: fl
         raise
 
 
-def check_and_send_open_orders(output_dir: str, log_file: str, skipped_file: str = SKIPPED_ORDERS_FILE) -> int:
+def check_and_send_open_orders(
+    output_dir: str,
+    log_file: str,
+    skipped_file: str = SKIPPED_ORDERS_FILE,
+    changed_files: list[Path] | None = None,
+    update_status: bool = True,
+) -> int:
     """Check for new OPEN orders and send notifications. Returns count of new orders sent."""
     output_path = Path(output_dir)
     log_path = Path(log_file)
     skipped_path = Path(skipped_file)
-    
-    update_order_status_from_csv(output_dir, log_file)
-    
+
+    if update_status:
+        update_order_status_from_csv(output_dir, log_file)
+
     sent_keys, sent_orders = load_sent_orders(log_path)
     skipped_keys = load_skipped_orders(skipped_path)
-    open_orders = scan_open_orders(output_path)
+
+    if changed_files:
+        csv_files = [path for path in changed_files if path.exists() and path.suffix == ".csv"]
+        open_orders = scan_open_orders_from_files(csv_files)
+    else:
+        open_orders = scan_open_orders(output_path)
     
     new_sent_count = 0
     

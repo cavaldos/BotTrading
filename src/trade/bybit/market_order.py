@@ -13,7 +13,10 @@ from src.trade.bybit.exchange import (
     place_market_order_with_sl,
     set_position_sl_tp,
 )
-from src.trade.bybit.risk_calculator import clean_symbol
+from src.trade.bybit.risk_calculator import (
+    adjust_levels_for_slippage_v2,
+    clean_symbol,
+)
 from src.utils.rounding import round_price
 
 
@@ -102,21 +105,50 @@ def validate_and_place_order(
             order_filled_time = time.time()
             order_execution_time = order_filled_time - execution_start
             
-            time.sleep(2)
+            # Tăng thời gian chờ để position được tạo hoàn toàn
+            time.sleep(3)
             
             actual_entry = result.get('entry_price') or entry_price
             position_info = result.get('position_info', {})
             current_quantity = position_info.get('quantity', 0)
-            
-            result['stop_loss'] = stop_loss
-            result['take_profit'] = take_profit
+
+            rr_ratio_for_adjustment = risk_reward_ratio
+            if entry_price and stop_loss and take_profit:
+                risk_distance = abs(entry_price - stop_loss)
+                reward_distance = abs(take_profit - entry_price)
+                if risk_distance > 0 and reward_distance > 0:
+                    rr_ratio_for_adjustment = reward_distance / risk_distance
+
+            sl_tp_adjustment = adjust_levels_for_slippage_v2(
+                expected_entry=entry_price,
+                actual_entry=actual_entry,
+                expected_sl=stop_loss,
+                side=side.lower(),
+                rr_ratio=rr_ratio_for_adjustment,
+            )
+
+            adjusted_sl = sl_tp_adjustment['adjusted_sl']
+            adjusted_tp = sl_tp_adjustment['adjusted_tp']
+
+            def to_price_precision(price: float) -> float:
+                try:
+                    return float(exchange.price_to_precision(formatted_symbol, price))
+                except Exception:
+                    return round_price(price)
+
+            adjusted_sl = to_price_precision(adjusted_sl)
+            adjusted_tp = to_price_precision(adjusted_tp)
+
+            result['stop_loss'] = adjusted_sl
+            result['take_profit'] = adjusted_tp
             result['final_quantity'] = current_quantity
+            result['sl_tp_adjustment'] = sl_tp_adjustment
             
-            actual_distance_to_sl = abs(actual_entry - stop_loss)
+            actual_distance_to_sl = abs(actual_entry - adjusted_sl)
             actual_risk = current_quantity * actual_distance_to_sl
             result['actual_risk'] = round(actual_risk, 2)
-            
-            actual_distance_to_tp = abs(take_profit - actual_entry)
+
+            actual_distance_to_tp = abs(adjusted_tp - actual_entry)
             expected_profit = current_quantity * actual_distance_to_tp
             result['expected_profit'] = round(expected_profit, 2)
             
@@ -128,18 +160,30 @@ def validate_and_place_order(
                     'slippage_pct': round(slippage_pct, 4),
                 }
             
-            sl_tp_result = set_position_sl_tp(
-                exchange=exchange,
-                symbol=clean_sym,
-                side=side.lower(),
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-            )
+            # Retry mechanism cho set SL/TP (tối đa 3 lần)
+            max_retries = 3
+            sl_tp_result = None
             
-            if sl_tp_result['success']:
-                result['sl_tp_result'] = sl_tp_result
-            else:
-                result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
+            for retry_count in range(max_retries):
+                sl_tp_result = set_position_sl_tp(
+                    exchange=exchange,
+                    symbol=clean_sym,
+                    side=side.lower(),
+                    stop_loss=adjusted_sl,
+                    take_profit=adjusted_tp,
+                )
+                
+                if sl_tp_result['success']:
+                    result['sl_tp_result'] = sl_tp_result
+                    break
+                else:
+                    # Nếu lỗi và còn retry, đợi 2 giây rồi thử lại
+                    if retry_count < max_retries - 1:
+                        time.sleep(2)
+                    else:
+                        # Hết lần retry, log error
+                        result['sl_tp_warning'] = sl_tp_result.get('error', 'Failed to set SL/TP')
+                        result['sl_tp_retries'] = retry_count + 1
             
             total_execution_time = time.time() - execution_start
             result['timing'] = {
@@ -248,12 +292,12 @@ if __name__ == '__main__':
     
     print("\n[TEST 1] LONG với RR 1:2 (auto TP)")
     result = validate_and_place_order(
-        symbol='XRPUSDT_1m',
+        symbol='BTCUSDT_1m',
         side='sell',
-        entry_price=1.6480,
-        stop_loss=1.6444,
+        entry_price=78532,
+        stop_loss=79000,
         leverage=20,
         risk_per_trade=50,
-        risk_reward_ratio=1.0,
+        risk_reward_ratio=2.0,
     )
     print(format_market_order_message(result))

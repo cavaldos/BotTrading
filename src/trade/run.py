@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+from queue import Queue, Empty
 from datetime import datetime, timedelta
 from collections import deque
 from pathlib import Path
@@ -176,6 +177,10 @@ class AppState:
 state = AppState()
 console = Console()
 
+# Process 2 queue config
+EVENT_DEBOUNCE_SECONDS = 0.25
+STATUS_SYNC_INTERVAL = 30
+
 
 # =============================================================================
 # FILE WATCHER
@@ -183,38 +188,22 @@ console = Console()
 
 class OutputFolderHandler(FileSystemEventHandler):
     """Handler to watch changes in output folder"""
-    
-    def __init__(self, output_folder, log_file):
-        self.output_folder = output_folder
-        self.log_file = log_file
-        self.last_processed = 0
-        self.debounce_seconds = 0.1
-    
-    def on_any_event(self, event):
+
+    def __init__(self, event_queue: Queue):
+        self.event_queue = event_queue
+
+    def on_modified(self, event):
+        self._handle_event(event)
+
+    def on_created(self, event):
+        self._handle_event(event)
+
+    def _handle_event(self, event):
         if event.is_directory:
             return
-        
-        current_time = time.time()
-        if current_time - self.last_processed < self.debounce_seconds:
+        if not event.src_path.endswith(".csv"):
             return
-        
-        self.last_processed = current_time
-        state.p2_events += 1
-        state.p2_last_event = datetime.now().strftime("%H:%M:%S")
-        state.p2_status = "Processing..."
-        
-        filename = os.path.basename(event.src_path)
-        state.add_log("Process 2", f"Change detected: {filename}")
-        
-        with send_lock:
-            try:
-                new_orders_sent = check_and_send_open_orders(self.output_folder, self.log_file)
-                state.p2_orders_sent += new_orders_sent
-                state.add_log("Process 2", f"Sent {new_orders_sent} new orders")
-            except Exception as e:
-                state.add_log("Process 2", f"ERROR: {str(e)}")
-        
-        state.p2_status = "Watching..."
+        self.event_queue.put(event.src_path)
 
 
 # =============================================================================
@@ -313,22 +302,77 @@ def process_1_data_and_execute(timeframe: str):
 def process_2_watch_output():
     """Process 2: Watch output folder"""
     state.add_log("Process 2", "Started")
-    
-    
-    event_handler = OutputFolderHandler(OUTPUT_FOLDER, LOG_FILE)
+
+    event_queue: Queue[str] = Queue()
+    event_handler = OutputFolderHandler(event_queue)
     observer = Observer()
     observer.schedule(event_handler, OUTPUT_FOLDER, recursive=True)
     observer.start()
     
     state.p2_status = "Watching..."
     state.add_log("Process 2", f"Watching: {OUTPUT_FOLDER}")
-    
+
+    worker = threading.Thread(
+        target=process_2_event_worker,
+        args=(event_queue,),
+        daemon=True,
+        name="OutputWatcherWorker",
+    )
+    worker.start()
+
     try:
         # Wait for shutdown signal instead of busy-wait loop
         state.shutdown_event.wait()
     finally:
         observer.stop()
         observer.join()
+
+
+def process_2_event_worker(event_queue: Queue[str]):
+    pending_files: set[str] = set()
+    last_status_sync = time.time()
+    last_batch_at = 0.0
+
+    while not state.shutdown_event.is_set():
+        try:
+            path = event_queue.get(timeout=0.1)
+            pending_files.add(path)
+            state.p2_events += 1
+            state.p2_last_event = datetime.now().strftime("%H:%M:%S")
+        except Empty:
+            pass
+
+        now = time.time()
+        if pending_files and (now - last_batch_at) >= EVENT_DEBOUNCE_SECONDS:
+            state.p2_status = "Processing..."
+            changed_files = [Path(path) for path in pending_files]
+            filename_list = ", ".join(sorted({Path(path).name for path in pending_files}))
+            state.add_log("Process 2", f"Batch change detected: {filename_list}")
+            pending_files.clear()
+            last_batch_at = now
+
+            with send_lock:
+                try:
+                    new_orders_sent = check_and_send_open_orders(
+                        OUTPUT_FOLDER,
+                        LOG_FILE,
+                        changed_files=changed_files,
+                        update_status=False,
+                    )
+                    state.p2_orders_sent += new_orders_sent
+                    state.add_log("Process 2", f"Sent {new_orders_sent} new orders")
+                except Exception as e:
+                    state.add_log("Process 2", f"ERROR: {str(e)}")
+
+            state.p2_status = "Watching..."
+
+        if (now - last_status_sync) >= STATUS_SYNC_INTERVAL:
+            last_status_sync = now
+            with send_lock:
+                try:
+                    check_and_send_open_orders(OUTPUT_FOLDER, LOG_FILE)
+                except Exception as e:
+                    state.add_log("Process 2", f"ERROR: {str(e)}")
 
 
 # =============================================================================
