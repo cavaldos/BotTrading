@@ -22,17 +22,26 @@ from .place_order import risk_per_trade, place_market_order as place_order, bybi
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
     """Load sent orders from log file using JsonDB. Returns (order keys set, order details list)."""
     db = JsonDB(str(log_file))
-    orders = [item for item in db.all() if item.get("key")]
-    keys = set(order.get("key", "") for order in orders)
+    data = db.all()
+    if isinstance(data, dict):
+        orders = data.get("sent_orders", [])
+    else:
+        orders = [item for item in data if isinstance(item, dict) and item.get("key")]
+    keys = set(order.get("key", "") for order in orders if isinstance(order, dict))
     return keys, orders
 
 
 def save_sent_orders(log_file: Path, sent_orders: list) -> None:
-    """Save sent orders to log file using JsonDB."""
-    with JsonDB(str(log_file)) as db:
-        db.clear()
-        for order in sent_orders:
-            db.add(order)
+    """Save sent orders to log file."""
+    import json
+    from datetime import datetime
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "sent_orders": sent_orders,
+        "last_updated": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    with open(log_file, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
