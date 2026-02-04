@@ -218,6 +218,7 @@ def format_market_order_message(order_result: dict) -> str:
         return f"❌ THẤT BẠI\n└─ Lỗi: {error}"
     
     symbol = order_result.get('symbol', 'N/A')
+    order_id = order_result.get('order_id', 'N/A')
     entry_price = order_result.get('entry_price') or 0
     stop_loss = order_result.get('stop_loss') or 0
     take_profit = order_result.get('take_profit') or 0
@@ -279,6 +280,7 @@ def format_market_order_message(order_result: dict) -> str:
     message = f"""✅ THÀNH CÔNG
 
 {side_emoji} {side_text} {symbol}
+├─ Order ID: {order_id}
 ├─ Leverage: {leverage}x
 ├─ Contracts: {contracts}
 │

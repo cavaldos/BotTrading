@@ -6,6 +6,82 @@ from datetime import datetime, timedelta, timezone
 from src.trade.bybit.exchange import get_exchange, format_symbol
 
 
+def get_order_history(
+    symbol: str = None,
+    limit: int = 50,
+    days: int = 7,
+    order_status: str = 'Filled',
+) -> list:
+    """
+    Lấy lịch sử orders (Order History API).
+    Trả về orderId của lệnh MỞ position (opening order).
+    
+    Args:
+        symbol: Symbol cụ thể (optional, None = tất cả)
+        limit: Số lượng records tối đa
+        days: Số ngày lấy history (mặc định 7 ngày, max 7 per request)
+        order_status: Trạng thái order (Filled, Cancelled, PartiallyFilled, etc.)
+    
+    Returns:
+        list: Danh sách orders với orderId gốc
+    """
+    exchange = get_exchange()
+    
+    all_records = []
+    now = datetime.now(timezone.utc)
+    
+    chunks = (days + 6) // 7
+    
+    for i in range(chunks):
+        chunk_end = now - timedelta(days=i * 7)
+        chunk_start = now - timedelta(days=min((i + 1) * 7, days))
+        
+        if i == chunks - 1:
+            chunk_start = now - timedelta(days=days)
+        
+        end_time = int(chunk_end.timestamp() * 1000)
+        start_time = int(chunk_start.timestamp() * 1000)
+        
+        params = {
+            'category': 'linear',
+            'limit': min(limit, 50),
+            'startTime': start_time,
+            'endTime': end_time,
+            'orderStatus': order_status,
+        }
+        
+        if symbol:
+            formatted = format_symbol(symbol)
+            api_symbol = formatted.replace('/', '').replace(':USDT', '')
+            params['symbol'] = api_symbol
+        
+        try:
+            cursor = None
+            while True:
+                if cursor:
+                    params['cursor'] = cursor
+                
+                result = exchange.privateGetV5OrderHistory(params)
+                
+                if str(result.get('retCode')) != '0':
+                    print(f"Error: {result.get('retMsg')}")
+                    break
+                
+                records = result.get('result', {}).get('list', [])
+                all_records.extend(records)
+                
+                cursor = result.get('result', {}).get('nextPageCursor')
+                if not cursor or len(all_records) >= limit:
+                    break
+                    
+        except Exception as e:
+            print(f"Error fetching order history: {e}")
+    
+    all_records.sort(key=lambda x: int(x.get('createdTime', 0)), reverse=True)
+    
+    return all_records[:limit]
+
+
 def get_closed_pnl_history(
     symbol: str = None,
     limit: int = 50,

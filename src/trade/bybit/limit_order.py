@@ -285,19 +285,19 @@ def check_limit_order_status(symbol: str, order_id: str) -> dict:
 
 
 if __name__ == '__main__':
-    # print("="*70)
-    # print("Test validate_and_place_limit_order()")
-    # print("="*70)
+    print("="*70)
+    print("Test validate_and_place_limit_order()")
+    print("="*70)
     
-    # print("\n[TEST] LIMIT order")
-    # result = validate_and_place_limit_order(
-    #     symbol='ETHUSDT_1m',
-    #     side='sell',
-    #     entry_price=2353,
-    #     stop_loss=2363,
-    #     leverage=20,
-    #     risk_per_trade=50,
-    #     risk_reward_ratio=1.0,
-    # )
-    # print(format_limit_order_message(result))
-    cancel_limit_order_by_id(order_id='dca8b34b-a77e-4fed-929a-8ba6afa2d580')
+    print("\n[TEST] LIMIT order")
+    result = validate_and_place_limit_order(
+        symbol='ETHUSDT_1m',
+        side='sell',
+        entry_price=2353,
+        stop_loss=2363,
+        leverage=20,
+        risk_per_trade=50,
+        risk_reward_ratio=1.0,
+    )
+    print(format_limit_order_message(result))
+    # cancel_limit_order_by_id(order_id='dca8b34b-a77e-4fed-929a-8ba6afa2d580')

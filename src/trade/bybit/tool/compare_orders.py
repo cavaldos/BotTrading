@@ -4,7 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 import json
 from datetime import datetime
-from src.trade.bybit.tool.get_history import get_closed_pnl_history
+from src.trade.bybit.tool.get_history import get_closed_pnl_history, get_order_history
 from src.utils.rounding import round_price
 
 
@@ -39,34 +39,53 @@ def calculate_rr(entry: float, exit: float, sl: float, side: str) -> float:
 def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
     """
     So sánh status WIN/LOSS giữa local log và sàn Bybit.
-    Match bằng order_id thay vì (symbol, side, entry_price).
+    Match bằng order_id từ Order History API (opening order_id).
     """
     local_orders = load_local_orders()
-    exchange_orders = get_closed_pnl_history(limit=limit, days=days)
     
-    ex_map = {}
-    for ex in exchange_orders:
-        order_id = ex.get('orderId', '')
+    # Lấy order history (opening orders) để match order_id
+    order_history = get_order_history(limit=limit, days=days, order_status='Filled')
+    
+    # Lấy closed PnL để biết WIN/LOSS và exit price
+    pnl_history = get_closed_pnl_history(limit=limit, days=days)
+    
+    # Build map order_id -> order info từ Order History
+    order_map = {}
+    for order in order_history:
+        order_id = order.get('orderId', '')
         if not order_id:
             continue
         
-        close_side = ex.get('side', '').upper()
-        ex_side = 'SHORT' if close_side == 'BUY' else 'LONG'
-        ex_pnl = float(ex.get('closedPnl', 0))
-        ex_status = 'WIN' if ex_pnl > 0 else 'LOSS'
+        side = order.get('side', '').upper()
+        ex_side = 'LONG' if side == 'BUY' else 'SHORT'
         
-        created_time = int(ex.get('createdTime', 0))
-        ex_time_str = datetime.fromtimestamp(created_time / 1000).strftime('%H:%M:%S') if created_time else ''
+        created_time = int(order.get('createdTime', 0))
+        time_str = datetime.fromtimestamp(created_time / 1000).strftime('%H:%M:%S') if created_time else ''
         
-        ex_map[order_id] = {
-            'symbol': ex.get('symbol', ''),
+        order_map[order_id] = {
+            'symbol': order.get('symbol', ''),
             'side': ex_side,
-            'status': ex_status,
-            'pnl': ex_pnl,
-            'entry': float(ex.get('avgEntryPrice', 0)),
-            'exit': float(ex.get('avgExitPrice', 0)),
-            'time': ex_time_str,
+            'entry': float(order.get('avgPrice', 0)) or float(order.get('price', 0)),
+            'qty': float(order.get('cumExecQty', 0)),
+            'time': time_str,
         }
+    
+    # Build map (symbol, side, entry) -> PnL info để lấy exit price và WIN/LOSS
+    pnl_map = []
+    for pnl in pnl_history:
+        close_side = pnl.get('side', '').upper()
+        ex_side = 'SHORT' if close_side == 'BUY' else 'LONG'
+        ex_pnl = float(pnl.get('closedPnl', 0))
+        
+        pnl_map.append({
+            'symbol': pnl.get('symbol', ''),
+            'side': ex_side,
+            'entry': float(pnl.get('avgEntryPrice', 0)),
+            'exit': float(pnl.get('avgExitPrice', 0)),
+            'pnl': ex_pnl,
+            'status': 'WIN' if ex_pnl > 0 else 'LOSS',
+            'matched': False,
+        })
     
     matched = []
     not_found = []
@@ -93,42 +112,60 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
             except:
                 sent_time = sent_at
         
-        if not local_order_id:
-            not_found.append({
-                'key': key_str,
-                'local_status': local_status,
-                'order_id': None,
-                'reason': 'No order_id in local',
-            })
-            continue
-        
-        if local_order_id in ex_map:
-            ex_data = ex_map[local_order_id]
-            status_match = '✅' if local_status == ex_data['status'] else '❌'
-            rr = calculate_rr(ex_data['entry'], ex_data['exit'], local_sl, local_side)
+        # Match bằng order_id từ Order History API
+        if local_order_id and local_order_id in order_map:
+            order_info = order_map[local_order_id]
             
-            matched.append({
-                'symbol': symbol,
-                'side': local_side,
-                'exchange_entry': ex_data['entry'],
-                'exchange_exit': ex_data['exit'],
-                'local_sl': local_sl,
-                'local_tp': local_tp,
-                'rr': rr,
-                'local_status': local_status,
-                'exchange_status': ex_data['status'],
-                'match': status_match,
-                'pnl': ex_data['pnl'],
-                'ex_time': ex_data['time'],
-                'sent_time': sent_time,
-                'order_id': local_order_id,
-            })
+            # Tìm PnL info từ pnl_map bằng (symbol, side, entry)
+            pnl_info = None
+            for pnl in pnl_map:
+                if pnl['matched']:
+                    continue
+                if pnl['symbol'] != order_info['symbol']:
+                    continue
+                if pnl['side'] != order_info['side']:
+                    continue
+                # So sánh entry price với tolerance 0.5%
+                price_diff = abs(pnl['entry'] - order_info['entry']) / order_info['entry'] * 100 if order_info['entry'] > 0 else 100
+                if price_diff <= 0.5:
+                    pnl_info = pnl
+                    pnl['matched'] = True
+                    break
+            
+            if pnl_info:
+                status_match = '✅' if local_status == pnl_info['status'] else '❌'
+                rr = calculate_rr(order_info['entry'], pnl_info['exit'], local_sl, local_side)
+                
+                matched.append({
+                    'symbol': symbol,
+                    'side': local_side,
+                    'exchange_entry': order_info['entry'],
+                    'exchange_exit': pnl_info['exit'],
+                    'local_sl': local_sl,
+                    'local_tp': local_tp,
+                    'rr': rr,
+                    'local_status': local_status,
+                    'exchange_status': pnl_info['status'],
+                    'match': status_match,
+                    'pnl': pnl_info['pnl'],
+                    'ex_time': order_info['time'],
+                    'sent_time': sent_time,
+                    'order_id': local_order_id,
+                })
+            else:
+                # Có order nhưng chưa có PnL (position chưa đóng)
+                not_found.append({
+                    'key': key_str,
+                    'local_status': local_status,
+                    'order_id': local_order_id,
+                    'reason': 'Position not closed yet',
+                })
         else:
             not_found.append({
                 'key': key_str,
                 'local_status': local_status,
                 'order_id': local_order_id,
-                'reason': 'Not found on exchange',
+                'reason': 'Not matched on exchange (symbol/side/entry)',
             })
     
     correct = sum(1 for m in matched if m['match'] == '✅')

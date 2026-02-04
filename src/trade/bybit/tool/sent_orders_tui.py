@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from src.trade.bybit.exchange import get_exchange
-from src.trade.bybit.order_manager import find_order_by_id
+from src.trade.bybit.tool.order_manager import find_order_by_id
 
 
 class OrdersTUI:
