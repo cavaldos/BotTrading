@@ -271,9 +271,14 @@ def check_and_send_open_orders(
             order_detail = {
                 "key": order_key,
                 "order_id": bybit_order_id,
+                "symbol": row['Symbol'],
+                "type": row['Type'],
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
                 "take_profit": float(row['Take_Profit']),
+                "actual_entry": notify_entry,
+                "actual_sl": notify_stop_loss,
+                "actual_tp": notify_take_profit,
                 "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "status": "OPEN",
             }

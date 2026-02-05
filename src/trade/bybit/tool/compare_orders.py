@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 import json
 from datetime import datetime
 from src.trade.bybit.tool.get_history import get_closed_pnl_history, get_order_history
+from src.trade.bybit.exchange import get_exchange, format_symbol
 from src.utils.rounding import round_price
 
 
@@ -51,6 +52,46 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
     
     # Build map order_id -> order info từ Order History
     order_map = {}
+    # Build map parent_order_id -> [child orders] to find TP/SL child orders
+    children_map = {}
+    # Instantiate exchange for best-effort lookups later
+    exchange = get_exchange()
+
+    def _parse_price(value):
+        if value in (None, '', 0, '0', '0.0'):
+            return None
+        try:
+            parsed = float(value)
+        except Exception:
+            return None
+        return parsed if parsed > 0 else None
+
+    def _extract_sl_tp_from_info(info: dict) -> tuple:
+        """Try many possible keys to extract SL/TP from an order/info dict."""
+        sl = None
+        tp = None
+        if not isinstance(info, dict):
+            return sl, tp
+
+        keys = {
+            'sl': ['stopLoss', 'stop_loss', 'stopLossPrice', 'slLimitPrice', 'slTriggerPrice', 'stop_price', 'stopPrice'],
+            'tp': ['takeProfit', 'take_profit', 'takeProfitPrice', 'tpLimitPrice', 'tpTriggerPrice', 'take_profit']
+        }
+
+        for k in keys['sl']:
+            v = _parse_price(info.get(k))
+            if v is not None:
+                sl = v
+                break
+
+        for k in keys['tp']:
+            v = _parse_price(info.get(k))
+            if v is not None:
+                tp = v
+                break
+
+        return sl, tp
+
     for order in order_history:
         order_id = order.get('orderId', '')
         if not order_id:
@@ -62,12 +103,22 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
         created_time = int(order.get('createdTime', 0))
         time_str = datetime.fromtimestamp(created_time / 1000).strftime('%H:%M:%S') if created_time else ''
         
+        # Attempt to read SL/TP from the order history record if present
+        info_sl, info_tp = _extract_sl_tp_from_info(order)
+
+        # Record as child if this order references a parentOrderId
+        parent_id = order.get('parentOrderId') or (order.get('info', {}) or {}).get('parentOrderId')
+        if parent_id and str(parent_id) != '0':
+            children_map.setdefault(str(parent_id), []).append(order)
+
         order_map[order_id] = {
             'symbol': order.get('symbol', ''),
             'side': ex_side,
             'entry': float(order.get('avgPrice', 0)) or float(order.get('price', 0)),
             'qty': float(order.get('cumExecQty', 0)),
             'time': time_str,
+            'stop_loss': info_sl,
+            'take_profit': info_tp,
         }
     
     # Build map (symbol, side, entry) -> PnL info để lấy exit price và WIN/LOSS
@@ -135,7 +186,66 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
             if pnl_info:
                 status_match = '✅' if local_status == pnl_info['status'] else '❌'
                 rr = calculate_rr(order_info['entry'], pnl_info['exit'], local_sl, local_side)
-                
+
+                # Best-effort: get SL/TP as recorded on the exchange for this order
+                ex_sl = order_info.get('stop_loss')
+                ex_tp = order_info.get('take_profit')
+
+                # First, try to find child orders (parentOrderId) and read TP/SL from them
+                try:
+                    children = children_map.get(str(local_order_id), [])
+                except Exception:
+                    children = []
+
+                if children:
+                    for child in children:
+                        # Determine child order type (TakeProfit / StopLoss) from known keys
+                        stype = (child.get('stopOrderType') or child.get('info', {}).get('stopOrderType') or '').lower()
+
+                        # Try to extract a price from child order (price/triggerPrice or info fields)
+                        child_price = None
+                        for k in ('price', 'triggerPrice', 'trigger_price', 'stopPrice', 'stop_price'):
+                            v = child.get(k) or (child.get('info', {}) or {}).get(k)
+                            v = _parse_price(v)
+                            if v is not None:
+                                child_price = v
+                                break
+
+                        if 'take' in stype or 'tp' in stype:
+                            if child_price is not None and ex_tp is None:
+                                ex_tp = child_price
+                        if 'stop' in stype or 'sl' in stype:
+                            if child_price is not None and ex_sl is None:
+                                ex_sl = child_price
+
+                # If not available from order history children, fall back to fetch_order details
+                if (ex_sl is None or ex_tp is None) and local_order_id:
+                    try:
+                        formatted_symbol = format_symbol(order_info.get('symbol', ''))
+                        fetched = exchange.fetch_order(local_order_id, formatted_symbol)
+                        # Inspect top-level keys
+                        sl_from_order, tp_from_order = _extract_sl_tp_from_info(fetched)  # top-level
+                        if sl_from_order is None:
+                            sl_from_order, tp_from_order = _extract_sl_tp_from_info(fetched.get('info', {}))
+
+                        if ex_sl is None:
+                            ex_sl = sl_from_order
+                        if ex_tp is None:
+                            ex_tp = tp_from_order
+                    except Exception:
+                        # Ignore fetch errors and keep None
+                        ex_sl = ex_sl if ex_sl is not None else None
+                        ex_tp = ex_tp if ex_tp is not None else None
+
+                if ex_sl is not None and ex_sl <= 0:
+                    ex_sl = None
+                if ex_tp is not None and ex_tp <= 0:
+                    ex_tp = None
+
+                if ex_sl is None and ex_tp is None:
+                    ex_sl = pnl_info['exit']
+                    ex_tp = pnl_info['exit']
+
                 matched.append({
                     'symbol': symbol,
                     'side': local_side,
@@ -143,6 +253,7 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
                     'exchange_exit': pnl_info['exit'],
                     'local_sl': local_sl,
                     'local_tp': local_tp,
+                    'exchange_exit': ex_sl,
                     'rr': rr,
                     'local_status': local_status,
                     'exchange_status': pnl_info['status'],
@@ -175,7 +286,7 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
     
     header = f"📊 MATCHED ({len(matched)} orders):"
     sep = "-" * 200
-    col_header = f"{'Symbol':<12} {'Side':<6} {'Entry':<12} {'Exit':<12} {'SL':<12} {'TP':<12} {'RR':<8} {'Local':<8} {'Ex':<8} {'Match':<6} {'PnL':<12} {'ExTime':<10} {'SentTime':<10} {'OrderID'}"
+    col_header = f"{'Symbol':<12} {'Side':<6} {'Entry':<12} {'Exit':<12} {'Diff%':<9} {'SL':<12} {'TP':<12} {'ExExit':<12} {'RR':<8} {'Local':<8} {'Ex':<8} {'Match':<6} {'PnL':<12} {'ExTime':<10} {'SentTime':<10} {'OrderID'}"
     
     print(f"\n{header}")
     print(sep)
@@ -199,11 +310,14 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
         exit_p = round_price(m['exchange_exit'])
         sl = round_price(m['local_sl'])
         tp = round_price(m['local_tp'])
+        ex_exit = round_price(m['exchange_exit']) if m.get('exchange_exit') is not None else '-'
         pnl = round(m['pnl'], 2)
-        
-        row = f"{m['symbol']:<12} {m['side']:<6} {entry:<12} {exit_p:<12} {sl:<12} {tp:<12} {rr_str:<8} {m['local_status']:<8} {m['exchange_status']:<8} {m['match']:<6} {pnl:<+12.2f} {m['ex_time']:<10} {m['sent_time']:<10} {m['order_id']}"
-        
-        print(f"{m['symbol']:<12} {m['side']:<6} {entry:<12} {exit_p:<12} {sl:<12} {tp:<12} {rr_str:<8} {m['local_status']:<8} {m['exchange_status']:<8} {m['match']:<6} {pnl_color}{pnl:<+12.2f}{reset} {m['ex_time']:<10} {m['sent_time']:<10} {m['order_id']}")
+        diff_pct = ((m['exchange_exit'] - m['exchange_entry']) / m['exchange_entry'] * 100)
+        diff_pct_str = f"{diff_pct:+.2f}%" if m['exchange_entry'] else "-"
+
+        row = f"{m['symbol']:<12} {m['side']:<6} {entry:<12} {exit_p:<12} {diff_pct_str:<9} {sl:<12} {tp:<12} {ex_exit:<12} {rr_str:<8} {m['local_status']:<8} {m['exchange_status']:<8} {m['match']:<6} {pnl:<+12.2f} {m['ex_time']:<10} {m['sent_time']:<10} {m['order_id']}"
+
+        print(f"{m['symbol']:<12} {m['side']:<6} {entry:<12} {exit_p:<12} {diff_pct_str:<9} {sl:<12} {tp:<12} {ex_exit:<12} {rr_str:<8} {m['local_status']:<8} {m['exchange_status']:<8} {m['match']:<6} {pnl_color}{pnl:<+12.2f}{reset} {m['ex_time']:<10} {m['sent_time']:<10} {m['order_id']}")
         lines.append(row)
     
     print(sep)
