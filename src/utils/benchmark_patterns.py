@@ -20,7 +20,7 @@ from tqdm import tqdm
 from src.strategy import Config, Strategy, STRATEGY_NAME
 from src.statistics import TradeSimulator, generate_summary_report
 from src.config import load_config
-from src.utils.reversal_patterns import PATTERN_PAIR_NAMES
+from src.utils.reversal_patterns import PATTERN_PAIR_NAMES, validate_pattern_ids, get_pattern_name
 
 
 # ==============================================================================
@@ -117,7 +117,7 @@ def run_backtest_for_pattern(pattern_id: int, csv_files: List[Path]) -> Dict[str
     if total_trades == 0:
         return {
             'pattern_id': pattern_id,
-            'pattern_name': PATTERN_PAIR_NAMES[pattern_id],
+            'pattern_name': get_pattern_name(pattern_id),
             'total_signals': total_signals,
             'total_trades': 0,
             'wins': 0,
@@ -149,7 +149,7 @@ def run_backtest_for_pattern(pattern_id: int, csv_files: List[Path]) -> Dict[str
     
     return {
         'pattern_id': pattern_id,
-        'pattern_name': PATTERN_PAIR_NAMES[pattern_id],
+        'pattern_name': get_pattern_name(pattern_id),
         'total_signals': total_signals,
         'total_trades': total_trades,
         'wins': wins,
@@ -230,17 +230,19 @@ def main():
     
     print(f"\n📂 Data folder: {data_folder}")
     print(f"📊 Found {len(csv_files)} data file(s)")
-    print(f"🔢 Testing {len(PATTERN_IDS_TO_TEST)} pattern(s): {PATTERN_IDS_TO_TEST}")
+    validated_pattern_ids = validate_pattern_ids(PATTERN_IDS_TO_TEST)
+    print(f"🔢 Testing {len(validated_pattern_ids)} pattern(s): {list(validated_pattern_ids)}")
     print("-" * 60)
     
     # Chạy benchmark cho từng pattern
     results = []
     
-    for pattern_id in tqdm(PATTERN_IDS_TO_TEST, desc="Benchmarking patterns", unit="pattern"):
-        pattern_name = PATTERN_PAIR_NAMES[pattern_id]
-        tqdm.write(f"  Testing: [{pattern_id}] {pattern_name}")
+    for pattern_id in tqdm(validated_pattern_ids, desc="Benchmarking patterns", unit="pattern"):
+        pid = int(pattern_id)
+        pattern_name = get_pattern_name(pid)
+        tqdm.write(f"  Testing: [{pid}] {pattern_name}")
         
-        result = run_backtest_for_pattern(pattern_id, csv_files)
+        result = run_backtest_for_pattern(pid, csv_files)
         results.append(result)
         
         tqdm.write(f"    → {result['total_trades']} trades, {result['win_rate']:.1f}% win rate")
