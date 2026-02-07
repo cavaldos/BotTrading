@@ -18,7 +18,7 @@ export function useLiveSymbols(refreshInterval = 30000) {
 
             // Add timestamp to prevent caching
             const timestamp = Date.now();
-            const response = await fetch(`/live/symbols.json?t=${timestamp}`);
+            const response = await fetch(`data/live/symbols.json?t=${timestamp}`);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }

@@ -35,7 +35,7 @@ from src.strategy import (
 config = load_config()
 DATA_DIR = config.get('folder_path', 'res/data')
 TRADES_DIR = config.get('output_folder', 'res/output')
-OUTPUT_DIR = 'chart/public/data'
+OUTPUT_DIR = 'chart/public/data/orders'
 
 # Colors configuration (matching TradingView style)
 COLORS = {

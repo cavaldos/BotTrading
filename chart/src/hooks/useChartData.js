@@ -18,7 +18,7 @@ export function useSymbols(refreshInterval = 0) {
       
       // Add timestamp to prevent caching when refreshing
       const timestamp = refreshInterval > 0 ? `?t=${Date.now()}` : '';
-      const response = await fetch(`/data/symbols.json${timestamp}`);
+      const response = await fetch(`/data/orders/symbols.json${timestamp}`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }

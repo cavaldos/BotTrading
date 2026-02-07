@@ -40,7 +40,7 @@ _CONFIG = load_trade_config()
 # Folders for live trading data (from config or defaults)
 LIVE_DATA_DIR = _CONFIG.get("data", {}).get("folder", "res/logs/data")
 LIVE_TRADES_DIR = _CONFIG.get("output", {}).get("folder", "res/logs/output")
-OUTPUT_DIR = 'chart/public/live'
+OUTPUT_DIR = 'chart/public/data/live'
 
 # Colors configuration (matching TradingView style)
 COLORS = {
