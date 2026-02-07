@@ -13,7 +13,7 @@ import os
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from numba import njit
@@ -165,7 +165,7 @@ class TradeSimulator:
             
             # Convert exit time back to datetime
             exit_ts = pd.Timestamp(data_times[exit_idx], unit='ns')
-            exit_time_dt = datetime.utcfromtimestamp(exit_ts.value / 1e9)
+            exit_time_dt = datetime.fromtimestamp(exit_ts.value / 1e9, tz=timezone.utc)
             
             trade = Trade(
                 symbol=signal.symbol,

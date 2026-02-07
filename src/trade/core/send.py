@@ -234,21 +234,7 @@ def check_and_send_open_orders(
             )
             bybit_msg = ""
             
-            if order_result.get('bybit'):
-                bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
-
-            notify_entry = float(row['Entry_Price'])
-            notify_stop_loss = float(row['Stop_Loss'])
-            notify_take_profit = float(row['Take_Profit'])
-            if order_result.get('bybit', {}).get('success'):
-                bybit_order = order_result['bybit']
-                notify_entry = (
-                    bybit_order.get('entry_price')
-                    or bybit_order.get('slippage_info', {}).get('actual_entry')
-                    or notify_entry
-                )
-                notify_stop_loss = bybit_order.get('stop_loss') or notify_stop_loss
-                notify_take_profit = bybit_order.get('take_profit') or notify_take_profit
+            bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
 
             bybit_order_id = None
             if order_result.get('bybit'):
@@ -259,9 +245,9 @@ def check_and_send_open_orders(
             
             send_entry_discord(
                 type=row['Type'],
-                entry=notify_entry,
-                stoploss=notify_stop_loss,
-                takeprofit=notify_take_profit,
+                entry=float(row['Entry_Price']),
+                stoploss=float(row['Stop_Loss']),
+                takeprofit=float(row['Take_Profit']),
                 time=row['Entry_Time'],
                 name_coin=row['Symbol'],
                 result=combined_result,
@@ -276,9 +262,6 @@ def check_and_send_open_orders(
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
                 "take_profit": float(row['Take_Profit']),
-                "actual_entry": notify_entry,
-                "actual_sl": notify_stop_loss,
-                "actual_tp": notify_take_profit,
                 "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "status": "OPEN",
             }
