@@ -178,7 +178,7 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     
     # 3. Order Blocks
     print("    Order Blocks...", end='', flush=True)
-    ob_list = detect_order_blocks(df, swing_length=SWING_LENGTH, ob_body_ratio=OB_BODY_RATIO)
+    ob_list = detect_order_blocks(df, swing_length=SWING_LENGTH)
     results['orderBlocks'] = ob_to_json(ob_list, df)
     print(f" {len(ob_list)} found")
     

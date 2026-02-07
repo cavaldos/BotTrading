@@ -224,10 +224,8 @@ const IndicatorChart = forwardRef(function IndicatorChart({
           fillColor: ob.color || (ob.bias === 'BULLISH'
             ? 'rgba(38, 166, 154, 0.15)'
             : 'rgba(239, 83, 80, 0.15)'),
-          borderColor: ob.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.5)'
-            : 'rgba(239, 83, 80, 0.5)',
-          borderWidth: 1,
+          borderColor: null,
+          borderWidth: 0,
           label: `OB ${ob.structureType || ''}`,
           labelColor: ob.bias === 'BULLISH' ? '#26a69a' : '#ef5350',
         }));

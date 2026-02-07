@@ -1,0 +1,222 @@
+// © Based on LuxAlgo SMC Logic - BOS & CHoCH Only Strategy
+//@version=5
+strategy('BOS & CHoCH Strategy', overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// CONSTANTS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH         = +1
+BEARISH         = -1
+BULLISH_LEG     = 1
+BEARISH_LEG     = 0
+
+STRUCTURE_GROUP = 'Structure Settings'
+
+showSwing       = input(true,       'Show Swing BOS/CHoCH',         group = STRUCTURE_GROUP)
+swingLength     = input.int(50,     'Swing Length',                  group = STRUCTURE_GROUP, minval = 10)
+showInternal    = input(true,       'Show Internal BOS/CHoCH',      group = STRUCTURE_GROUP)
+internalLength  = input.int(5,      'Internal Length',               group = STRUCTURE_GROUP, minval = 1, maxval = 20)
+
+bosSwingColor       = input.color(color.new(#2962ff, 0),  'Swing BOS Color',     group = STRUCTURE_GROUP)
+chochSwingColor     = input.color(color.new(#ff9800, 0),  'Swing CHoCH Color',   group = STRUCTURE_GROUP)
+bosInternalColor    = input.color(color.new(#2962ff, 50), 'Internal BOS Color',  group = STRUCTURE_GROUP)
+chochInternalColor  = input.color(color.new(#ff9800, 50), 'Internal CHoCH Color',group = STRUCTURE_GROUP)
+
+STRATEGY_GROUP  = 'Strategy Settings'
+tradeOn         = input.string('Swing', 'Trade Based On', options = ['Swing', 'Internal'], group = STRATEGY_GROUP)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// DATA STRUCTURES
+//---------------------------------------------------------------------------------------------------------------------{
+// @type UDT representing a pivot point
+type pivot
+    float currentLevel
+    float lastLevel
+    bool  crossed
+    int   barTime  = time
+    int   barIdx   = bar_index
+
+// @type UDT representing trend bias
+type trend
+    int bias
+
+var pivot swingHigh     = pivot.new(na, na, false)
+var pivot swingLow      = pivot.new(na, na, false)
+var pivot internalHigh  = pivot.new(na, na, false)
+var pivot internalLow   = pivot.new(na, na, false)
+
+var trend swingTrend    = trend.new(0)
+var trend internalTrend = trend.new(0)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+
+// Xác định chân sóng (leg)
+leg(int size) =>
+    var leg     = 0
+    newLegHigh  = high[size] > ta.highest(size)
+    newLegLow   = low[size]  < ta.lowest(size)
+
+    if newLegHigh
+        leg := BEARISH_LEG
+    else if newLegLow
+        leg := BULLISH_LEG
+    leg
+
+startOfNewLeg(int currentLeg)      => ta.change(currentLeg) != 0
+startOfBearishLeg(int currentLeg)  => ta.change(currentLeg) == -1
+startOfBullishLeg(int currentLeg)  => ta.change(currentLeg) == +1
+
+// Cập nhật pivot points
+updatePivots(int size, bool internal = false) =>
+    currentLeg  = leg(size)
+    newPivot    = startOfNewLeg(currentLeg)
+    pivotLow    = startOfBullishLeg(currentLeg)
+    pivotHigh   = startOfBearishLeg(currentLeg)
+
+    if newPivot
+        if pivotLow
+            pivot p         = internal ? internalLow : swingLow
+            p.lastLevel    := p.currentLevel
+            p.currentLevel := low[size]
+            p.crossed      := false
+            p.barTime      := time[size]
+            p.barIdx       := bar_index[size]
+        else
+            pivot p         = internal ? internalHigh : swingHigh
+            p.lastLevel    := p.currentLevel
+            p.currentLevel := high[size]
+            p.crossed      := false
+            p.barTime      := time[size]
+            p.barIdx       := bar_index[size]
+
+// Phát hiện BOS và CHoCH
+// BOS  = phá vỡ cấu trúc CÙNG hướng trend hiện tại (tiếp diễn)
+// CHoCH = phá vỡ cấu trúc NGƯỢC hướng trend hiện tại (đảo chiều)
+detectBosChoch(bool internal = false) =>
+    bool isBullishBos   = false
+    bool isBearishBos   = false
+    bool isBullishChoch = false
+    bool isBearishChoch = false
+
+    pivot pH    = internal ? internalHigh : swingHigh
+    pivot pL    = internal ? internalLow  : swingLow
+    trend t     = internal ? internalTrend : swingTrend
+
+    // --- Bullish breakout (close vượt trên swing high) ---
+    if ta.crossover(close, pH.currentLevel) and not pH.crossed
+        pH.crossed := true
+
+        if t.bias == BULLISH or t.bias == 0
+            // Trend đã bullish → phá tiếp = BOS
+            isBullishBos := true
+        else
+            // Trend đang bearish → phá lên = CHoCH (đảo chiều thành bullish)
+            isBullishChoch := true
+
+        t.bias := BULLISH
+
+    // --- Bearish breakout (close phá xuống dưới swing low) ---
+    if ta.crossunder(close, pL.currentLevel) and not pL.crossed
+        pL.crossed := true
+
+        if t.bias == BEARISH or t.bias == 0
+            // Trend đã bearish → phá tiếp = BOS
+            isBearishBos := true
+        else
+            // Trend đang bullish → phá xuống = CHoCH (đảo chiều thành bearish)
+            isBearishChoch := true
+
+        t.bias := BEARISH
+
+    [isBullishBos, isBearishBos, isBullishChoch, isBearishChoch]
+
+// Vẽ đường và label cho BOS/CHoCH
+drawStructure(bool isBullish, bool isBos, pivot p, color lineColor, bool internal) =>
+    float level     = p.currentLevel
+    int   startTime = p.barTime
+    string txt      = isBos ? "BOS" : "CHoCH"
+    lineStyle       = isBos ? line.style_solid : line.style_dashed
+    lineWidth       = internal ? 1 : 2
+    lblSize         = internal ? size.tiny : size.small
+
+    // Vẽ đường ngang từ pivot đến bar hiện tại
+    line.new(
+         x1     = startTime,
+         y1     = level,
+         x2     = time,
+         y2     = level,
+         xloc   = xloc.bar_time,
+         color  = lineColor,
+         style  = lineStyle,
+         width  = lineWidth)
+
+    // Vẽ label
+    label.new(
+          x          = int(math.avg(startTime, time)),
+          y          = level,
+         text       = txt,
+         xloc       = xloc.bar_time,
+         textcolor  = lineColor,
+         style      = isBullish ? label.style_label_up : label.style_label_down,
+         color      = color.new(color.white, 100),
+         size       = lblSize)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+
+// 1) Cập nhật pivot points
+updatePivots(swingLength, false)
+updatePivots(internalLength, true)
+
+// 2) Phát hiện BOS/CHoCH - Swing
+[swBullBos, swBearBos, swBullChoch, swBearChoch] = detectBosChoch(false)
+
+// 3) Phát hiện BOS/CHoCH - Internal
+[intBullBos, intBearBos, intBullChoch, intBearChoch] = detectBosChoch(true)
+
+// 4) Vẽ Swing BOS/CHoCH
+if showSwing
+    if swBullBos
+        drawStructure(true,  true,  swingHigh, bosSwingColor,   false)
+    if swBearBos
+        drawStructure(false, true,  swingLow,  bosSwingColor,   false)
+    if swBullChoch
+        drawStructure(true,  false, swingHigh, chochSwingColor, false)
+    if swBearChoch
+        drawStructure(false, false, swingLow,  chochSwingColor, false)
+
+// 5) Vẽ Internal BOS/CHoCH
+if showInternal
+    if intBullBos
+        drawStructure(true,  true,  internalHigh, bosInternalColor,   true)
+    if intBearBos
+        drawStructure(false, true,  internalLow,  bosInternalColor,   true)
+    if intBullChoch
+        drawStructure(true,  false, internalHigh, chochInternalColor, true)
+    if intBearChoch
+        drawStructure(false, false, internalLow,  chochInternalColor, true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// STRATEGY ENTRIES
+//---------------------------------------------------------------------------------------------------------------------{
+bullishSignal = tradeOn == 'Swing' ? (swBullBos or swBullChoch) : (intBullBos or intBullChoch)
+bearishSignal = tradeOn == 'Swing' ? (swBearBos or swBearChoch) : (intBearBos or intBearChoch)
+
+if bullishSignal
+    strategy.entry('Long', strategy.long)
+
+if bearishSignal
+    strategy.entry('Short', strategy.short)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// PLOT SIGNALS (for alertcondition)
+//---------------------------------------------------------------------------------------------------------------------{
+plotshape(swBullBos,    'Swing Bullish BOS',    shape.triangleup,   location.belowbar,  bosSwingColor,      size = size.tiny)
+plotshape(swBearBos,    'Swing Bearish BOS',    shape.triangledown, location.abovebar,  bosSwingColor,      size = size.tiny)
+plotshape(swBullChoch,  'Swing Bullish CHoCH',  shape.diamond,      location.belowbar,  chochSwingColor,    size = size.tiny)
+plotshape(swBearChoch,  'Swing Bearish CHoCH',  shape.diamond,      location.abovebar,  chochSwingColor,    size = size.tiny)
+
+//---------------------------------------------------------------------------------------------------------------------}

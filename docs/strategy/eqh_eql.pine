@@ -1,0 +1,154 @@
+// This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)
+// © LuxAlgo (stripped down to EQH/EQL only)
+
+//@version=5
+indicator('EQH / EQL Detector', 'EQH/EQL', overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// CONSTANTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH_LEG = 1
+BEARISH_LEG = 0
+
+GREEN       = #089981
+RED         = #F23645
+
+HISTORICAL  = 'Historical'
+PRESENT     = 'Present'
+
+COLORED     = 'Colored'
+MONOCHROME  = 'Monochrome'
+
+MONO_BULLISH = #b2b5be
+MONO_BEARISH = #5d606b
+
+TINY   = size.tiny
+SMALL  = size.small
+NORMAL = size.normal
+
+//---------------------------------------------------------------------------------------------------------------------}
+// INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+modeInput                    = input.string(HISTORICAL, 'Mode', options = [HISTORICAL, PRESENT], tooltip = 'Historical: show all detected EQH/EQL.\nPresent: show only the most recent ones.')
+styleInput                   = input.string(COLORED, 'Style', options = [COLORED, MONOCHROME])
+
+equalHighsLowsLengthInput    = input.int(3, 'Bars Confirmation', minval = 1, tooltip = 'Number of bars used to confirm equal highs and equal lows')
+equalHighsLowsThresholdInput = input.float(0.1, 'Threshold', minval = 0, maxval = 0.5, step = 0.1, tooltip = 'Sensitivity threshold (0‑0.5). Lower = fewer but more precise results.')
+equalHighsLowsSizeInput      = input.string(TINY, 'Label Size', options = [TINY, SMALL, NORMAL])
+
+bullColorInput               = input(GREEN, 'EQL Color')
+bearColorInput               = input(RED,   'EQH Color')
+
+//---------------------------------------------------------------------------------------------------------------------}
+// TYPES
+//---------------------------------------------------------------------------------------------------------------------{
+type equalDisplay
+    line  l_ine  = na
+    label l_abel = na
+
+type pivot
+    float currentLevel
+    float lastLevel
+    bool  crossed
+    int   barTime  = time
+    int   barIndex = bar_index
+
+//---------------------------------------------------------------------------------------------------------------------}
+// VARIABLES
+//---------------------------------------------------------------------------------------------------------------------{
+var pivot equalHigh             = pivot.new(na, na, false)
+var pivot equalLow              = pivot.new(na, na, false)
+var equalDisplay equalHighDisplay = equalDisplay.new()
+var equalDisplay equalLowDisplay  = equalDisplay.new()
+
+var bullishColor = styleInput == MONOCHROME ? MONO_BULLISH : bullColorInput
+var bearishColor = styleInput == MONOCHROME ? MONO_BEARISH : bearColorInput
+
+atrMeasure = ta.atr(200)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+leg(int size) =>
+    var leg    = 0
+    newLegHigh = high[size] > ta.highest(size)
+    newLegLow  = low[size]  < ta.lowest(size)
+    if newLegHigh
+        leg := BEARISH_LEG
+    else if newLegLow
+        leg := BULLISH_LEG
+    leg
+
+startOfNewLeg(int leg)     => ta.change(leg) != 0
+startOfBullishLeg(int leg) => ta.change(leg) == +1
+startOfBearishLeg(int leg) => ta.change(leg) == -1
+
+drawEqualHighLow(pivot p_ivot, float level, int size, bool equalHigh) =>
+    equalDisplay e_qualDisplay = equalHigh ? equalHighDisplay : equalLowDisplay
+
+    string tag        = equalHigh ? 'EQH' : 'EQL'
+    color  equalColor = equalHigh ? bearishColor : bullishColor
+    string labelStyle = equalHigh ? label.style_label_down : label.style_label_up
+
+    if modeInput == PRESENT
+        line.delete(e_qualDisplay.l_ine)
+        label.delete(e_qualDisplay.l_abel)
+
+    e_qualDisplay.l_ine  := line.new(
+         chart.point.new(p_ivot.barTime, na, p_ivot.currentLevel),
+         chart.point.new(time[size], na, level),
+         xloc  = xloc.bar_time,
+         color = equalColor,
+         style = line.style_dotted)
+
+    labelPosition = math.round(0.5 * (p_ivot.barIndex + bar_index - size))
+    e_qualDisplay.l_abel := label.new(
+         chart.point.new(na, labelPosition, level),
+         tag,
+         xloc.bar_index,
+         color     = color(na),
+         textcolor = equalColor,
+         style     = labelStyle,
+         size      = equalHighsLowsSizeInput)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+size       = equalHighsLowsLengthInput
+currentLeg = leg(size)
+newPivot   = startOfNewLeg(currentLeg)
+pivotLow   = startOfBullishLeg(currentLeg)
+pivotHigh  = startOfBearishLeg(currentLeg)
+
+if newPivot
+    if pivotLow
+        // New swing low detected — check for Equal Low
+        if not na(equalLow.currentLevel) and math.abs(equalLow.currentLevel - low[size]) < equalHighsLowsThresholdInput * atrMeasure
+            drawEqualHighLow(equalLow, low[size], size, false)
+
+        equalLow.lastLevel    := equalLow.currentLevel
+        equalLow.currentLevel := low[size]
+        equalLow.crossed      := false
+        equalLow.barTime      := time[size]
+        equalLow.barIndex     := bar_index[size]
+
+    else
+        // New swing high detected — check for Equal High
+        if not na(equalHigh.currentLevel) and math.abs(equalHigh.currentLevel - high[size]) < equalHighsLowsThresholdInput * atrMeasure
+            drawEqualHighLow(equalHigh, high[size], size, true)
+
+        equalHigh.lastLevel    := equalHigh.currentLevel
+        equalHigh.currentLevel := high[size]
+        equalHigh.crossed      := false
+        equalHigh.barTime      := time[size]
+        equalHigh.barIndex     := bar_index[size]
+
+//---------------------------------------------------------------------------------------------------------------------}
+// ALERTS
+//---------------------------------------------------------------------------------------------------------------------{
+eqhDetected = newPivot and pivotHigh and not na(equalHigh.currentLevel) and math.abs(equalHigh.lastLevel - equalHigh.currentLevel) < equalHighsLowsThresholdInput * atrMeasure
+eqlDetected = newPivot and pivotLow  and not na(equalLow.currentLevel)  and math.abs(equalLow.lastLevel  - equalLow.currentLevel)  < equalHighsLowsThresholdInput * atrMeasure
+
+alertcondition(eqhDetected, 'Equal Highs', 'Equal Highs detected')
+alertcondition(eqlDetected, 'Equal Lows',  'Equal Lows detected')
+//---------------------------------------------------------------------------------------------------------------------}
