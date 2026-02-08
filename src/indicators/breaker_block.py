@@ -18,8 +18,10 @@ Uses Numba JIT for performance-critical functions.
 Usage:
     from src.indicators.breaker_block import detect_breaker_blocks, BreakerBlock, to_json
     
-    breakers = detect_breaker_blocks(df, swing_length=10, ob_body_ratio=0.35)
-    json_data = to_json(breakers, df, max_bars=30)
+    # Example (core options):
+    breakers = detect_breaker_blocks(df, swing_length=10, ob_body_ratio=0.35,
+                                     breaker_candle_only_body=False, breaker_candle_2_last=False)
+    json_data = to_json(breakers, times=df['Time'].values, df=df, max_bars=30)
 """
 
 import numpy as np
@@ -136,13 +138,56 @@ def _check_trending_candle_jit(opens: np.ndarray, closes: np.ndarray, highs: np.
 def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray,
                         start_idx: int, end_idx: int, is_bullish: bool,
                         opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, lows: np.ndarray,
-                        body_ratio_threshold: float) -> int:
+                        body_ratio_threshold: float,
+                        use_first_dir: int, two_last: int) -> int:
     """
-    Find Order Block candle index using LuxAlgo logic + trending candle filter.
+    Find Order Block candle index (Pine Script aligned).
+
+    Two modes supported:
+    - First-direction candle mode (Pine logic): 
+      * For Bullish OB: search for first GREEN candle (close > open)
+      * For Bearish OB: search for first RED candle (close < open)
+      * If `two_last` is set, verify next candle is same direction AND adjust bounds
+        to include both candles (expand to max of both).
+    - Fallback mode (original): find min/max parsed low/high that passes trending
+      candle body_ratio filter.
     """
     if start_idx >= end_idx or start_idx < 0:
         return -1
-    
+
+    # Mode 1: use first directional candle (Pine Script logic)
+    if use_first_dir == 1:
+        if is_bullish:
+            # Search for first GREEN candle (close > open)
+            for i in range(start_idx, end_idx):
+                if closes[i] > opens[i]:
+                    # Pine: if breakerCandle_2Last, check next candle and adjust bounds
+                    if two_last == 1:
+                        if i + 1 < end_idx and closes[i + 1] > opens[i + 1]:
+                            # Both candles are green - return first one, but bounds expand
+                            # to include both (handled at caller level via max/min of i and i+1)
+                            return i
+                        else:
+                            # Next candle is not green, skip and continue searching
+                            continue
+                    return i
+            return -1
+        else:
+            # Search for first RED candle (close < open)
+            for i in range(start_idx, end_idx):
+                if closes[i] < opens[i]:
+                    # Pine: if breakerCandle_2Last, check next candle and adjust bounds
+                    if two_last == 1:
+                        if i + 1 < end_idx and closes[i + 1] < opens[i + 1]:
+                            # Both candles are red - return first one
+                            return i
+                        else:
+                            # Next candle is not red, skip and continue searching
+                            continue
+                    return i
+            return -1
+
+    # Mode 2: original behaviour - pick extreme that also is a trending candle
     if is_bullish:
         min_val = parsed_lows[start_idx]
         min_idx = start_idx
@@ -169,14 +214,15 @@ def _find_ob_index_jit(parsed_highs: np.ndarray, parsed_lows: np.ndarray,
 def _detect_breaker_blocks_jit(
     highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, opens: np.ndarray,
     atr: np.ndarray, swing_length: int, body_ratio: float,
+    breaker_body_only: int, breaker_two_last: int, use_first_dir: int
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Detect all Breaker Blocks in one pass.
-    
-    1. Detect structures (BOS/CHoCH) and their Order Blocks
-    2. For each OB, check if price fully breaks through it
-    3. If broken, create a Breaker Block with flipped bias
-    
+
+    Adds lightweight support for choosing the OB candle using the first
+    directional candle (Pine logic) and optionally body-only boxes or
+    double-candle validation.
+
     Returns:
         bb_highs, bb_lows, bb_ob_indices, bb_break_indices,
         bb_biases (1=BULLISH breaker, 0=BEARISH breaker),
@@ -299,12 +345,22 @@ def _detect_breaker_blocks_jit(
             
             ob_idx = _find_ob_index_jit(
                 parsed_highs, parsed_lows, pivot_idx, i,
-                True, opens, closes, highs, lows, body_ratio
+                True, opens, closes, highs, lows, body_ratio, use_first_dir, breaker_two_last
             )
             
             if ob_idx >= 0:
-                ob_highs[ob_count] = parsed_highs[ob_idx]
-                ob_lows[ob_count] = parsed_lows[ob_idx]
+                # Handle two_last: expand bounds to include both candles
+                ob_idx_end = ob_idx
+                if breaker_two_last == 1 and ob_idx + 1 < i:
+                    if closes[ob_idx + 1] > opens[ob_idx + 1]:
+                        ob_idx_end = ob_idx + 1
+                
+                if breaker_body_only == 1:
+                    ob_highs[ob_count] = max(opens[ob_idx], closes[ob_idx], opens[ob_idx_end], closes[ob_idx_end])
+                    ob_lows[ob_count] = min(opens[ob_idx], closes[ob_idx], opens[ob_idx_end], closes[ob_idx_end])
+                else:
+                    ob_highs[ob_count] = max(parsed_highs[ob_idx], parsed_highs[ob_idx_end])
+                    ob_lows[ob_count] = min(parsed_lows[ob_idx], parsed_lows[ob_idx_end])
                 ob_indices[ob_count] = ob_idx
                 ob_biases[ob_count] = 1  # BULLISH
                 ob_struct_types[ob_count] = struct_type
@@ -323,12 +379,22 @@ def _detect_breaker_blocks_jit(
             
             ob_idx = _find_ob_index_jit(
                 parsed_highs, parsed_lows, pivot_idx, i,
-                False, opens, closes, highs, lows, body_ratio
+                False, opens, closes, highs, lows, body_ratio, use_first_dir, breaker_two_last
             )
             
             if ob_idx >= 0:
-                ob_highs[ob_count] = parsed_highs[ob_idx]
-                ob_lows[ob_count] = parsed_lows[ob_idx]
+                # Handle two_last: expand bounds to include both candles
+                ob_idx_end = ob_idx
+                if breaker_two_last == 1 and ob_idx + 1 < i:
+                    if closes[ob_idx + 1] < opens[ob_idx + 1]:
+                        ob_idx_end = ob_idx + 1
+                
+                if breaker_body_only == 1:
+                    ob_highs[ob_count] = max(opens[ob_idx], closes[ob_idx], opens[ob_idx_end], closes[ob_idx_end])
+                    ob_lows[ob_count] = min(opens[ob_idx], closes[ob_idx], opens[ob_idx_end], closes[ob_idx_end])
+                else:
+                    ob_highs[ob_count] = max(parsed_highs[ob_idx], parsed_highs[ob_idx_end])
+                    ob_lows[ob_count] = min(parsed_lows[ob_idx], parsed_lows[ob_idx_end])
                 ob_indices[ob_count] = ob_idx
                 ob_biases[ob_count] = 0  # BEARISH
                 ob_struct_types[ob_count] = struct_type
@@ -369,14 +435,18 @@ def _check_retest_jit(
 # ==================== MAIN DETECTION FUNCTION ====================
 
 def detect_breaker_blocks(df: pd.DataFrame, swing_length: int = 10,
-                           ob_body_ratio: float = 0.35) -> List[BreakerBlock]:
+                           ob_body_ratio: float = 0.35,
+                           breaker_candle_only_body: bool = False,
+                           breaker_candle_2_last: bool = False) -> List[BreakerBlock]:
     """
     Detect Breaker Blocks (Order Blocks that have been fully broken).
-    
+
     Args:
         df: DataFrame with columns: Time, Open, High, Low, Close
         swing_length: Lookback period for swing detection
         ob_body_ratio: Minimum body/range ratio for trending candle
+        breaker_candle_only_body: If True, use candle bodies (open/close) for OB boundaries
+        breaker_candle_2_last: If True, require two consecutive directional candles
     
     Returns:
         List of BreakerBlock objects
@@ -390,9 +460,15 @@ def detect_breaker_blocks(df: pd.DataFrame, swing_length: int = 10,
     
     atr = _calculate_atr_jit(highs, lows, closes, 14)
     
+    # Convert boolean flags to ints for numba-jitted function
+    _body_only = 1 if breaker_candle_only_body else 0
+    _two_last = 1 if breaker_candle_2_last else 0
+    _use_first_dir = 1  # enable Pine-style first-direction candle search by default
+
     (bb_h, bb_l, bb_ob_idx, bb_brk_idx, bb_bias, bb_orig,
      bb_st, cnt) = _detect_breaker_blocks_jit(
-        highs, lows, closes, opens, atr, swing_length, ob_body_ratio
+        highs, lows, closes, opens, atr, swing_length, ob_body_ratio,
+        _body_only, _two_last, _use_first_dir
     )
     
     results = []
@@ -423,38 +499,60 @@ def detect_breaker_blocks(df: pd.DataFrame, swing_length: int = 10,
 
 # ==================== JSON EXPORT ====================
 
-def to_json(breaker_blocks: List[BreakerBlock], df: pd.DataFrame, max_bars: int = 30) -> List[dict]:
+def to_json(breaker_blocks: List[BreakerBlock], times: np.ndarray = None, df: pd.DataFrame = None, max_bars: int = 30) -> List[dict]:
     """
     Convert Breaker Blocks to JSON-serializable format for client display.
-    
+
+    Signature accepts either `times` (np.ndarray of timestamps) or `df` for
+    backward compatibility with older callers that passed `df` directly.
+
     Box starts at break_index (when OB was broken) and extends max_bars
     or until the breaker itself is broken.
-    
+
     Format compatible with TradingView lightweight-charts.
     """
-    times = df['Time'].values
-    highs = df['High'].values
-    lows = df['Low'].values
+    # Backwards compatibility: caller may have passed `df` as the second arg
+    if df is None and times is not None and isinstance(times, pd.DataFrame):
+        df = times
+        times = None
+
+    if times is None:
+        if df is None:
+            raise ValueError("to_json requires 'times' or 'df' with Time column")
+        times = df['Time'].values
+        highs = df['High'].values
+        lows = df['Low'].values
+    else:
+        # If times provided explicitly, df may still be provided for price arrays
+        if df is not None:
+            highs = df['High'].values
+            lows = df['Low'].values
+        else:
+            # highs/lows not strictly required for bounding logic if times known
+            highs = None
+            lows = None
+
     n = len(times)
-    
+
     result = []
     for bb in breaker_blocks:
         if bb.break_index >= n:
             continue
-        
+
         # Breaker box starts at break point
         start_idx = bb.break_index
         end_idx = min(start_idx + max_bars, n - 1)
-        
-        # Check if the breaker itself gets broken
-        for i in range(start_idx + 1, min(start_idx + max_bars + 1, n)):
-            if bb.bias == 'BULLISH' and lows[i] < bb.low:
-                end_idx = i
-                break
-            elif bb.bias == 'BEARISH' and highs[i] > bb.high:
-                end_idx = i
-                break
-        
+
+        # Check if the breaker itself gets broken (only possible when highs/lows provided)
+        if highs is not None and lows is not None:
+            for i in range(start_idx + 1, min(start_idx + max_bars + 1, n)):
+                if bb.bias == 'BULLISH' and lows[i] < bb.low:
+                    end_idx = i
+                    break
+                elif bb.bias == 'BEARISH' and highs[i] > bb.high:
+                    end_idx = i
+                    break
+
         result.append({
             'startTime': int(pd.Timestamp(times[start_idx]).timestamp()),
             'endTime': int(pd.Timestamp(times[end_idx]).timestamp()),
@@ -468,5 +566,5 @@ def to_json(breaker_blocks: List[BreakerBlock], df: pd.DataFrame, max_bars: int 
             'color': 'rgba(76, 175, 80, 0.3)' if bb.bias == 'BULLISH' else 'rgba(244, 67, 54, 0.3)',
             'borderColor': 'rgba(76, 175, 80, 0.8)' if bb.bias == 'BULLISH' else 'rgba(244, 67, 54, 0.8)',
         })
-    
+
     return result
