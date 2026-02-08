@@ -1,22 +1,23 @@
 """
 EQH/EQL (Equal High / Equal Low) Indicator
-=============================================
-Detects Equal Highs and Equal Lows - liquidity zones where price
-has tested the same level multiple times.
+===========================================
+Detects Equal Highs and Equal Lows using LuxAlgo-style leg-based pivots.
+When two consecutive swing highs (or lows) are within threshold * ATR, draw EQH (or EQL).
 
-EQH: Two swing highs with prices within threshold * ATR of each other
-EQL: Two swing lows with prices within threshold * ATR of each other
+Ported from docs/strategy/eqh_eql.pine.
 
-These zones represent areas where stop losses cluster, making them
-attractive targets for smart money to hunt liquidity.
-
-Uses Numba JIT for performance.
+Key logic:
+  - Pivot detection via leg(size): same as BOS/CHoCH (high[size] > ta.highest(size), etc.)
+  - On leg change: compare NEW pivot level with PREVIOUS pivot level of same type.
+  - If |prev_level - new_level| < threshold * ATR(current bar) → emit EQH or EQL.
+  - ATR uses period 200 (Pine: ta.atr(200)), RMA smoothing.
+  - Default: bars_confirmation=3, threshold=0.1.
 
 Usage:
     from src.indicators.eqh_eql import detect_eqh_eql, EqualHL, to_json
-    
-    eqhl_list = detect_eqh_eql(df, swing_length=3, threshold=0.3)
-    json_data = to_json(eqhl_list)
+
+    eqhl_list = detect_eqh_eql(df, bars_confirmation=3, threshold=0.1)
+    json_data = to_json(eqhl_list, times=df['Time'].values)
 """
 
 import numpy as np
@@ -27,15 +28,23 @@ from dataclasses import dataclass
 from numba import njit
 
 
+# ==================== CONSTANTS ====================
+
+BULLISH_LEG = 1
+BEARISH_LEG = 0
+EQH = 1
+EQL = 0
+
+
 # ==================== DATA CLASS ====================
 
 @dataclass
 class EqualHL:
-    """Represents Equal High or Equal Low (liquidity zone)."""
-    type: str           # 'EQH' or 'EQL'
-    level: float        # Average price of the two swing points
-    time: datetime      # Time of the second (confirming) swing
-    index: int          # Index of the second swing
+    """Equal High or Equal Low (two consecutive pivots within threshold * ATR)."""
+    type: str               # 'EQH' or 'EQL'
+    level: float            # Level used for line (second pivot level, matching Pine draw)
+    start_time: datetime
+    end_time: datetime
     first_pivot_index: int
     second_pivot_index: int
 
@@ -43,194 +52,241 @@ class EqualHL:
 # ==================== NUMBA JIT FUNCTIONS ====================
 
 @njit(cache=True)
-def _calculate_atr_jit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int) -> np.ndarray:
-    """Calculate Average True Range (ATR)."""
+def _atr_rma_jit(highs: np.ndarray, lows: np.ndarray, closes: np.ndarray, period: int) -> np.ndarray:
+    """ATR using RMA (Wilder) of True Range, matching Pine ta.atr(period)."""
     n = len(highs)
     tr = np.empty(n, dtype=np.float64)
     atr = np.empty(n, dtype=np.float64)
-    
+
     tr[0] = highs[0] - lows[0]
     for i in range(1, n):
         tr1 = highs[i] - lows[i]
         tr2 = abs(highs[i] - closes[i - 1])
         tr3 = abs(lows[i] - closes[i - 1])
         tr[i] = max(tr1, max(tr2, tr3))
-    
-    cumsum = 0.0
+
+    # RMA: first 'period' bars use SMA of TR, then (x + (period-1)*rma[1])/period
+    cum = 0.0
     for i in range(n):
-        cumsum += tr[i]
+        cum += tr[i]
         if i < period:
-            atr[i] = cumsum / (i + 1)
+            atr[i] = cum / (i + 1)
         else:
-            cumsum -= tr[i - period]
-            atr[i] = cumsum / period
-    
+            atr[i] = (tr[i] + (period - 1) * atr[i - 1]) / period
     return atr
 
 
 @njit(cache=True)
-def _check_swing_high_jit(highs: np.ndarray, i: int, length: int) -> bool:
-    """Check if index i is a swing high."""
-    n = len(highs)
-    if i < length or i >= n - length:
-        return False
-    for j in range(i - length, i + length + 1):
-        if j != i and highs[j] >= highs[i]:
-            return False
-    return True
-
-
-@njit(cache=True)
-def _check_swing_low_jit(lows: np.ndarray, i: int, length: int) -> bool:
-    """Check if index i is a swing low."""
-    n = len(lows)
-    if i < length or i >= n - length:
-        return False
-    for j in range(i - length, i + length + 1):
-        if j != i and lows[j] <= lows[i]:
-            return False
-    return True
-
-
-@njit(cache=True)
 def _detect_eqh_eql_jit(
-    highs: np.ndarray, lows: np.ndarray, atr: np.ndarray,
-    length: int, threshold: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    highs: np.ndarray,
+    lows: np.ndarray,
+    atr: np.ndarray,
+    size: int,
+    threshold: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Detect all EQH/EQL events using JIT.
-    
+    Detect EQH/EQL: leg-based pivots (same as BOS); on each new pivot,
+    if previous pivot of same type is within threshold*ATR, emit event.
+
+    Pine logic:
+        size = bars confirmation, currentLeg = leg(size), newPivot = startOfNewLeg
+        if newPivot and pivotLow: if |equalLow.currentLevel - low[size]| < threshold*atr → draw EQL; then update equalLow
+        if newPivot and pivotHigh: if |equalHigh.currentLevel - high[size]| < threshold*atr → draw EQH; then update equalHigh
+
     Returns:
-        types (1=EQH, 0=EQL), levels, indices (second pivot),
-        first_pivot_indices, second_pivot_indices
+        types (1=EQH, 0=EQL), levels, first_pivot_indices, second_pivot_indices
     """
     n = len(highs)
-    
-    # Pre-compute swing points
-    sh_prices = np.empty(n, dtype=np.float64)
-    sh_idxs = np.empty(n, dtype=np.int64)
-    sh_count = 0
-    
-    sl_prices = np.empty(n, dtype=np.float64)
-    sl_idxs = np.empty(n, dtype=np.int64)
-    sl_count = 0
-    
-    for i in range(length, n - length):
-        if _check_swing_high_jit(highs, i, length):
-            sh_prices[sh_count] = highs[i]
-            sh_idxs[sh_count] = i
-            sh_count += 1
-        if _check_swing_low_jit(lows, i, length):
-            sl_prices[sl_count] = lows[i]
-            sl_idxs[sl_count] = i
-            sl_count += 1
-    
-    max_events = sh_count * sh_count + sl_count * sl_count
-    if max_events == 0:
-        max_events = 1
-    
+    max_events = n
     types = np.empty(max_events, dtype=np.int8)
     levels = np.empty(max_events, dtype=np.float64)
-    indices = np.empty(max_events, dtype=np.int64)
     first_pivots = np.empty(max_events, dtype=np.int64)
     second_pivots = np.empty(max_events, dtype=np.int64)
     count = 0
-    
-    # Detect EQH: compare each pair of swing highs
-    for i in range(sh_count):
-        for j in range(i + 1, sh_count):
-            atr_val = atr[sh_idxs[j]]
-            if abs(sh_prices[i] - sh_prices[j]) < threshold * atr_val:
-                types[count] = 1  # EQH
-                levels[count] = (sh_prices[i] + sh_prices[j]) / 2.0
-                indices[count] = sh_idxs[j]
-                first_pivots[count] = sh_idxs[i]
-                second_pivots[count] = sh_idxs[j]
-                count += 1
-    
-    # Detect EQL: compare each pair of swing lows
-    for i in range(sl_count):
-        for j in range(i + 1, sl_count):
-            atr_val = atr[sl_idxs[j]]
-            if abs(sl_prices[i] - sl_prices[j]) < threshold * atr_val:
-                types[count] = 0  # EQL
-                levels[count] = (sl_prices[i] + sl_prices[j]) / 2.0
-                indices[count] = sl_idxs[j]
-                first_pivots[count] = sl_idxs[i]
-                second_pivots[count] = sl_idxs[j]
-                count += 1
-    
-    return types[:count], levels[:count], indices[:count], first_pivots[:count], second_pivots[:count]
+
+    # Pivot state (previous swing high/low level and bar)
+    sh_level = -1e18
+    sh_bar_idx = -1
+
+    sl_level = 1e18
+    sl_bar_idx = -1
+
+    leg = BEARISH_LEG
+    prev_leg = BEARISH_LEG
+
+    for i in range(1, n):
+        k = i - size
+        if k >= 0:
+            highest_after = highs[k + 1]
+            for j in range(k + 2, i + 1):
+                if highs[j] > highest_after:
+                    highest_after = highs[j]
+
+            lowest_after = lows[k + 1]
+            for j in range(k + 2, i + 1):
+                if lows[j] < lowest_after:
+                    lowest_after = lows[j]
+
+            new_leg_high = highs[k] > highest_after
+            new_leg_low = lows[k] < lowest_after
+
+            prev_leg = leg
+            if new_leg_high:
+                leg = BEARISH_LEG
+            elif new_leg_low:
+                leg = BULLISH_LEG
+
+            if leg != prev_leg:
+                atr_val = atr[i]
+                if atr_val <= 0:
+                    atr_val = 1e-10
+
+                if leg == BULLISH_LEG:
+                    # New swing low: check EQL (previous low within threshold*ATR of new low)
+                    if sl_bar_idx >= 0 and abs(sl_level - lows[k]) < threshold * atr_val:
+                        types[count] = EQL
+                        levels[count] = lows[k]
+                        first_pivots[count] = sl_bar_idx
+                        second_pivots[count] = k
+                        count += 1
+                    sl_level = lows[k]
+                    sl_bar_idx = k
+                else:
+                    # New swing high: check EQH
+                    if sh_bar_idx >= 0 and abs(sh_level - highs[k]) < threshold * atr_val:
+                        types[count] = EQH
+                        levels[count] = highs[k]
+                        first_pivots[count] = sh_bar_idx
+                        second_pivots[count] = k
+                        count += 1
+                    sh_level = highs[k]
+                    sh_bar_idx = k
+
+    return (
+        types[:count],
+        levels[:count],
+        first_pivots[:count],
+        second_pivots[:count],
+    )
 
 
 # ==================== MAIN DETECTION FUNCTION ====================
 
-def detect_eqh_eql(df: pd.DataFrame, swing_length: int = 3,
-                    threshold: float = 0.3) -> List[EqualHL]:
+def detect_eqh_eql(
+    df: pd.DataFrame,
+    bars_confirmation: int = 3,
+    threshold: float = 0.1,
+    atr_period: int = 200,
+) -> List[EqualHL]:
     """
-    Detect Equal Highs and Equal Lows (liquidity zones).
-    
+    Detect Equal Highs and Equal Lows (consecutive pivots within threshold*ATR).
+    Matches docs/strategy/eqh_eql.pine (leg-based pivots, ATR 200).
+
     Args:
         df: DataFrame with columns: Time, Open, High, Low, Close
-        swing_length: Lookback period for internal swing detection
-        threshold: ATR multiplier for price similarity
-    
+        bars_confirmation: Leg size for pivot confirmation (default 3, Pine: Bars Confirmation)
+        threshold: ATR multiplier for "equal" (default 0.1, Pine: 0–0.5)
+        atr_period: ATR period (default 200, Pine: ta.atr(200))
+
     Returns:
-        List of EqualHL objects sorted by index
+        List of EqualHL objects (order of detection)
     """
+    df = df.sort_index()
+
     highs = df['High'].values.astype(np.float64)
     lows = df['Low'].values.astype(np.float64)
     closes = df['Close'].values.astype(np.float64)
     times = df['Time'].values
-    
-    atr = _calculate_atr_jit(highs, lows, closes, 14)
-    
-    types, levels, idxs, fp, sp = _detect_eqh_eql_jit(
-        highs, lows, atr, swing_length, threshold
+
+    atr = _atr_rma_jit(highs, lows, closes, atr_period)
+
+    types, levels, first_idxs, second_idxs = _detect_eqh_eql_jit(
+        highs, lows, atr, bars_confirmation, threshold
     )
-    
+
     results = []
     for i in range(len(types)):
-        idx = int(idxs[i])
-        t = pd.Timestamp(times[idx]).to_pydatetime()
+        fp = int(first_idxs[i])
+        sp = int(second_idxs[i])
+        st = times[fp]
+        et = times[sp]
+        if isinstance(st, (int, np.integer)):
+            start_dt = datetime.fromtimestamp(int(st))
+        else:
+            start_dt = pd.Timestamp(st).to_pydatetime()
+        if isinstance(et, (int, np.integer)):
+            end_dt = datetime.fromtimestamp(int(et))
+        else:
+            end_dt = pd.Timestamp(et).to_pydatetime()
+
         results.append(EqualHL(
-            type='EQH' if types[i] == 1 else 'EQL',
+            type='EQH' if types[i] == EQH else 'EQL',
             level=float(levels[i]),
-            time=t,
-            index=idx,
-            first_pivot_index=int(fp[i]),
-            second_pivot_index=int(sp[i]),
+            start_time=start_dt,
+            end_time=end_dt,
+            first_pivot_index=fp,
+            second_pivot_index=sp,
         ))
-    
-    # Sort by index
-    results.sort(key=lambda x: x.index)
+
     return results
 
 
 # ==================== JSON EXPORT ====================
 
-def to_json(eqhl_list: List[EqualHL], df: pd.DataFrame) -> List[dict]:
+def to_json(eqhl_list: List[EqualHL], df: pd.DataFrame = None, times: np.ndarray = None) -> List[dict]:
     """
-    Convert EQH/EQL list to JSON-serializable format for client display.
-    
-    Format compatible with TradingView lightweight-charts.
-    Draws a horizontal line between the two pivot points.
+    Format for lightweight-charts. If `times` is provided, use same timestamp
+    conversion as candle export for alignment.
     """
-    times = df['Time'].values
-    
+    if times is None and df is not None:
+        times = df['Time'].values
+
     result = []
     for eqhl in eqhl_list:
-        start_time = int(pd.Timestamp(times[eqhl.first_pivot_index]).timestamp())
-        end_time = int(pd.Timestamp(times[eqhl.second_pivot_index]).timestamp())
-        
+        if times is not None and len(times) > 0:
+            fp, sp = eqhl.first_pivot_index, eqhl.second_pivot_index
+            start_ts = int(pd.Timestamp(times[fp]).timestamp()) if fp < len(times) else int(eqhl.start_time.timestamp())
+            end_ts = int(pd.Timestamp(times[sp]).timestamp()) if sp < len(times) else int(eqhl.end_time.timestamp())
+        else:
+            start_ts = int(eqhl.start_time.timestamp())
+            end_ts = int(eqhl.end_time.timestamp())
+
+        # Pine: EQH = bearish color #F23645, EQL = bullish #089981
+        color = 'rgba(242, 54, 69, 0.85)' if eqhl.type == 'EQH' else 'rgba(8, 153, 129, 0.85)'
+
         result.append({
             'type': eqhl.type,
             'level': eqhl.level,
-            'startTime': start_time,
-            'endTime': end_time,
+            'startTime': start_ts,
+            'endTime': end_ts,
             'firstPivotIndex': eqhl.first_pivot_index,
             'secondPivotIndex': eqhl.second_pivot_index,
-            'color': 'rgba(255, 152, 0, 0.7)' if eqhl.type == 'EQH' else 'rgba(33, 150, 243, 0.7)',
-            'lineStyle': 'dashed',
+            'color': color,
+            'lineStyle': 'dotted',
         })
     return result
+
+
+# ==================== EXAMPLE ====================
+
+if __name__ == "__main__":
+    np.random.seed(42)
+    dates = pd.date_range('2024-01-01', periods=500, freq='H')
+    base = 100
+    prices = base + np.cumsum(np.random.randn(500) * 0.3)
+
+    df = pd.DataFrame({
+        'Time': dates,
+        'Open': prices,
+        'High': prices + np.abs(np.random.randn(500) * 0.2),
+        'Low': prices - np.abs(np.random.randn(500) * 0.2),
+        'Close': prices + np.random.randn(500) * 0.05
+    })
+
+    events = detect_eqh_eql(df, bars_confirmation=3, threshold=0.1)
+    print(f"Detected {len(events)} EQH/EQL events:")
+    for e in events:
+        print(f"  {e.type} | level {e.level:.2f} | bars {e.first_pivot_index} -> {e.second_pivot_index}")
+
+    json_data = to_json(events, times=df['Time'].values)
+    print(f"\nJSON export: {len(json_data)} events")

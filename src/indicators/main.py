@@ -177,13 +177,13 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     # 4. FVG
     print("    FVG...", end='', flush=True)
     fvg_list = detect_fvg(df)
-    results['fvg'] = fvg_to_json(fvg_list)
+    results['fvg'] = fvg_to_json(fvg_list, times=df['Time'].values)
     print(f" {len(fvg_list)} found")
 
     # 5. EQH/EQL
     print("    EQH/EQL...", end='', flush=True)
     eqhl_list = detect_eqh_eql(df)
-    results['eqhEql'] = eqhl_to_json(eqhl_list, df)
+    results['eqhEql'] = eqhl_to_json(eqhl_list, times=df['Time'].values)
     print(f" {len(eqhl_list)} found")
 
     # 6. Imbalance
