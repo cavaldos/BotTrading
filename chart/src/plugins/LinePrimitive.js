@@ -168,8 +168,8 @@ export function createStructureLine(item) {
     price: item.level,
     color: item.color,
     lineWidth: 1,
-    lineStyle: item.type === 'CHoCH' ? 'dashed' : 'solid',
-    label: item.type,
+    lineStyle: item.lineStyle ?? (item.type === 'CHoCH' ? 'dashed' : 'solid'),
+    label: item.type ?? 'BOS',
     labelPosition: 'center',
     labelSize: 10,
   });

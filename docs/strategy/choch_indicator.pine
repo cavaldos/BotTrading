@@ -1,0 +1,196 @@
+// © CHoCH Indicator - Change of Character Only
+//@version=5
+indicator('CHoCH Indicator', overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// CONSTANTS & INPUTS
+//---------------------------------------------------------------------------------------------------------------------{
+BULLISH         = +1
+BEARISH         = -1
+BULLISH_LEG     = 1
+BEARISH_LEG     = 0
+
+STRUCTURE_GROUP = 'CHoCH Settings'
+
+showSwing       = input(true,       'Show Swing CHoCH',         group = STRUCTURE_GROUP)
+swingLength     = input.int(50,     'Swing Length',             group = STRUCTURE_GROUP, minval = 10)
+showInternal    = input(true,       'Show Internal CHoCH',      group = STRUCTURE_GROUP)
+internalLength  = input.int(5,      'Internal Length',          group = STRUCTURE_GROUP, minval = 1, maxval = 20)
+
+chochSwingColor     = input.color(color.new(#ff9800, 0),  'Swing CHoCH Color',   group = STRUCTURE_GROUP)
+chochInternalColor  = input.color(color.new(#ff9800, 50), 'Internal CHoCH Color',group = STRUCTURE_GROUP)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// DATA STRUCTURES
+//---------------------------------------------------------------------------------------------------------------------{
+// @type UDT representing a pivot point
+type pivot
+    float currentLevel
+    float lastLevel
+    bool  crossed
+    int   barTime  = time
+    int   barIdx   = bar_index
+
+// @type UDT representing trend bias
+type trend
+    int bias
+
+var pivot swingHigh     = pivot.new(na, na, false)
+var pivot swingLow      = pivot.new(na, na, false)
+var pivot internalHigh  = pivot.new(na, na, false)
+var pivot internalLow   = pivot.new(na, na, false)
+
+var trend swingTrend    = trend.new(0)
+var trend internalTrend = trend.new(0)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// FUNCTIONS
+//---------------------------------------------------------------------------------------------------------------------{
+
+// Xác định chân sóng (leg)
+leg(int size) =>
+    var leg     = 0
+    newLegHigh  = high[size] > ta.highest(size)
+    newLegLow   = low[size]  < ta.lowest(size)
+
+    if newLegHigh
+        leg := BEARISH_LEG
+    else if newLegLow
+        leg := BULLISH_LEG
+    leg
+
+startOfNewLeg(int currentLeg)      => ta.change(currentLeg) != 0
+startOfBearishLeg(int currentLeg)  => ta.change(currentLeg) == -1
+startOfBullishLeg(int currentLeg)  => ta.change(currentLeg) == +1
+
+// Cập nhật pivot points
+updatePivots(int size, bool internal = false) =>
+    currentLeg  = leg(size)
+    newPivot    = startOfNewLeg(currentLeg)
+    pivotLow    = startOfBullishLeg(currentLeg)
+    pivotHigh   = startOfBearishLeg(currentLeg)
+
+    if newPivot
+        if pivotLow
+            pivot p         = internal ? internalLow : swingLow
+            p.lastLevel    := p.currentLevel
+            p.currentLevel := low[size]
+            p.crossed      := false
+            p.barTime      := time[size]
+            p.barIdx       := bar_index[size]
+        else
+            pivot p         = internal ? internalHigh : swingHigh
+            p.lastLevel    := p.currentLevel
+            p.currentLevel := high[size]
+            p.crossed      := false
+            p.barTime      := time[size]
+            p.barIdx       := bar_index[size]
+
+// Phát hiện CHoCH (Change of Character - đảo chiều trend)
+detectChoch(bool internal = false) =>
+    bool isBullishChoch = false
+    bool isBearishChoch = false
+
+    pivot pH    = internal ? internalHigh : swingHigh
+    pivot pL    = internal ? internalLow  : swingLow
+    trend t     = internal ? internalTrend : swingTrend
+
+    // --- Bullish CHoCH (đảo chiều từ bearish sang bullish) ---
+    if ta.crossover(close, pH.currentLevel) and not pH.crossed
+        pH.crossed := true
+
+        if t.bias == BEARISH
+            // Trend đang bearish → phá lên = CHoCH
+            isBullishChoch := true
+
+        t.bias := BULLISH
+
+    // --- Bearish CHoCH (đảo chiều từ bullish sang bearish) ---
+    if ta.crossunder(close, pL.currentLevel) and not pL.crossed
+        pL.crossed := true
+
+        if t.bias == BULLISH
+            // Trend đang bullish → phá xuống = CHoCH
+            isBearishChoch := true
+
+        t.bias := BEARISH
+
+    [isBullishChoch, isBearishChoch]
+
+// Vẽ đường và label cho CHoCH
+drawChoch(bool isBullish, pivot p, color lineColor, bool internal) =>
+    float level     = p.currentLevel
+    int   startTime = p.barTime
+    string txt      = "CHoCH"
+    lineStyle       = line.style_dashed
+    lineWidth       = internal ? 1 : 2
+    lblSize         = internal ? size.tiny : size.small
+
+    // Vẽ đường ngang từ pivot đến bar hiện tại
+    line.new(
+         x1     = startTime,
+         y1     = level,
+         x2     = time,
+         y2     = level,
+         xloc   = xloc.bar_time,
+         color  = lineColor,
+         style  = lineStyle,
+         width  = lineWidth)
+
+    // Vẽ label
+    label.new(
+          x          = int(math.avg(startTime, time)),
+          y          = level,
+         text       = txt,
+         xloc       = xloc.bar_time,
+         textcolor  = lineColor,
+         style      = isBullish ? label.style_label_up : label.style_label_down,
+         color      = color.new(color.white, 100),
+         size       = lblSize)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// EXECUTION
+//---------------------------------------------------------------------------------------------------------------------{
+
+// 1) Cập nhật pivot points
+updatePivots(swingLength, false)
+updatePivots(internalLength, true)
+
+// 2) Phát hiện CHoCH - Swing
+[swBullChoch, swBearChoch] = detectChoch(false)
+
+// 3) Phát hiện CHoCH - Internal
+[intBullChoch, intBearChoch] = detectChoch(true)
+
+// 4) Vẽ Swing CHoCH
+if showSwing
+    if swBullChoch
+        drawChoch(true, swingHigh, chochSwingColor, false)
+    if swBearChoch
+        drawChoch(false, swingLow, chochSwingColor, false)
+
+// 5) Vẽ Internal CHoCH
+if showInternal
+    if intBullChoch
+        drawChoch(true, internalHigh, chochInternalColor, true)
+    if intBearChoch
+        drawChoch(false, internalLow, chochInternalColor, true)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// PLOT SIGNALS
+//---------------------------------------------------------------------------------------------------------------------{
+plotshape(swBullChoch,  'Swing Bullish CHoCH',  shape.diamond, location.belowbar, chochSwingColor, size = size.small)
+plotshape(swBearChoch,  'Swing Bearish CHoCH',  shape.diamond, location.abovebar, chochSwingColor, size = size.small)
+
+plotshape(intBullChoch, 'Internal Bullish CHoCH', shape.diamond, location.belowbar, chochInternalColor, size = size.tiny)
+plotshape(intBearChoch, 'Internal Bearish CHoCH', shape.diamond, location.abovebar, chochInternalColor, size = size.tiny)
+
+//---------------------------------------------------------------------------------------------------------------------}
+// ALERTS
+//---------------------------------------------------------------------------------------------------------------------{
+alertcondition(swBullChoch, 'Swing Bullish CHoCH', 'Swing Bullish CHoCH detected')
+alertcondition(swBearChoch, 'Swing Bearish CHoCH', 'Swing Bearish CHoCH detected')
+alertcondition(intBullChoch, 'Internal Bullish CHoCH', 'Internal Bullish CHoCH detected')
+alertcondition(intBearChoch, 'Internal Bearish CHoCH', 'Internal Bearish CHoCH detected')
+
+//---------------------------------------------------------------------------------------------------------------------}

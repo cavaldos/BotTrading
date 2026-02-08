@@ -2,7 +2,7 @@
 Indicators Main - Run All SMC Indicators and Export to JSON
 =============================================================
 Main entry point that:
-1. Loads OHLCV data from config folder_path
+1. Loads OHLCV data from res/data
 2. Runs ALL SMC indicators on each data file
 3. Exports combined JSON for frontend (TradingView lightweight-charts format)
 
@@ -50,15 +50,6 @@ config = load_config()
 DATA_DIR = config.get('folder_path', 'res/data')
 OUTPUT_DIR = 'chart/public/data/indicators'
 
-# Strategy settings from config
-strategy_config = config.get('strategy', {})
-SWING_LENGTH = strategy_config.get('swing_length', 10)
-OB_BODY_RATIO = strategy_config.get('ob_body_ratio', 0.35)
-EQHL_LENGTH = strategy_config.get('eqhl_length', 3)
-EQHL_THRESHOLD = strategy_config.get('eqhl_threshold', 0.3)
-FVG_ATR_FILTER = strategy_config.get('fvg_atr_filter', True)
-
-# Colors
 COLORS = {
     'bullish_candle': '#26a69a',
     'bearish_candle': '#ef5350',
@@ -74,16 +65,16 @@ def scan_data_files() -> List[dict]:
     """
     data_files = glob(os.path.join(DATA_DIR, '*.csv'))
     results = []
-    
+
     for data_file in data_files:
         filename = os.path.basename(data_file)
         name_without_ext = filename.replace('.csv', '')
         parts = name_without_ext.rsplit('_', 1)
-        
+
         if len(parts) != 2:
             print(f"  Skipping {filename} - invalid format (expected SYMBOL_TIMEFRAME.csv)")
             continue
-        
+
         symbol, timeframe = parts
         results.append({
             'data_file': data_file,
@@ -91,7 +82,7 @@ def scan_data_files() -> List[dict]:
             'timeframe': timeframe,
             'id': name_without_ext,
         })
-    
+
     return sorted(results, key=lambda x: (x['symbol'], x['timeframe']))
 
 
@@ -124,7 +115,7 @@ def export_candles(df: pd.DataFrame) -> List[dict]:
     highs = df['High'].values
     lows = df['Low'].values
     closes = df['Close'].values
-    
+
     for i in range(len(df)):
         candles.append({
             'time': int(pd.Timestamp(times[i]).timestamp()),
@@ -143,7 +134,7 @@ def export_volume(df: pd.DataFrame) -> List[dict]:
     opens = df['Open'].values
     closes = df['Close'].values
     volumes = df['Volume'].values if 'Volume' in df.columns else np.zeros(len(df))
-    
+
     for i in range(len(df)):
         is_bullish = closes[i] >= opens[i]
         volume.append({
@@ -159,80 +150,81 @@ def export_volume(df: pd.DataFrame) -> List[dict]:
 def run_all_indicators(df: pd.DataFrame) -> dict:
     """
     Run ALL SMC indicators on a DataFrame.
-    
+    Each indicator uses its own default config defined in its own file.
+
     Returns dict with all indicator results in JSON-serializable format.
     """
     results = {}
-    
-    # 1. BOS
+
+    # 1. BOS (pass times for same timestamp conversion as candles → alignment)
     print("    BOS...", end='', flush=True)
-    bos_list = detect_bos(df, swing_length=SWING_LENGTH)
-    results['bos'] = bos_to_json(bos_list)
+    bos_list = detect_bos(df)
+    results['bos'] = bos_to_json(bos_list, times=df['Time'].values)
     print(f" {len(bos_list)} found")
-    
-    # 2. CHoCH
+
+    # 2. CHoCH (pass times for alignment with candles)
     print("    CHoCH...", end='', flush=True)
-    choch_list = detect_choch(df, swing_length=SWING_LENGTH)
-    results['choch'] = choch_to_json(choch_list)
+    choch_list = detect_choch(df)
+    results['choch'] = choch_to_json(choch_list, times=df['Time'].values)
     print(f" {len(choch_list)} found")
-    
+
     # 3. Order Blocks
     print("    Order Blocks...", end='', flush=True)
-    ob_list = detect_order_blocks(df, swing_length=SWING_LENGTH)
+    ob_list = detect_order_blocks(df)
     results['orderBlocks'] = ob_to_json(ob_list, df)
     print(f" {len(ob_list)} found")
-    
+
     # 4. FVG
     print("    FVG...", end='', flush=True)
-    fvg_list = detect_fvg(df, use_atr_filter=FVG_ATR_FILTER)
+    fvg_list = detect_fvg(df)
     results['fvg'] = fvg_to_json(fvg_list)
     print(f" {len(fvg_list)} found")
-    
+
     # 5. EQH/EQL
     print("    EQH/EQL...", end='', flush=True)
-    eqhl_list = detect_eqh_eql(df, swing_length=EQHL_LENGTH, threshold=EQHL_THRESHOLD)
+    eqhl_list = detect_eqh_eql(df)
     results['eqhEql'] = eqhl_to_json(eqhl_list, df)
     print(f" {len(eqhl_list)} found")
-    
+
     # 6. Imbalance
     print("    Imbalance...", end='', flush=True)
     imb_list = detect_imbalance(df)
     results['imbalance'] = imbalance_to_json(imb_list)
     print(f" {len(imb_list)} found")
-    
+
     # 7. Breaker Blocks
     print("    Breaker Blocks...", end='', flush=True)
-    breaker_list = detect_breaker_blocks(df, swing_length=SWING_LENGTH, ob_body_ratio=OB_BODY_RATIO)
+    breaker_list = detect_breaker_blocks(df)
     results['breakerBlocks'] = breaker_to_json(breaker_list, df)
     print(f" {len(breaker_list)} found")
-    
+
     # 8. Mitigation Blocks
     print("    Mitigation Blocks...", end='', flush=True)
-    mit_list = detect_mitigation_blocks(df, swing_length=SWING_LENGTH, ob_body_ratio=OB_BODY_RATIO)
+    mit_list = detect_mitigation_blocks(df)
     results['mitigationBlocks'] = mitigation_to_json(mit_list, df)
     print(f" {len(mit_list)} found")
-    
+
     # 9. Retracement
     print("    Retracement...", end='', flush=True)
-    ret_list = detect_retracements(df, swing_length=SWING_LENGTH)
+    ret_list = detect_retracements(df)
     results['retracement'] = retracement_to_json(ret_list)
     print(f" {len(ret_list)} found")
-    
+
     return results
 
 
 def export_symbol(symbol_info: dict) -> dict:
     """Process and export a single symbol to JSON."""
     print(f"\nProcessing {symbol_info['id']}...")
-    
+
     # Load data
     df = load_data(symbol_info['data_file'])
     print(f"  Loaded {len(df)} candles")
-    
+
     # Run all indicators
     print("  Running indicators:")
     indicator_results = run_all_indicators(df)
-    
+
     # Build export object
     chart_data = {
         'candles': export_candles(df),
@@ -244,24 +236,17 @@ def export_symbol(symbol_info: dict) -> dict:
             'id': symbol_info['id'],
             'dataPoints': len(df),
             'exportedAt': datetime.now().isoformat(),
-            'config': {
-                'swingLength': SWING_LENGTH,
-                'obBodyRatio': OB_BODY_RATIO,
-                'eqhlLength': EQHL_LENGTH,
-                'eqhlThreshold': EQHL_THRESHOLD,
-                'fvgAtrFilter': FVG_ATR_FILTER,
-            },
         }
     }
-    
+
     # Save to JSON
     output_file = os.path.join(OUTPUT_DIR, f"{symbol_info['id']}.json")
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(chart_data, f)
-    
+
     file_size = os.path.getsize(output_file) / 1024
     print(f"  Exported to {output_file} ({file_size:.1f} KB)")
-    
+
     return {
         'id': symbol_info['id'],
         'symbol': symbol_info['symbol'],
@@ -299,30 +284,22 @@ def main():
     print("=" * 60)
     print("SMC Indicators - Export All to JSON")
     print("=" * 60)
-    
+
     # Ensure output directory exists
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    
+
     # Scan for data files
     print(f"\nScanning {DATA_DIR}/ for data files...")
     symbol_infos = scan_data_files()
-    
+
     if not symbol_infos:
         print("No data files found!")
         return
-    
+
     print(f"Found {len(symbol_infos)} symbol(s):")
     for info in symbol_infos:
         print(f"  - {info['id']}")
-    
-    # Print config
-    print(f"\nConfig:")
-    print(f"  swing_length: {SWING_LENGTH}")
-    print(f"  ob_body_ratio: {OB_BODY_RATIO}")
-    print(f"  eqhl_length: {EQHL_LENGTH}")
-    print(f"  eqhl_threshold: {EQHL_THRESHOLD}")
-    print(f"  fvg_atr_filter: {FVG_ATR_FILTER}")
-    
+
     # Process each symbol
     exported_symbols = []
     for info in symbol_infos:
@@ -333,10 +310,10 @@ def main():
             print(f"  Error processing {info['id']}: {e}")
             import traceback
             traceback.print_exc()
-    
+
     # Export symbols list
     export_symbols_list(exported_symbols)
-    
+
     # Summary
     print("\n" + "=" * 60)
     print("Export Summary")
