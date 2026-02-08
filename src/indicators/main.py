@@ -43,6 +43,9 @@ from src.indicators.breaker_block import detect_breaker_blocks, to_json as break
 from src.indicators.mitigation_block import detect_mitigation_blocks, to_json as mitigation_to_json
 from src.indicators.retracement import detect_retracements, to_json as retracement_to_json
 
+# Swing indicator
+from src.indicators.swing import detect_swings, to_json as swing_to_json
+
 
 # ==================== CONFIGURATION ====================
 
@@ -210,6 +213,12 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     results['retracement'] = retracement_to_json(ret_list)
     print(f" {len(ret_list)} found")
 
+    # 10. Swings (HH/HL/LH/LL)
+    print("    Swings...", end='', flush=True)
+    swings = detect_swings(df)
+    results['swing'] = swing_to_json(swings, times=df['Time'].values)
+    print(f" {len(swings)} found")
+
     return results
 
 
@@ -262,6 +271,7 @@ def export_symbol(symbol_info: dict) -> dict:
             'breakerBlocks': len(indicator_results['breakerBlocks']),
             'mitigationBlocks': len(indicator_results['mitigationBlocks']),
             'retracement': len(indicator_results['retracement']),
+            'swing': len(indicator_results.get('swing', [])),
         },
     }
 

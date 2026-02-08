@@ -66,6 +66,13 @@ const INDICATOR_CONFIG = [
     color: 'rgba(33, 150, 243, 0.7)',
     type: 'fib',
   },
+  {
+    key: 'swing',
+    label: 'Swings',
+    description: 'Swing highs/lows (HH/HL/LH/LL)',
+    color: 'rgba(255, 82, 82, 0.9)',
+    type: 'marker',
+  },
 ];
 
 function IndicatorToggle({ visibility, onToggle, counts = {} }) {

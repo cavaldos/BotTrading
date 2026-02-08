@@ -14,6 +14,7 @@ const DEFAULT_VISIBILITY = {
   breakerBlocks: true,
   mitigationBlocks: false,
   retracement: false,
+  swing: true,
 };
 
 function IndicatorPage() {

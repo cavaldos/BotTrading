@@ -338,6 +338,30 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       });
     }
 
+    // --- Swings (HH/HL/LH/LL) ---
+    if (visibility.swing && data.swing?.length > 0) {
+      // Show recent swings and avoid clutter; we'll draw a tiny labeled rect at the pivot price
+      const items = data.swing.slice(-500);
+      items.forEach(s => {
+        // create a small box spanning one bar and small price range
+        const start = s.time;
+        const end = s.time + barDuration; // 1 bar width
+        const pad = Math.abs((s.price || 0) * 0.002) || 0.0001; // small price pad
+
+        newPrimitives.push(new RectanglePrimitive({
+          startTime: start,
+          endTime: end,
+          lowPrice: s.price - pad,
+          highPrice: s.price + pad,
+          fillColor: 'rgba(0,0,0,0)',
+          borderColor: null,
+          borderWidth: 0,
+          label: s.type,
+          labelColor: s.isHigh ? '#ff5252' : '#00bfa5',
+        }));
+      });
+    }
+
     // Attach all primitives
     newPrimitives.forEach(p => {
       candleSeriesRef.current.attachPrimitive(p);
@@ -389,11 +413,11 @@ const IndicatorChart = forwardRef(function IndicatorChart({
           title="Toggle measurement tool (Ruler)"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M21.3 8.7l-6-6-12 12 6 6 12-12z"/>
-            <path d="M8 16l2-2"/>
-            <path d="M6.5 13.5l2-2"/>
-            <path d="M11 18.5l2-2"/>
-            <path d="M13.5 16l2-2"/>
+            <path d="M21.3 8.7l-6-6-12 12 6 6 12-12z" />
+            <path d="M8 16l2-2" />
+            <path d="M6.5 13.5l2-2" />
+            <path d="M11 18.5l2-2" />
+            <path d="M13.5 16l2-2" />
           </svg>
           {isMeasuring ? 'Measuring' : 'Ruler'}
         </button>
