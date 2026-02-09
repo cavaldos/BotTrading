@@ -2,7 +2,7 @@ import requests # pyright: ignore[reportMissingModuleSource]
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
 from src.config import load_config
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import shutil
@@ -148,7 +148,7 @@ def save_to_csv(candles, filename, max_retries=3):
 
                 # Write each data row
                 for candle in candles:
-                    timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+                    timestamp = datetime.fromtimestamp(candle[0] / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
                     open_price = float(candle[1])
                     high_price = float(candle[2])
                     low_price = float(candle[3])
@@ -313,7 +313,7 @@ def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
             
             # Convert candle to CSV row format
             candle = latest_candle[0]
-            timestamp = datetime.utcfromtimestamp(candle[0] / 1000).strftime('%Y-%m-%d %H:%M:%S')
+            timestamp = datetime.fromtimestamp(candle[0] / 1000, timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
             open_price = float(candle[1])
             high_price = float(candle[2])
             low_price = float(candle[3])
