@@ -86,7 +86,7 @@ export function useChartData(symbolId, refreshInterval = 0) {
       
       // Add timestamp to prevent caching when refreshing
       const timestamp = refreshInterval > 0 ? `?t=${Date.now()}` : '';
-      const url = `/data/${symbolId}.json${timestamp}`;
+      const url = `/data/orders/${symbolId}.json${timestamp}`;
       const response = await fetch(url);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
