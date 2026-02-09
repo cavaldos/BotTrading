@@ -16,7 +16,7 @@ SENT_ORDERS_METADATA_KEY = "_metadata"
 from src.trade.core.discord_notify import send_entry_discord
 
 # from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
-from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
+from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message, cancel_order
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -86,7 +86,7 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
         key = order.get("key", "")
         current_status = order.get("status", "")
         
-        if current_status in ('WIN', 'LOSS'):
+        if current_status in ('WIN', 'LOSS', 'CANCELLED'):
             continue
         
         if key in trades_from_csv:
@@ -99,6 +99,26 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
             if current_status == 'OPEN':
                 order["status"] = 'PASSED'
                 updated_count += 1
+            
+            if current_status in ('OPEN', 'PASSED'):
+                order_id = order.get("order_id")
+                symbol = order.get("symbol", "")
+                if order_id and symbol:
+                    try:
+                        cancel_result = cancel_order(symbol, order_id)
+                        if cancel_result.get("success"):
+                            order["status"] = "CANCELLED"
+                            order["cancelled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            updated_count += 1
+                            print(f"Cancelled order {order_id} for {symbol} (was {current_status})")
+                        else:
+                            order["status"] = "CANCELLED"
+                            order["cancelled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            order["cancel_note"] = "cancel request failed or already filled"
+                            updated_count += 1
+                            print(f"Cancel failed for {order_id} ({symbol}), marking as CANCELLED anyway: {cancel_result}")
+                    except Exception as e:
+                        print(f"Error cancelling order {order_id} for {symbol}: {e}")
     
     if updated_count > 0:
         save_sent_orders(log_path, sent_orders)
