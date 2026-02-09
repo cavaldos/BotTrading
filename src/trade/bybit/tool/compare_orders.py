@@ -281,18 +281,25 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
     
     correct = sum(1 for m in matched if m['match'] == '✅')
     wrong = len(matched) - correct
-    
+    # Tổng lệnh thắng / thua theo thông tin PnL của exchange
+    total_wins = sum(1 for m in matched if m.get('exchange_status') == 'WIN')
+    total_losses = sum(1 for m in matched if m.get('exchange_status') == 'LOSS')
+    # Tổng lợi nhuận (sum PnL) cho thắng / thua và tổng chung
+    total_win_pnl = sum(m.get('pnl', 0) for m in matched if m.get('exchange_status') == 'WIN')
+    total_loss_pnl = sum(m.get('pnl', 0) for m in matched if m.get('exchange_status') == 'LOSS')
+    total_pnl = total_win_pnl + total_loss_pnl
+
     lines = []
-    
+
     header = f"📊 MATCHED ({len(matched)} orders):"
     sep = "-" * 200
     col_header = f"{'Symbol':<12} {'Side':<6} {'Entry':<12} {'Exit':<12} {'Diff%':<9} {'SL':<12} {'TP':<12} {'ExExit':<12} {'RR':<8} {'Local':<8} {'Ex':<8} {'Match':<6} {'PnL':<12} {'ExTime':<10} {'SentTime':<10} {'OrderID'}"
-    
+
     print(f"\n{header}")
     print(sep)
     print(col_header)
     print(sep)
-    
+
     lines.append(f"# Compare Orders Report")
     lines.append(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
@@ -300,12 +307,12 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
     lines.append(sep)
     lines.append(col_header)
     lines.append(sep)
-    
+
     for m in matched:
         pnl_color = '\033[92m' if m['pnl'] >= 0 else '\033[91m'
         reset = '\033[0m'
         rr_str = f"{m['rr']:+.2f}"
-        
+
         entry = round_price(m['exchange_entry'])
         exit_p = round_price(m['exchange_exit'])
         sl = round_price(m['local_sl'])
@@ -319,12 +326,19 @@ def compare_orders(days: int = 30, limit: int = 500, save_md: bool = True):
 
         print(f"{m['symbol']:<12} {m['side']:<6} {entry:<12} {exit_p:<12} {diff_pct_str:<9} {sl:<12} {tp:<12} {ex_exit:<12} {rr_str:<8} {m['local_status']:<8} {m['exchange_status']:<8} {m['match']:<6} {pnl_color}{pnl:<+12.2f}{reset} {m['ex_time']:<10} {m['sent_time']:<10} {m['order_id']}")
         lines.append(row)
-    
+
     print(sep)
+    # Format PnL strings for display
+    win_pnl_str = f"{total_win_pnl:+.2f}"
+    loss_pnl_str = f"{total_loss_pnl:+.2f}"
+    total_pnl_str = f"{total_pnl:+.2f}"
+
     print(f"✅ Correct: {correct} | ❌ Wrong: {wrong}")
-    
+    print(f"🏆 Wins: {total_wins} | 🥀 Losses: {total_losses} | 💰 Win PnL: {win_pnl_str} | 💸 Loss PnL: {loss_pnl_str} | Total: {total_pnl_str}")
+
     lines.append(sep)
     lines.append(f"✅ Correct: {correct} | ❌ Wrong: {wrong}")
+    lines.append(f"🏆 Wins: {total_wins} | 🥀 Losses: {total_losses} | 💰 Win PnL: {win_pnl_str} | 💸 Loss PnL: {loss_pnl_str} | Total: {total_pnl_str}")
     
     if not_found:
         print(f"\n⚠️  NOT FOUND ON EXCHANGE ({len(not_found)}):")
