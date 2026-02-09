@@ -47,6 +47,7 @@ class EqualHL:
     end_time: datetime
     first_pivot_index: int
     second_pivot_index: int
+    confirmed_index: int = -1  # Bar index when this event is actually confirmed (no look-ahead)
 
 
 # ==================== NUMBA JIT FUNCTIONS ====================
@@ -94,7 +95,7 @@ def _detect_eqh_eql_jit(
         if newPivot and pivotHigh: if |equalHigh.currentLevel - high[size]| < threshold*atr → draw EQH; then update equalHigh
 
     Returns:
-        types (1=EQH, 0=EQL), levels, first_pivot_indices, second_pivot_indices
+        types (1=EQH, 0=EQL), levels, first_pivot_indices, second_pivot_indices, confirmed_indices
     """
     n = len(highs)
     max_events = n
@@ -102,6 +103,7 @@ def _detect_eqh_eql_jit(
     levels = np.empty(max_events, dtype=np.float64)
     first_pivots = np.empty(max_events, dtype=np.int64)
     second_pivots = np.empty(max_events, dtype=np.int64)
+    confirmed_at = np.empty(max_events, dtype=np.int64)
     count = 0
 
     # Pivot state (previous swing high/low level and bar)
@@ -148,6 +150,7 @@ def _detect_eqh_eql_jit(
                         levels[count] = lows[k]
                         first_pivots[count] = sl_bar_idx
                         second_pivots[count] = k
+                        confirmed_at[count] = i
                         count += 1
                     sl_level = lows[k]
                     sl_bar_idx = k
@@ -158,6 +161,7 @@ def _detect_eqh_eql_jit(
                         levels[count] = highs[k]
                         first_pivots[count] = sh_bar_idx
                         second_pivots[count] = k
+                        confirmed_at[count] = i
                         count += 1
                     sh_level = highs[k]
                     sh_bar_idx = k
@@ -167,6 +171,7 @@ def _detect_eqh_eql_jit(
         levels[:count],
         first_pivots[:count],
         second_pivots[:count],
+        confirmed_at[:count],
     )
 
 
@@ -200,7 +205,7 @@ def detect_eqh_eql(
 
     atr = _atr_rma_jit(highs, lows, closes, atr_period)
 
-    types, levels, first_idxs, second_idxs = _detect_eqh_eql_jit(
+    types, levels, first_idxs, second_idxs, confirmed_idxs = _detect_eqh_eql_jit(
         highs, lows, atr, bars_confirmation, threshold
     )
 
@@ -208,6 +213,7 @@ def detect_eqh_eql(
     for i in range(len(types)):
         fp = int(first_idxs[i])
         sp = int(second_idxs[i])
+        ci = int(confirmed_idxs[i])
         st = times[fp]
         et = times[sp]
         if isinstance(st, (int, np.integer)):
@@ -226,6 +232,7 @@ def detect_eqh_eql(
             end_time=end_dt,
             first_pivot_index=fp,
             second_pivot_index=sp,
+            confirmed_index=ci,
         ))
 
     return results
