@@ -4,6 +4,7 @@ const MainLayout = lazy(() => import('@/components/Layout/main.layout'));
 const ViewBacktestPage = lazy(() => import('@/pages/ViewBacktest'));
 const LiveTradePage = lazy(() => import('@/pages/LiveTrade'));
 const IndicatorPage = lazy(() => import('@/pages/Indicator'))
+const CombinePage = lazy(() => import('@/pages/Combine'));
 const Router = [
     {
         name: 'View Backtest',
@@ -21,6 +22,12 @@ const Router = [
         name: 'Indicators',
         path: '/indicator',
         component: IndicatorPage,
+        Layout: MainLayout,
+    },
+    {
+        name: 'Combine',
+        path: '/combine',
+        component: CombinePage,
         Layout: MainLayout,
     },
 
