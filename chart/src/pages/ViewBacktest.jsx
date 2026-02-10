@@ -65,6 +65,10 @@ function ViewBacktest() {
         setSelectedSymbol(symbolId);
     };
 
+    const handleFocusCurrentCandle = () => {
+        chartRef.current?.focusToLatestCandle?.();
+    };
+
     // Combined loading state
     const loading = symbolsLoading || dataLoading;
 
@@ -114,6 +118,22 @@ function ViewBacktest() {
                 <div className="header-info">
                     <span>{data?.candles?.length?.toLocaleString() || 0} candles</span>
                     <span>{data?.trades?.length || 0} trades</span>
+                    <button
+                        onClick={handleFocusCurrentCandle}
+                        disabled={!data?.candles?.length}
+                        style={{
+                            padding: '4px 10px',
+                            backgroundColor: 'rgba(41, 98, 255, 0.2)',
+                            color: '#2962ff',
+                            border: '1px solid rgba(41, 98, 255, 0.5)',
+                            borderRadius: '4px',
+                            cursor: data?.candles?.length ? 'pointer' : 'not-allowed',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                        }}
+                    >
+                        Current Candle
+                    </button>
                 </div>
             </header>
 

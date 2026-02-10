@@ -171,7 +171,7 @@ export function createStructureLine(item) {
     lineStyle: item.lineStyle ?? (item.type === 'CHoCH' ? 'dashed' : 'solid'),
     label: item.type ?? 'BOS',
     labelPosition: 'center',
-    labelSize: 10,
+    labelSize: 8,
   });
 }
 
@@ -190,7 +190,7 @@ export function createEqhEqlLine(item) {
     lineStyle: item.lineStyle || 'dashed',
     label: item.type,
     labelPosition: 'center',
-    labelSize: 9,
+    labelSize: 8,
   });
 }
 

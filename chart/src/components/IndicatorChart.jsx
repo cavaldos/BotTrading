@@ -15,6 +15,7 @@ const IndicatorChart = forwardRef(function IndicatorChart({
   volume,
   data = {},       // Full indicator data object
   visibility = {}, // Which indicators are visible
+  autoFollowLatest = true,
 }, ref) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -23,7 +24,40 @@ const IndicatorChart = forwardRef(function IndicatorChart({
   const primitivesRef = useRef([]);
   const measurementRef = useRef(null);
   const measurementHandlerRef = useRef(null);
+  const hasInitialFitRef = useRef(false);
+  const lastCandleTimeRef = useRef(null);
+  const scrollAnimationRef = useRef(null);
   const [isMeasuring, setIsMeasuring] = useState(false);
+
+  const animateVisibleRange = useCallback((timeScale, fromRange, toRange, duration = 260) => {
+    if (!timeScale || !fromRange || !toRange) return;
+
+    if (scrollAnimationRef.current) {
+      cancelAnimationFrame(scrollAnimationRef.current);
+      scrollAnimationRef.current = null;
+    }
+
+    const start = performance.now();
+    const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+    const tick = (now) => {
+      const progress = Math.min((now - start) / duration, 1);
+      const eased = easeOutCubic(progress);
+
+      timeScale.setVisibleRange({
+        from: fromRange.from + (toRange.from - fromRange.from) * eased,
+        to: fromRange.to + (toRange.to - fromRange.to) * eased,
+      });
+
+      if (progress < 1) {
+        scrollAnimationRef.current = requestAnimationFrame(tick);
+      } else {
+        scrollAnimationRef.current = null;
+      }
+    };
+
+    scrollAnimationRef.current = requestAnimationFrame(tick);
+  }, []);
 
   // Chart colors
   const colors = useMemo(() => ({
@@ -50,6 +84,45 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       const to = time + (barsAround * barDuration);
       timeScale.setVisibleRange({ from, to });
     },
+    focusToLatestCandle: () => {
+      if (!chartRef.current || !candleSeriesRef.current || !candles?.length) return;
+
+      const timeScale = chartRef.current.timeScale();
+      const priceScale = candleSeriesRef.current.priceScale();
+      const latestTime = candles[candles.length - 1]?.time;
+      const latest = candles[candles.length - 1];
+      const prevTime = candles[candles.length - 2]?.time;
+      if (!latestTime || !latest) return;
+
+      const step = prevTime ? Math.max(1, latestTime - prevTime) : barDuration;
+      const currentRange = timeScale.getVisibleRange();
+      const currentSpan = currentRange
+        ? Math.max(currentRange.to - currentRange.from, 30 * step)
+        : 160 * step;
+      const nextRange = {
+        from: latestTime - currentSpan / 2,
+        to: latestTime + currentSpan / 2,
+      };
+
+      if (currentRange) {
+        animateVisibleRange(timeScale, currentRange, nextRange, 320);
+      } else {
+        timeScale.setVisibleRange(nextRange);
+      }
+
+      if (priceScale && typeof priceScale.setVisibleRange === 'function') {
+        const latestHigh = Number(latest.high ?? latest.close ?? latest.open ?? 0);
+        const latestLow = Number(latest.low ?? latest.close ?? latest.open ?? 0);
+        const centerPrice = (latestHigh + latestLow) / 2;
+        const candleHeight = Math.max(Math.abs(latestHigh - latestLow), Math.abs(centerPrice) * 0.0005);
+        const halfRange = Math.max(candleHeight * 8, Math.abs(centerPrice) * 0.004, 0.0001);
+        priceScale.applyOptions({ autoScale: false });
+        priceScale.setVisibleRange({
+          from: centerPrice - halfRange,
+          to: centerPrice + halfRange,
+        });
+      }
+    },
     getChart: () => chartRef.current,
     toggleMeasurement: () => {
       if (measurementHandlerRef.current) {
@@ -65,7 +138,7 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       }
     },
     isMeasuring: () => isMeasuring,
-  }), [isMeasuring, barDuration]);
+  }), [isMeasuring, barDuration, candles, animateVisibleRange]);
 
   // Initialize chart
   useEffect(() => {
@@ -165,16 +238,54 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       if (measurementHandlerRef.current) {
         measurementHandlerRef.current.disable();
       }
+      if (scrollAnimationRef.current) {
+        cancelAnimationFrame(scrollAnimationRef.current);
+        scrollAnimationRef.current = null;
+      }
       chart.remove();
     };
   }, [colors]);
 
   // Update candle data
   useEffect(() => {
-    if (!candleSeriesRef.current || !candles?.length) return;
+    if (!candleSeriesRef.current) return;
+    if (!candles?.length) {
+      hasInitialFitRef.current = false;
+      lastCandleTimeRef.current = null;
+      return;
+    }
+
+    const previousLastTime = lastCandleTimeRef.current;
+    const latestCandle = candles[candles.length - 1];
+    const latestTime = latestCandle?.time ?? null;
+    const previousBarTime = candles[candles.length - 2]?.time ?? null;
+    const barDurationStep = latestTime && previousBarTime ? Math.max(1, latestTime - previousBarTime) : 60;
+
     candleSeriesRef.current.setData(candles);
-    chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+
+    if (!hasInitialFitRef.current) {
+      chartRef.current?.timeScale().fitContent();
+      hasInitialFitRef.current = true;
+    } else if (autoFollowLatest && previousLastTime && latestTime && latestTime > previousLastTime) {
+      const timeScale = chartRef.current?.timeScale();
+      const visibleRange = timeScale?.getVisibleRange();
+
+      if (timeScale && visibleRange) {
+        const nearRightEdge = visibleRange.to >= (previousLastTime - barDurationStep * 2);
+        if (nearRightEdge) {
+          const shift = latestTime - previousLastTime;
+          animateVisibleRange(
+            timeScale,
+            visibleRange,
+            { from: visibleRange.from + shift, to: visibleRange.to + shift },
+            260,
+          );
+        }
+      }
+    }
+
+    lastCandleTimeRef.current = latestTime;
+  }, [candles, autoFollowLatest, animateVisibleRange]);
 
   // Update volume data
   useEffect(() => {

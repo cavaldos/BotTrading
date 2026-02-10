@@ -129,7 +129,7 @@ class RectangleRenderer {
 
       // Draw label if specified
       if (options.label) {
-        const fontSize = 11;
+        const fontSize = 8;
         ctx.font = `bold ${fontSize}px Arial`;
         ctx.fillStyle = options.labelColor;
         ctx.textAlign = 'left';

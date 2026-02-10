@@ -91,8 +91,6 @@ function LiveTrade() {
     const [filter, setFilter] = useState('all');
     const [selectedTradeId, setSelectedTradeId] = useState(null);
     const chartRef = useRef(null);
-    const scrollPositionRef = useRef(null);
-    const isInitialLoadRef = useRef(true); // Track if this is the initial data load
 
     // Track last update display and countdown
     const [lastUpdateText, setLastUpdateText] = useState('Never');
@@ -130,40 +128,7 @@ function LiveTrade() {
     useEffect(() => {
         setFilter('all');
         setSelectedTradeId(null);
-        isInitialLoadRef.current = true; // Reset initial load flag when symbol changes
-        scrollPositionRef.current = null; // Clear saved position
     }, [selectedSymbol]);
-
-    // Save scroll position before data refresh and restore after
-    useEffect(() => {
-        if (!chartRef.current || !data) return;
-        
-        // On initial load, don't preserve position (let it fitContent)
-        if (isInitialLoadRef.current) {
-            isInitialLoadRef.current = false;
-            return;
-        }
-        
-        // For subsequent updates, save current position before data changes
-        // and tell chart to preserve position on next update
-        const currentPosition = chartRef.current.getScrollPosition?.();
-        if (currentPosition) {
-            scrollPositionRef.current = currentPosition;
-            chartRef.current.setPreservePosition?.(true);
-        }
-    }, [data?.candles?.length]); // Only run when candles array length changes (new data loaded)
-
-    // Restore scroll position after chart re-renders with new data
-    useEffect(() => {
-        if (!chartRef.current || !scrollPositionRef.current) return;
-        
-        // Use requestAnimationFrame to ensure chart has finished rendering
-        const rafId = requestAnimationFrame(() => {
-            chartRef.current.restoreScrollPosition?.(scrollPositionRef.current);
-        });
-        
-        return () => cancelAnimationFrame(rafId);
-    }, [data]);
 
     // Filter trades and markers
     const filteredTrades = useMemo(() => {
@@ -193,6 +158,10 @@ function LiveTrade() {
     // Handle symbol change
     const handleSymbolChange = (symbolId) => {
         setSelectedSymbol(symbolId);
+    };
+
+    const handleFocusCurrentCandle = () => {
+        chartRef.current?.focusToLatestCandle?.();
     };
 
     // Combined loading state
@@ -290,6 +259,14 @@ function LiveTrade() {
                         title="Refresh now"
                     >
                         Refresh
+                    </button>
+                    <button
+                        className="refresh-btn"
+                        onClick={handleFocusCurrentCandle}
+                        title="Focus current candle"
+                        disabled={!data?.candles?.length}
+                    >
+                        Current Candle
                     </button>
                 </div>
             </header>
