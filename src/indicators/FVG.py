@@ -7,7 +7,7 @@ Pine logic (drawFairValueGaps in docs/strategy/smc.pine):
   - Bullish FVG: currentLow > last2High AND lastClose > last2High AND barDeltaPercent > threshold (and newTimeframe)
   - Bearish FVG: currentHigh < last2Low AND lastClose < last2Low AND -barDeltaPercent > threshold (and newTimeframe)
   - barDeltaPercent = (lastClose - lastOpen) / (lastOpen * 100)  [middle candle body %]
-  - Auto threshold: threshold = ta.cum(abs(barDeltaPercent)) / bar_index * 2; when false, threshold = 0
+  - Auto threshold: threshold = ta.cum(abs(newTimeframe ? barDeltaPercent : 0)) / bar_index * 2; when false, threshold = 0
   - Same-timeframe: no request.security; use current series. newTimeframe treated as true every bar.
 
 Usage:
@@ -56,7 +56,7 @@ def _detect_fvg_jit(
       currentHigh = highs[i], currentLow = lows[i]
       last2High = highs[i-2], last2Low = lows[i-2]
       barDeltaPercent = (lastClose - lastOpen) / (lastOpen * 100)  [avoid div by zero]
-      If use_auto_threshold: cum += abs(barDeltaPercent), threshold = cum / (i+1) * 2
+      If use_auto_threshold: cum += abs(barDeltaPercent), threshold = cum / i * 2
       Bullish: currentLow > last2High and lastClose > last2High and barDeltaPercent > threshold
       Bearish: currentHigh < last2Low and lastClose < last2Low and -barDeltaPercent > threshold
 
@@ -73,13 +73,9 @@ def _detect_fvg_jit(
 
     cum_abs_delta = 0.0
 
-    for i in range(2, n):
+    for i in range(1, n):
         last_open = opens[i - 1]
         last_close = closes[i - 1]
-        last2_high = highs[i - 2]
-        last2_low = lows[i - 2]
-        curr_high = highs[i]
-        curr_low = lows[i]
 
         # Middle bar body % (Pine: barDeltaPercent). Avoid div by zero.
         if last_open != 0:
@@ -94,6 +90,14 @@ def _detect_fvg_jit(
         else:
             threshold = 0.0
 
+        if i < 2:
+            continue
+
+        last2_high = highs[i - 2]
+        last2_low = lows[i - 2]
+        curr_high = highs[i]
+        curr_low = lows[i]
+
         # Bullish FVG: gap up, middle close above gap top, optional filter
         if curr_low > last2_high and last_close > last2_high and bar_delta_pct > threshold:
             fvg_indices[count] = i
@@ -105,8 +109,8 @@ def _detect_fvg_jit(
         # Bearish FVG: gap down, middle close below gap bottom
         if curr_high < last2_low and last_close < last2_low and -bar_delta_pct > threshold:
             fvg_indices[count] = i
-            fvg_tops[count] = last2_low
-            fvg_bottoms[count] = curr_high
+            fvg_tops[count] = curr_high
+            fvg_bottoms[count] = last2_low
             fvg_biases[count] = 0
             count += 1
 
@@ -130,11 +134,11 @@ def _check_fvg_filled_jit(
 ) -> bool:
     """True if FVG has been filled by subsequent price (Pine: deleteFairValueGaps logic)."""
     for i in range(fvg_index + 1, n):
-        if fvg_bias == 1:  # BULLISH: filled when low <= bottom
-            if lows[i] <= fvg_bottom:
+        if fvg_bias == 1:  # BULLISH: filled when low < bottom
+            if lows[i] < fvg_bottom:
                 return True
-        else:  # BEARISH: filled when high >= top
-            if highs[i] >= fvg_top:
+        else:  # BEARISH: filled when high > top
+            if highs[i] > fvg_top:
                 return True
     return False
 
