@@ -107,16 +107,18 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
                     try:
                         cancel_result = cancel_order(symbol, order_id)
                         if cancel_result.get("success"):
-                            order["status"] = "CANCELLED"
+                            order["status"] = "PASSED"
+                            order["ex_status"] = "CANCELLED"
                             order["cancelled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             updated_count += 1
                             print(f"Cancelled order {order_id} for {symbol} (was {current_status})")
                         else:
-                            order["status"] = "CANCELLED"
+                            order["status"] = "PASSED"
+                            order["ex_status"] = "CANCELLED"
                             order["cancelled_at"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                             order["cancel_note"] = "cancel request failed or already filled"
                             updated_count += 1
-                            print(f"Cancel failed for {order_id} ({symbol}), marking as CANCELLED anyway: {cancel_result}")
+                            print(f"Cancel failed for {order_id} ({symbol}), marking as PASSED with ex_status CANCELLED: {cancel_result}")
                     except Exception as e:
                         print(f"Error cancelling order {order_id} for {symbol}: {e}")
     
