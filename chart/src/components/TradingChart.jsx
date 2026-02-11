@@ -448,8 +448,8 @@ const TradingChart = forwardRef(function TradingChart({
 
     // Add trade zone rectangles
     if (trades?.length > 0) {
-      trades.forEach(trade => {
-        const zones = createTradeZones(trade);
+      trades.forEach((trade, index) => {
+        const zones = createTradeZones(trade, index + 1);
         zones.forEach(zone => {
           candleSeriesRef.current.attachPrimitive(zone);
           primitivesRef.current.push(zone);
