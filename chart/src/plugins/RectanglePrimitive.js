@@ -162,13 +162,15 @@ class RectangleRenderer {
  * @param {Object} trade - Trade object
  * @returns {Array} Array of RectanglePrimitive instances
  */
-export function createTradeZones(trade) {
+export function createTradeZones(trade, orderIndex) {
   const isLong = trade.type === 'LONG';
   const rectangles = [];
 
   // Calculate TP% and SL%
   const tpPercent = Math.abs((trade.takeProfit - trade.entryPrice) / trade.entryPrice * 100);
   const slPercent = Math.abs((trade.stopLoss - trade.entryPrice) / trade.entryPrice * 100);
+
+  const prefix = orderIndex != null ? `#${orderIndex} ` : '';
 
   // TP Zone (green)
   rectangles.push(new RectanglePrimitive({
@@ -179,7 +181,7 @@ export function createTradeZones(trade) {
     fillColor: 'rgba(38, 166, 154, 0.25)',
     borderColor: 'rgba(38, 166, 154, 0.6)',
     borderWidth: 1,
-    label: `TP: ${tpPercent.toFixed(2)}%`,
+    label: `${prefix}TP: ${tpPercent.toFixed(2)}%`,
     labelColor: '#26a69a',
   }));
 
@@ -192,7 +194,7 @@ export function createTradeZones(trade) {
     fillColor: 'rgba(239, 83, 80, 0.25)',
     borderColor: 'rgba(239, 83, 80, 0.6)',
     borderWidth: 1,
-    label: `SL: ${slPercent.toFixed(2)}%`,
+    label: `${prefix}SL: ${slPercent.toFixed(2)}%`,
     labelColor: '#ef5350',
   }));
 

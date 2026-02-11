@@ -384,8 +384,8 @@ const CombineChart = forwardRef(function CombineChart({
     tradePrimitivesRef.current = [];
 
     if (trades?.length > 0) {
-      trades.forEach(trade => {
-        const zones = createTradeZones(trade);
+      trades.forEach((trade, index) => {
+        const zones = createTradeZones(trade, index + 1);
         zones.forEach(zone => {
           candleSeriesRef.current.attachPrimitive(zone);
           tradePrimitivesRef.current.push(zone);

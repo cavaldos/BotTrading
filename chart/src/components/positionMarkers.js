@@ -11,14 +11,15 @@ const normalizeTradeType = (type) => {
   return null;
 };
 
-const createPositionMarker = (entryTime, tradeType) => {
+const createPositionMarker = (entryTime, tradeType, orderIndex) => {
   const isLong = tradeType === 'LONG';
+  const label = orderIndex != null ? `#${orderIndex} ${tradeType}` : tradeType;
   return {
     time: entryTime,
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? LONG_COLOR : SHORT_COLOR,
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: tradeType,
+    text: label,
     size: 2,
   };
 };
@@ -29,14 +30,14 @@ export function applyPositionLabelsToMarkers(markers = [], trades = []) {
   }
 
   const entryTypeByTime = new Map();
-  trades.forEach((trade) => {
+  trades.forEach((trade, index) => {
     const entryTime = Number(trade?.entryTime);
     const tradeType = normalizeTradeType(trade?.type);
     if (!Number.isFinite(entryTime) || !tradeType) {
       return;
     }
 
-    entryTypeByTime.set(entryTime, tradeType);
+    entryTypeByTime.set(entryTime, { tradeType, orderIndex: index + 1 });
   });
 
   const labeledMarkers = (Array.isArray(markers) ? markers : []).map((marker) => {
@@ -44,14 +45,14 @@ export function applyPositionLabelsToMarkers(markers = [], trades = []) {
       return marker;
     }
 
-    const tradeType = entryTypeByTime.get(Number(marker?.time));
-    if (!tradeType) {
+    const entry = entryTypeByTime.get(Number(marker?.time));
+    if (!entry) {
       return marker;
     }
 
     return {
       ...marker,
-      ...createPositionMarker(Number(marker.time), tradeType),
+      ...createPositionMarker(Number(marker.time), entry.tradeType, entry.orderIndex),
       size: marker?.size ?? 2,
     };
   });
@@ -62,9 +63,9 @@ export function applyPositionLabelsToMarkers(markers = [], trades = []) {
       .map((marker) => Number(marker.time)),
   );
 
-  entryTypeByTime.forEach((tradeType, entryTime) => {
+  entryTypeByTime.forEach(({ tradeType, orderIndex }, entryTime) => {
     if (!existingEntryTimes.has(entryTime)) {
-      labeledMarkers.push(createPositionMarker(entryTime, tradeType));
+      labeledMarkers.push(createPositionMarker(entryTime, tradeType, orderIndex));
     }
   });
 
