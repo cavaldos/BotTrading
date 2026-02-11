@@ -72,8 +72,26 @@ def convert_timeframe(df, timeframe):
         'Volume': 'sum'     # Tổng khối lượng
     }
     
+    # Normalize timeframe to pandas resample rule
+    # Note: lowercase 'm' can be interpreted as month-related alias in newer pandas.
+    # For minutes, always use 'min' to avoid FutureWarning.
+    tf_match = re.match(r'^\s*(\d+)\s*(m|min|h|H|d|D|w|W)\s*$', str(timeframe))
+    if tf_match:
+        tf_value = int(tf_match.group(1))
+        tf_unit = tf_match.group(2).lower()
+        if tf_unit in ('m', 'min'):
+            resample_rule = f"{tf_value}min"
+        elif tf_unit == 'h':
+            resample_rule = f"{tf_value}h"
+        elif tf_unit == 'd':
+            resample_rule = f"{tf_value}d"
+        else:
+            resample_rule = f"{tf_value}W"
+    else:
+        resample_rule = timeframe
+
     # Resample theo timeframe mới
-    df_resampled = df.resample(timeframe).agg(ohlcv_rules)
+    df_resampled = df.resample(resample_rule).agg(ohlcv_rules)
     
     # Loại bỏ các hàng có giá trị NaN (nếu có)
     df_resampled.dropna(inplace=True)
