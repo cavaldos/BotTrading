@@ -1,8 +1,9 @@
 import os
 import time
+import math
 import threading
 from queue import Queue, Empty
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import deque
 from pathlib import Path
 import yaml
@@ -68,6 +69,8 @@ else:
 
 TIMEFRAME_MINUTES_MAP = {tf: parse_timeframe(tf) for tf in TIMEFRAMES}
 FETCH_INTERVAL = TIMEFRAMES_CONFIG.get("fetch_interval", 60)  # Default 60 seconds
+WAIT_FOR_CLOSE = TIMEFRAMES_CONFIG.get("wait_for_close", True)  # Default: wait for candle close
+CLOSE_DELAY = TIMEFRAMES_CONFIG.get("close_delay", 3)  # Seconds after candle close to wait
 
 
 # Dashboard settings
@@ -86,6 +89,13 @@ EQHL_THRESHOLD = STRATEGY_CONFIG.get("eqhl_threshold", 0.3)
 # Order Block
 OB_MITIGATION = STRATEGY_CONFIG.get("ob_mitigation", "high_low")
 OB_BODY_RATIO = STRATEGY_CONFIG.get("ob_body_ratio", 0.35)
+# Entry filters
+REQUIRE_LIQUIDITY = STRATEGY_CONFIG.get("require_liquidity", True)
+REQUIRE_REVERSAL_PATTERN = STRATEGY_CONFIG.get("require_reversal_pattern", True)
+ENABLE_SIMPLE_REVERSAL = STRATEGY_CONFIG.get("enable_simple_reversal", True)
+SIMPLE_REVERSAL_WICK_RATIO = STRATEGY_CONFIG.get("simple_reversal_wick_ratio", 0.25)
+TOUCH_TOLERANCE_PCT = STRATEGY_CONFIG.get("touch_tolerance_pct", 0.0)
+TOUCH_CONFIRMATION_BARS = STRATEGY_CONFIG.get("touch_confirmation_bars", 0)
 # FVG
 FVG_ATR_FILTER = STRATEGY_CONFIG.get("fvg_atr_filter", True)
 # Risk Management
@@ -110,6 +120,40 @@ def format_countdown(seconds: float) -> str:
     if hours > 0:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def _next_candle_close_utc(timeframe: str) -> datetime:
+    """
+    Calculate the next candle close time in UTC for a given timeframe.
+    
+    Examples (timeframe=5m, current UTC=06:07:30):
+      Current candle opened at 06:05, closes at 06:10:00 UTC
+      Returns: 06:10:00 UTC
+    
+    Examples (timeframe=1h, current UTC=14:23:00):
+      Current candle opened at 14:00, closes at 15:00:00 UTC
+      Returns: 15:00:00 UTC
+    """
+    tf_minutes = TIMEFRAME_MINUTES_MAP.get(timeframe, parse_timeframe(timeframe))
+    now = datetime.now(timezone.utc)
+    
+    # Calculate seconds since midnight UTC
+    midnight_utc = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_seconds = (now - midnight_utc).total_seconds()
+    tf_seconds = tf_minutes * 60
+    
+    # Current candle started at floor(elapsed / tf_seconds) * tf_seconds
+    current_candle_start = math.floor(elapsed_seconds / tf_seconds) * tf_seconds
+    # Next candle close = current candle start + tf_seconds
+    next_close_seconds = current_candle_start + tf_seconds
+    
+    next_close = midnight_utc + timedelta(seconds=next_close_seconds)
+    
+    # If we're exactly at close time, the candle just closed - next close is one period later
+    if (now - next_close).total_seconds() >= 0:
+        next_close += timedelta(seconds=tf_seconds)
+    
+    return next_close
 
 
 # =============================================================================
@@ -248,6 +292,12 @@ def run_cycle(timeframe: str):
              eqhl_threshold=EQHL_THRESHOLD,
              ob_mitigation=OB_MITIGATION,
              ob_body_ratio=OB_BODY_RATIO,
+             require_liquidity=REQUIRE_LIQUIDITY,
+             require_reversal_pattern=REQUIRE_REVERSAL_PATTERN,
+             enable_simple_reversal=ENABLE_SIMPLE_REVERSAL,
+             simple_reversal_wick_ratio=SIMPLE_REVERSAL_WICK_RATIO,
+             touch_tolerance_pct=TOUCH_TOLERANCE_PCT,
+             touch_confirmation_bars=TOUCH_CONFIRMATION_BARS,
              fvg_atr_filter=FVG_ATR_FILTER,
              sl_buffer_pct=SL_BUFFER_PCT,
              sl_multiplier=SL_MULTIPLIER,
@@ -269,34 +319,83 @@ def run_cycle(timeframe: str):
 
 
 def process_1_data_and_execute(timeframe: str):
-     """Process 1: Fetch data and run execute every FETCH_INTERVAL seconds for a specific timeframe"""
+     """
+     Process 1: Fetch data and run execute for a specific timeframe.
+     
+     Two modes:
+     - wait_for_close=True (default): Waits until the current candle closes,
+       then fetches data and runs strategy exactly once per candle. This prevents
+       repainting by ensuring the strategy only sees completed candles.
+     - wait_for_close=False: Runs every FETCH_INTERVAL seconds (legacy behavior).
+     """
      tf_state = state.timeframe_states[timeframe]
      
-     state.add_log(f"TF[{timeframe}]", f"Started (Interval: {FETCH_INTERVAL}s)")
+     if WAIT_FOR_CLOSE:
+         state.add_log(f"TF[{timeframe}]", f"Started (Wait-for-close mode, delay: {CLOSE_DELAY}s)")
+     else:
+         state.add_log(f"TF[{timeframe}]", f"Started (Interval: {FETCH_INTERVAL}s)")
+     
+     # First run: always execute immediately to populate data
+     tf_state.status = "Running..."
+     run_cycle(timeframe)
+     
+     if not state.running:
+         return
      
      while state.running:
-         # Run the cycle immediately
-         tf_state.status = "Running..."
-         run_cycle(timeframe)
-         
-         if not state.running:
-             break
-         
-         # Calculate next fetch time
-         next_fetch_time = datetime.now() + timedelta(seconds=FETCH_INTERVAL)
-         tf_state.next_fetch = next_fetch_time.strftime("%H:%M:%S")
-         tf_state.status = "Waiting"
-         
-         # Wait for next interval with countdown (using Event for clean shutdown)
-         wait_remaining = FETCH_INTERVAL
-         while wait_remaining > 0:
-             tf_state.countdown = format_countdown(wait_remaining)
-             # Wait 1 second or until shutdown signal
-             if state.shutdown_event.wait(timeout=1):
+         if WAIT_FOR_CLOSE:
+             # === WAIT-FOR-CLOSE MODE ===
+             # Calculate when the next candle closes
+             next_close = _next_candle_close_utc(timeframe)
+             # Add delay buffer to ensure exchange has finalized the candle
+             target_time = next_close + timedelta(seconds=CLOSE_DELAY)
+             
+             now = datetime.now(timezone.utc)
+             wait_seconds = max(0, (target_time - now).total_seconds())
+             
+             tf_state.next_fetch = next_close.strftime("%H:%M:%S")
+             tf_state.status = "Waiting for candle close"
+             state.add_log(f"TF[{timeframe}]", f"Next candle close: {next_close.strftime('%H:%M:%S')} UTC (wait {int(wait_seconds)}s)")
+             
+             # Wait with countdown (check shutdown every 1 second)
+             while wait_seconds > 0 and not state.shutdown_event.is_set():
+                 tf_state.countdown = format_countdown(wait_seconds)
+                 sleep_time = min(1.0, wait_seconds)
+                 if state.shutdown_event.wait(timeout=sleep_time):
+                     break
+                 wait_seconds -= sleep_time
+             
+             tf_state.countdown = "00:00"
+             
+             if not state.running:
                  break
-             wait_remaining -= 1
-         
-         tf_state.countdown = "00:00"
+             
+             # Candle has closed → fetch + execute
+             tf_state.status = "Running..."
+             run_cycle(timeframe)
+             
+         else:
+             # === LEGACY INTERVAL MODE ===
+             # Calculate next fetch time
+             next_fetch_time = datetime.now() + timedelta(seconds=FETCH_INTERVAL)
+             tf_state.next_fetch = next_fetch_time.strftime("%H:%M:%S")
+             tf_state.status = "Waiting"
+             
+             # Wait for next interval with countdown
+             wait_remaining = FETCH_INTERVAL
+             while wait_remaining > 0:
+                 tf_state.countdown = format_countdown(wait_remaining)
+                 if state.shutdown_event.wait(timeout=1):
+                     break
+                 wait_remaining -= 1
+             
+             tf_state.countdown = "00:00"
+             
+             if not state.running:
+                 break
+             
+             tf_state.status = "Running..."
+             run_cycle(timeframe)
 
 
 def process_2_watch_output():

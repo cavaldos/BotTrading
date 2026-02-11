@@ -127,10 +127,20 @@ class TradeSimulator:
             df: Price data DataFrame with Time, High, Low, Close columns
             
         Returns:
-            List of Trade objects with exit information
+            List of Trade objects with exit information (deduplicated)
         """
         if not signals:
             return []
+        
+        # Deduplicate signals: keep first signal per (entry_time, trade_type)
+        seen_keys = set()
+        unique_signals = []
+        for signal in signals:
+            key = (signal.entry_time, signal.trade_type)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_signals.append(signal)
+        signals = unique_signals
         
         # Prepare data arrays for JIT functions
         data_times = pd.to_datetime(df['Time']).values.astype(np.int64)

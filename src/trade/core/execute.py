@@ -9,6 +9,7 @@ Usage:
 """
 
 from pathlib import Path
+from datetime import datetime, timezone
 import pandas as pd
 
 # Import strategy components (interface contract)
@@ -16,6 +17,46 @@ from src.strategy import Config, Strategy, STRATEGY_NAME
 
 # Import trade simulation and report generation
 from src.statistics import TradeSimulator, generate_trade_orders
+
+
+# Timeframe string to minutes mapping
+def _timeframe_to_minutes(tf: str) -> int:
+    """Convert timeframe string to minutes. E.g. '5m'->5, '1h'->60, '4h'->240, '1d'->1440"""
+    tf = tf.lower().strip()
+    if tf.endswith("m"):
+        return int(tf[:-1])
+    elif tf.endswith("h"):
+        return int(tf[:-1]) * 60
+    elif tf.endswith("d"):
+        return int(tf[:-1]) * 1440
+    return 60  # fallback
+
+
+def _drop_incomplete_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    """
+    Drop the last candle if it hasn't closed yet (safety net against repainting).
+    
+    Compares the last candle's timestamp + timeframe duration against current UTC time.
+    If candle_end_time > now, the candle is still forming → drop it.
+    """
+    if df.empty:
+        return df
+    
+    tf_minutes = _timeframe_to_minutes(timeframe)
+    last_candle_time = pd.to_datetime(df['Time'].iloc[-1])
+    
+    # Make timezone-aware (UTC) for comparison
+    if last_candle_time.tzinfo is None:
+        last_candle_time = last_candle_time.tz_localize('UTC')
+    
+    candle_end_time = last_candle_time + pd.Timedelta(minutes=tf_minutes)
+    now_utc = datetime.now(timezone.utc)
+    
+    if candle_end_time > now_utc:
+        # Last candle hasn't closed yet → drop it
+        return df.iloc[:-1].copy()
+    
+    return df
 
 
 def load_data(file_path: str) -> pd.DataFrame:
@@ -41,6 +82,12 @@ def create_config(
     eqhl_threshold: float = 0.3,
     ob_mitigation: str = "high_low",
     ob_body_ratio: float = 0.35,
+    require_liquidity: bool = True,
+    require_reversal_pattern: bool = True,
+    enable_simple_reversal: bool = True,
+    simple_reversal_wick_ratio: float = 0.25,
+    touch_tolerance_pct: float = 0.0,
+    touch_confirmation_bars: int = 0,
     fvg_atr_filter: bool = True,
     sl_buffer_pct: float = 0.1,
     sl_multiplier: float = 1.05,
@@ -58,6 +105,12 @@ def create_config(
         eqhl_threshold=eqhl_threshold,
         ob_mitigation=ob_mitigation,
         ob_body_ratio=ob_body_ratio,
+        require_liquidity=require_liquidity,
+        require_reversal_pattern=require_reversal_pattern,
+        enable_simple_reversal=enable_simple_reversal,
+        simple_reversal_wick_ratio=simple_reversal_wick_ratio,
+        touch_tolerance_pct=touch_tolerance_pct,
+        touch_confirmation_bars=touch_confirmation_bars,
         fvg_atr_filter=fvg_atr_filter,
         sl_buffer_pct=sl_buffer_pct,
         sl_multiplier=sl_multiplier,
@@ -69,7 +122,7 @@ def create_config(
 def execute(
     DATA_FOLDER="res/data", 
     OUTPUT_FOLDER="res/output", 
-    timeframe: str = None,
+    timeframe: str = "",
     risk_reward_ratio: float = 2.0,
     swing_length: int = 10,
     internal_length: int = 3,
@@ -77,6 +130,12 @@ def execute(
     eqhl_threshold: float = 0.3,
     ob_mitigation: str = "high_low",
     ob_body_ratio: float = 0.35,
+    require_liquidity: bool = True,
+    require_reversal_pattern: bool = True,
+    enable_simple_reversal: bool = True,
+    simple_reversal_wick_ratio: float = 0.25,
+    touch_tolerance_pct: float = 0.0,
+    touch_confirmation_bars: int = 0,
     fvg_atr_filter: bool = True,
     sl_buffer_pct: float = 0.1,
     sl_multiplier: float = 1.05,
@@ -100,6 +159,12 @@ def execute(
         eqhl_threshold=eqhl_threshold,
         ob_mitigation=ob_mitigation,
         ob_body_ratio=ob_body_ratio,
+        require_liquidity=require_liquidity,
+        require_reversal_pattern=require_reversal_pattern,
+        enable_simple_reversal=enable_simple_reversal,
+        simple_reversal_wick_ratio=simple_reversal_wick_ratio,
+        touch_tolerance_pct=touch_tolerance_pct,
+        touch_confirmation_bars=touch_confirmation_bars,
         fvg_atr_filter=fvg_atr_filter,
         sl_buffer_pct=sl_buffer_pct,
         sl_multiplier=sl_multiplier,
@@ -131,6 +196,12 @@ def execute(
         
         # Load data
         df = load_data(str(csv_file))
+        
+        # Safety net: drop incomplete (still-forming) candle to prevent repainting
+        if timeframe:
+            df = _drop_incomplete_candle(df, timeframe)
+            if df.empty:
+                continue
         
         # Generate signals
         signals = strategy.generate_signals(df, symbol)

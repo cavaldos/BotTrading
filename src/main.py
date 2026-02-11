@@ -56,6 +56,13 @@ DEFAULT_EQHL_THRESHOLD = 0.3
 # Order Block
 DEFAULT_OB_MITIGATION = "high_low"
 DEFAULT_OB_BODY_RATIO = 0.35
+# Entry filters
+DEFAULT_REQUIRE_LIQUIDITY = True
+DEFAULT_REQUIRE_REVERSAL_PATTERN = True
+DEFAULT_ENABLE_SIMPLE_REVERSAL = True
+DEFAULT_SIMPLE_REVERSAL_WICK_RATIO = 0.25
+DEFAULT_TOUCH_TOLERANCE_PCT = 0.0
+DEFAULT_TOUCH_CONFIRMATION_BARS = 0
 # FVG
 DEFAULT_FVG_ATR_FILTER = True
 # Risk Management
@@ -111,6 +118,13 @@ def create_config() -> Config:
          # Order Block
          ob_mitigation=strategy_cfg.get('ob_mitigation', DEFAULT_OB_MITIGATION),
          ob_body_ratio=strategy_cfg.get('ob_body_ratio', DEFAULT_OB_BODY_RATIO),
+         # Entry filters
+         require_liquidity=strategy_cfg.get('require_liquidity', DEFAULT_REQUIRE_LIQUIDITY),
+         require_reversal_pattern=strategy_cfg.get('require_reversal_pattern', DEFAULT_REQUIRE_REVERSAL_PATTERN),
+         enable_simple_reversal=strategy_cfg.get('enable_simple_reversal', DEFAULT_ENABLE_SIMPLE_REVERSAL),
+         simple_reversal_wick_ratio=strategy_cfg.get('simple_reversal_wick_ratio', DEFAULT_SIMPLE_REVERSAL_WICK_RATIO),
+         touch_tolerance_pct=strategy_cfg.get('touch_tolerance_pct', DEFAULT_TOUCH_TOLERANCE_PCT),
+         touch_confirmation_bars=strategy_cfg.get('touch_confirmation_bars', DEFAULT_TOUCH_CONFIRMATION_BARS),
          # FVG
          fvg_atr_filter=strategy_cfg.get('fvg_atr_filter', DEFAULT_FVG_ATR_FILTER),
          # Risk Management

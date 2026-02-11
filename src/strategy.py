@@ -74,6 +74,14 @@ class Config:
     # === ORDER BLOCK ===
     ob_mitigation: str = "close" # "close" or "high_low"
     ob_body_ratio: float = 0.35      # Candle body size / candle range must be > 35% (trending candle filter)
+
+    # === ENTRY FILTERS ===
+    require_liquidity: bool = True    # Require EQH/EQL liquidity event after OB break
+    require_reversal_pattern: bool = True  # Require reversal pattern before entry
+    enable_simple_reversal: bool = True    # Allow simpler rejection/displacement reversal
+    simple_reversal_wick_ratio: float = 0.25  # Min wick/range ratio for simple reversal
+    touch_tolerance_pct: float = 0.0    # OB touch tolerance as % of OB range
+    touch_confirmation_bars: int = 0    # Allow entry within N bars after first touch (0 = same bar only)
     
     # === FVG ===
     fvg_atr_filter: bool = True     # (kept for compatibility; logic removed from strategy)
@@ -96,6 +104,12 @@ class Config:
             "eqhl_threshold": self.eqhl_threshold,
             "ob_detection": "LuxAlgo extreme candle + trending candle filter",
             "ob_body_ratio": self.ob_body_ratio,
+            "require_liquidity": self.require_liquidity,
+            "require_reversal_pattern": self.require_reversal_pattern,
+            "enable_simple_reversal": self.enable_simple_reversal,
+            "simple_reversal_wick_ratio": self.simple_reversal_wick_ratio,
+            "touch_tolerance_pct": self.touch_tolerance_pct,
+            "touch_confirmation_bars": self.touch_confirmation_bars,
             "sl_buffer_pct": self.sl_buffer_pct,
             "sl_multiplier": self.sl_multiplier,
             "min_sl_pct": self.min_sl_pct,
@@ -119,6 +133,7 @@ class StrategyOrderBlock:
     is_mitigated: bool = False
     has_liquidity: bool = False
     entry_triggered: bool = False
+    last_touch_index: int = -1
 
 
 @dataclass
@@ -289,12 +304,34 @@ class Strategy:
                 if self._ob_is_mitigated(ob, highs[i], lows[i], closes[i]):
                     continue
 
-                touches_ob = self._price_touches_ob(ob, highs[i], lows[i])
-                
-                if not ob.entry_triggered and touches_ob:
-                    is_reversal = self._is_reversal_candle(opens, closes, highs, lows, i, ob.bias)
-                    
-                    if ob.has_liquidity and is_reversal:
+                touches_ob = self._price_touches_ob(
+                    ob,
+                    highs[i],
+                    lows[i],
+                    self.config.touch_tolerance_pct,
+                )
+
+                if touches_ob:
+                    ob.last_touch_index = i
+
+                touch_window = max(0, self.config.touch_confirmation_bars)
+                touch_recent = ob.last_touch_index >= 0 and (i - ob.last_touch_index) <= touch_window
+                entry_window_active = touch_recent if touch_window > 0 else touches_ob
+
+                if not ob.entry_triggered and entry_window_active:
+                    liquidity_ok = ob.has_liquidity or not self.config.require_liquidity
+
+                    pattern_ok = self._is_reversal_candle(opens, closes, highs, lows, i, ob.bias)
+                    simple_reversal_ok = self.config.enable_simple_reversal and self._is_simple_reversal(
+                        opens, closes, highs, lows, i, ob.bias
+                    )
+                    reversal_ok = (
+                        (pattern_ok or simple_reversal_ok)
+                        if self.config.require_reversal_pattern
+                        else True
+                    )
+
+                    if liquidity_ok and reversal_ok:
                         signal = self._create_signal(
                             symbol=symbol,
                             ob=ob,
@@ -311,6 +348,18 @@ class Strategy:
                 remaining_obs.append(ob)
             
             active_obs = remaining_obs
+        
+        # ========== 4. DEDUPLICATE SIGNALS ==========
+        # Multiple OBs can trigger on the same bar, producing duplicate signals
+        # with identical (entry_time, trade_type). Keep only the first signal per key.
+        seen_keys = set()
+        unique_signals = []
+        for signal in signals:
+            key = (signal.entry_time, signal.trade_type)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                unique_signals.append(signal)
+        signals = unique_signals
         
         return signals
 
@@ -338,9 +387,47 @@ class Strategy:
             return check_reversal_pattern_jit(opens, closes, highs, lows, current_idx, is_bullish)
         return check_pattern_by_ids_jit(opens, closes, highs, lows, current_idx, is_bullish, pattern_ids)
 
-    def _price_touches_ob(self, ob: StrategyOrderBlock, high: float, low: float) -> bool:
-        """Check if current candle's price range touches the OB zone."""
-        return low <= ob.high and high >= ob.low
+    def _is_simple_reversal(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
+                            lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
+        """
+        Lightweight reversal check to catch clean rejection setups that strict
+        candlestick patterns can miss.
+
+        Bullish: bullish close + (meaningful lower wick OR stronger close than previous bar)
+        Bearish: bearish close + (meaningful upper wick OR weaker close than previous bar)
+        """
+        if current_idx <= 0:
+            return False
+
+        o_curr = opens[current_idx]
+        c_curr = closes[current_idx]
+        h_curr = highs[current_idx]
+        l_curr = lows[current_idx]
+        c_prev = closes[current_idx - 1]
+
+        candle_range = h_curr - l_curr
+        if candle_range <= 0:
+            return False
+
+        wick_ratio = max(0.0, self.config.simple_reversal_wick_ratio)
+
+        if ob_bias == 'BULLISH':
+            lower_wick = min(o_curr, c_curr) - l_curr
+            wick_ok = (lower_wick / candle_range) >= wick_ratio
+            displacement_ok = c_curr > c_prev
+            return c_curr > o_curr and (wick_ok or displacement_ok)
+
+        upper_wick = h_curr - max(o_curr, c_curr)
+        wick_ok = (upper_wick / candle_range) >= wick_ratio
+        displacement_ok = c_curr < c_prev
+        return c_curr < o_curr and (wick_ok or displacement_ok)
+
+    def _price_touches_ob(self, ob: StrategyOrderBlock, high: float, low: float,
+                          tolerance_pct: float = 0.0) -> bool:
+        """Check if current candle's price range touches the OB zone (with optional tolerance)."""
+        ob_range = max(0.0, ob.high - ob.low)
+        tolerance = ob_range * max(0.0, tolerance_pct)
+        return low <= (ob.high + tolerance) and high >= (ob.low - tolerance)
     
     def _ob_is_mitigated(self, ob: StrategyOrderBlock, high: float, low: float, close: float) -> bool:
         """Check if OB is fully mitigated."""
