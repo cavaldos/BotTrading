@@ -1,5 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
+async function parseJsonResponse(response, url) {
+    const contentType = response.headers.get('content-type') || '';
+
+    if (!contentType.includes('application/json')) {
+        const body = await response.text();
+        const preview = body.slice(0, 80).replace(/\s+/g, ' ').trim();
+        throw new Error(`Invalid JSON response from ${url}: ${preview || 'empty response'}`);
+    }
+
+    return response.json();
+}
+
 /**
  * Hook to load list of available live trading symbols from symbols.json
  * @param {number} refreshInterval - Interval in ms to refresh symbols list (default: 30000)
@@ -18,12 +30,13 @@ export function useLiveSymbols(refreshInterval = 30000) {
 
             // Add timestamp to prevent caching
             const timestamp = Date.now();
-            const response = await fetch(`data/live/symbols.json?t=${timestamp}`);
+            const url = `/data/live/symbols.json?t=${timestamp}`;
+            const response = await fetch(url);
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const jsonData = await response.json();
+            const jsonData = await parseJsonResponse(response, url);
             setSymbols(jsonData.symbols || []);
         } catch (err) {
             setError(err.message);
@@ -86,14 +99,14 @@ export function useLiveChartData(symbolId, refreshInterval = 5000) {
 
             // Add timestamp to prevent caching
             const timestamp = Date.now();
-            const url = `/live/${symbolId}.json?t=${timestamp}`;
+            const url = `/data/live/${symbolId}.json?t=${timestamp}`;
             const response = await fetch(url);
             
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const jsonData = await response.json();
+            const jsonData = await parseJsonResponse(response, url);
             setData(jsonData);
             setLastUpdate(new Date());
         } catch (err) {

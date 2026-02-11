@@ -159,18 +159,9 @@ function CombinePage() {
           <span>{tradeData?.trades?.length || 0} trades</span>
           <span>{totalIndicators.toLocaleString()} indicators</span>
           <button
+            className="chart-action-btn chart-action-btn-primary"
             onClick={handleFocusCurrentCandle}
             disabled={!tradeData?.candles?.length && !indicatorData?.candles?.length}
-            style={{
-              padding: '4px 10px',
-              backgroundColor: 'rgba(41, 98, 255, 0.2)',
-              color: '#2962ff',
-              border: '1px solid rgba(41, 98, 255, 0.5)',
-              borderRadius: '4px',
-              cursor: (tradeData?.candles?.length || indicatorData?.candles?.length) ? 'pointer' : 'not-allowed',
-              fontSize: '11px',
-              fontWeight: 700,
-            }}
           >
             Current Candle
           </button>
