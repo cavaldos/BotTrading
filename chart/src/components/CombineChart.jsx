@@ -5,6 +5,7 @@ import { createTradeZones, createOrderBlockRect, RectanglePrimitive } from '../p
 import { createStructureLine, createEqhEqlLine } from '../plugins/LinePrimitive';
 import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
+import { applyPositionLabelsToMarkers } from './positionMarkers';
 
 const CombineChart = forwardRef(function CombineChart({
   candles,
@@ -28,7 +29,7 @@ const CombineChart = forwardRef(function CombineChart({
   const hasInitialFitRef = useRef(false);
   const lastCandleTimeRef = useRef(null);
   const scrollAnimationRef = useRef(null);
-  const [isMeasuring, setIsMeasuring] = useState(false);
+  const [activeMeasurementTool, setActiveMeasurementTool] = useState(null);
   const preservePositionRef = useRef(false);
 
   const animateVisibleRange = useCallback((timeScale, fromRange, toRange, duration = 260) => {
@@ -69,6 +70,8 @@ const CombineChart = forwardRef(function CombineChart({
     bearish: '#ef5350',
     crosshair: '#9598a1',
   }), []);
+
+  const chartMarkers = useMemo(() => applyPositionLabelsToMarkers(markers, trades), [markers, trades]);
 
   const barDuration = useMemo(() => {
     if (!candles || candles.length < 2) return 900;
@@ -187,11 +190,11 @@ const CombineChart = forwardRef(function CombineChart({
       preservePositionRef.current = preserve;
     },
 
-    toggleMeasurement: () => {
+    toggleMeasurement: (toolType = 'ruler') => {
       if (measurementHandlerRef.current) {
-        const isEnabled = measurementHandlerRef.current.toggle();
-        setIsMeasuring(isEnabled);
-        return isEnabled;
+        const result = measurementHandlerRef.current.toggle(toolType);
+        setActiveMeasurementTool(result.enabled ? result.toolType : null);
+        return result.enabled;
       }
       return false;
     },
@@ -200,8 +203,8 @@ const CombineChart = forwardRef(function CombineChart({
         measurementHandlerRef.current.clear();
       }
     },
-    isMeasuring: () => isMeasuring,
-  }), [isMeasuring, barDuration, candles, animateVisibleRange]);
+    isMeasuring: () => activeMeasurementTool !== null,
+  }), [activeMeasurementTool, barDuration, candles, animateVisibleRange]);
 
   // Initialize chart
   useEffect(() => {
@@ -361,11 +364,11 @@ const CombineChart = forwardRef(function CombineChart({
     if (markersRef.current) {
       markersRef.current.setMarkers([]);
     }
-    if (markers?.length > 0) {
-      const sortedMarkers = [...markers].sort((a, b) => a.time - b.time);
+    if (chartMarkers?.length > 0) {
+      const sortedMarkers = [...chartMarkers].sort((a, b) => a.time - b.time);
       markersRef.current = createSeriesMarkers(candleSeriesRef.current, sortedMarkers);
     }
-  }, [markers]);
+  }, [chartMarkers]);
 
   // Update trade zones and order blocks
   useEffect(() => {
@@ -581,10 +584,10 @@ const CombineChart = forwardRef(function CombineChart({
 
   }, [indicatorData, indicatorVisibility, barDuration]);
 
-  const handleToggleMeasurement = useCallback(() => {
+  const handleToggleMeasurement = useCallback((toolType) => {
     if (measurementHandlerRef.current) {
-      const isEnabled = measurementHandlerRef.current.toggle();
-      setIsMeasuring(isEnabled);
+      const result = measurementHandlerRef.current.toggle(toolType);
+      setActiveMeasurementTool(result.enabled ? result.toolType : null);
     }
   }, []);
 
@@ -593,6 +596,22 @@ const CombineChart = forwardRef(function CombineChart({
       measurementHandlerRef.current.clear();
     }
   }, []);
+
+  const getToolButtonStyle = useCallback((toolType) => {
+    const isActive = activeMeasurementTool === toolType;
+    const activeColor = toolType === 'long' ? '#26a69a' : toolType === 'short' ? '#ef5350' : '#2962ff';
+    return {
+      padding: '8px 10px',
+      backgroundColor: isActive ? `${activeColor}33` : 'rgba(41, 98, 255, 0.3)',
+      color: isActive ? activeColor : '#fff',
+      border: isActive ? `2px solid ${activeColor}` : '1px solid rgba(41, 98, 255, 0.5)',
+      borderRadius: '4px',
+      cursor: 'pointer',
+      fontSize: '12px',
+      fontWeight: 'bold',
+      minWidth: '56px',
+    };
+  }, [activeMeasurementTool]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
@@ -605,21 +624,14 @@ const CombineChart = forwardRef(function CombineChart({
         gap: '8px',
       }}>
         <button
-          onClick={handleToggleMeasurement}
+          onClick={() => handleToggleMeasurement('ruler')}
           style={{
-            padding: '8px 12px',
-            backgroundColor: isMeasuring ? '#2962ff' : 'rgba(41, 98, 255, 0.3)',
-            color: '#fff',
-            border: isMeasuring ? '2px solid #2962ff' : '1px solid rgba(41, 98, 255, 0.5)',
-            borderRadius: '4px',
-            cursor: 'pointer',
-            fontSize: '12px',
-            fontWeight: 'bold',
+            ...getToolButtonStyle('ruler'),
             display: 'flex',
             alignItems: 'center',
             gap: '4px',
           }}
-          title="Toggle measurement tool (Ruler)"
+          title="Draw ruler measurement"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M21.3 8.7l-6-6-12 12 6 6 12-12z" />
@@ -628,9 +640,23 @@ const CombineChart = forwardRef(function CombineChart({
             <path d="M11 18.5l2-2" />
             <path d="M13.5 16l2-2" />
           </svg>
-          {isMeasuring ? 'Measuring' : 'Ruler'}
+          Ruler
         </button>
-        {isMeasuring && (
+        <button
+          onClick={() => handleToggleMeasurement('long')}
+          style={getToolButtonStyle('long')}
+          title="Draw long position measurement"
+        >
+          Long
+        </button>
+        <button
+          onClick={() => handleToggleMeasurement('short')}
+          style={getToolButtonStyle('short')}
+          title="Draw short position measurement"
+        >
+          Short
+        </button>
+        {activeMeasurementTool && (
           <button
             onClick={handleClearMeasurement}
             style={{

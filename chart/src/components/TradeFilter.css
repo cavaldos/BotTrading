@@ -2,38 +2,43 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
-  background: #1e222d;
-  border-bottom: 1px solid #363c4e;
+  padding: 6px 12px;
+  background: rgba(19, 23, 34, 0.95);
+  border-bottom: 1px solid rgba(54, 60, 78, 0.5);
+  gap: 12px;
 }
 
 .filter-buttons {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .filter-btn {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  border: 1px solid #363c4e;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid rgba(120, 123, 134, 0.35);
   border-radius: 4px;
-  background: #131722;
-  color: #d1d4dc;
+  background: transparent;
+  color: #a0a4b0;
   cursor: pointer;
-  transition: all 0.2s ease;
-  font-size: 13px;
+  transition: all 0.15s ease;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .filter-btn:hover {
-  background: #2a2e39;
-  border-color: #9598a1;
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(160, 164, 176, 0.5);
+  color: #d1d4dc;
 }
 
 .filter-btn.active {
-  background: #2a2e39;
-  border-color: #2962ff;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(41, 98, 255, 0.55);
+  color: #d1d4dc;
 }
 
 .filter-label {
@@ -42,9 +47,9 @@
 
 .filter-count {
   font-weight: 600;
-  font-size: 12px;
-  padding: 2px 6px;
-  background: rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.08);
   border-radius: 3px;
 }
 
@@ -57,7 +62,7 @@
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 2px;
+  gap: 3px;
 }
 
 .stat-label {
@@ -70,4 +75,16 @@
 .stat-value {
   font-size: 18px;
   font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .trade-filter {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summary-stats {
+    width: 100%;
+    justify-content: flex-end;
+  }
 }

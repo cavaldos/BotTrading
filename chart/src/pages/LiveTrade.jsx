@@ -261,7 +261,7 @@ function LiveTrade() {
                         Refresh
                     </button>
                     <button
-                        className="refresh-btn"
+                        className="refresh-btn current-candle-btn"
                         onClick={handleFocusCurrentCandle}
                         title="Focus current candle"
                         disabled={!data?.candles?.length}
