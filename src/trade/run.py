@@ -68,9 +68,12 @@ else:
     TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
 
 TIMEFRAME_MINUTES_MAP = {tf: parse_timeframe(tf) for tf in TIMEFRAMES}
-FETCH_INTERVAL = TIMEFRAMES_CONFIG.get("fetch_interval", 60)  # Default 60 seconds
-WAIT_FOR_CLOSE = TIMEFRAMES_CONFIG.get("wait_for_close", True)  # Default: wait for candle close
+FETCH_INTERVAL = int(TIMEFRAMES_CONFIG.get("fetch_interval", 60))  # Default 60 seconds
+WAIT_FOR_CLOSE = TIMEFRAMES_CONFIG.get("wait_for_close", False)  # Default: run by fetch interval
 CLOSE_DELAY = TIMEFRAMES_CONFIG.get("close_delay", 3)  # Seconds after candle close to wait
+
+if FETCH_INTERVAL <= 0:
+    raise ValueError("timeframe.fetch_interval must be > 0")
 
 
 # Dashboard settings
@@ -323,10 +326,10 @@ def process_1_data_and_execute(timeframe: str):
      Process 1: Fetch data and run execute for a specific timeframe.
      
      Two modes:
-     - wait_for_close=True (default): Waits until the current candle closes,
-       then fetches data and runs strategy exactly once per candle. This prevents
-       repainting by ensuring the strategy only sees completed candles.
-     - wait_for_close=False: Runs every FETCH_INTERVAL seconds (legacy behavior).
+      - wait_for_close=True: Waits until the current candle closes,
+        then fetches data and runs strategy exactly once per candle. This prevents
+        repainting by ensuring the strategy only sees completed candles.
+      - wait_for_close=False (default): Runs every FETCH_INTERVAL seconds.
      """
      tf_state = state.timeframe_states[timeframe]
      
