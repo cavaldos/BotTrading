@@ -26,7 +26,8 @@ def load_sent_orders(log_file: Path) -> tuple[set, list]:
     if isinstance(data, dict):
         orders = data.get("sent_orders", [])
     else:
-        orders = [item for item in data if isinstance(item, dict) and item.get("key")]
+        orders = data
+    orders = [item for item in orders if isinstance(item, dict) and item.get("key")]
     keys = set(order.get("key", "") for order in orders if isinstance(order, dict))
     return keys, orders
 
@@ -153,21 +154,98 @@ def is_order_too_old(entry_time_str: str, max_age_minutes: int = MAX_ORDER_AGE_M
 def load_skipped_orders(log_file: Path) -> set:
     """Load skipped order keys from log file using JsonDB."""
     db = JsonDB(str(log_file))
-    return set(order.get("key", "") for order in db.all() if order.get("key"))
+    data = db.all()
+
+    keys = set()
+
+    if isinstance(data, dict):
+        skipped_orders = data.get("skipped_orders", [])
+        if isinstance(skipped_orders, list):
+            for order in skipped_orders:
+                if isinstance(order, dict):
+                    key = order.get("key")
+                    if isinstance(key, str) and key:
+                        keys.add(key)
+
+        skipped_keys = data.get("skipped_keys", [])
+        if isinstance(skipped_keys, list):
+            for key in skipped_keys:
+                if isinstance(key, str) and key:
+                    keys.add(key)
+
+        return keys
+
+    if isinstance(data, list):
+        for order in data:
+            if isinstance(order, dict):
+                key = order.get("key")
+                if isinstance(key, str) and key:
+                    keys.add(key)
+
+    return keys
 
 
 def save_skipped_order(log_file: Path, order_key: str, reason: str, entry_time: str) -> None:
     """Save a skipped order to log file using JsonDB."""
-    with JsonDB(str(log_file)) as db:
-        # Check if order already exists
-        existing = db.find_one(key=order_key)
-        if not existing:
-            db.add({
-                "key": order_key,
-                "reason": reason,
-                "entry_time": entry_time,
-                "skipped_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            })
+    db = JsonDB(str(log_file))
+    data = db.all()
+    order_detail = {
+        "key": order_key,
+        "reason": reason,
+        "entry_time": entry_time,
+        "skipped_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+
+    if isinstance(data, dict):
+        skipped_orders = data.get("skipped_orders", [])
+        if not isinstance(skipped_orders, list):
+            skipped_orders = []
+
+        existing_keys = set()
+        for order in skipped_orders:
+            if isinstance(order, dict):
+                key = order.get("key")
+                if isinstance(key, str) and key:
+                    existing_keys.add(key)
+
+        skipped_keys = data.get("skipped_keys", [])
+        if isinstance(skipped_keys, list):
+            for key in skipped_keys:
+                if isinstance(key, str) and key:
+                    existing_keys.add(key)
+
+        if order_key in existing_keys:
+            return
+
+        skipped_orders.append(order_detail)
+        data["skipped_orders"] = skipped_orders
+        data["skipped_keys"] = [
+            order.get("key")
+            for order in skipped_orders
+            if isinstance(order, dict) and isinstance(order.get("key"), str) and order.get("key")
+        ]
+        data["last_updated"] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        db._data = data
+        db.save()
+        return
+
+    # Default / JsonDB-native format: list of order dicts
+    if not isinstance(data, list):
+        data = []
+
+    existing_keys = set()
+    for order in data:
+        if isinstance(order, dict):
+            key = order.get("key")
+            if isinstance(key, str) and key:
+                existing_keys.add(key)
+
+    if order_key in existing_keys:
+        return
+
+    data.append(order_detail)
+    db._data = data
+    db.save()
 
 
 def scan_open_orders(output_dir: Path) -> list:

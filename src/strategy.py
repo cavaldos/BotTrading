@@ -336,10 +336,9 @@ class Strategy:
                             symbol=symbol,
                             ob=ob,
                             entry_time=current_time,
-                            entry_price=closes[i],
-                            current_open=opens[i],
                             current_high=highs[i],
                             current_low=lows[i],
+                            previous_close=closes[i - 1] if i > 0 else closes[i],
                         )
                         if signal:
                             signals.append(signal)
@@ -441,10 +440,28 @@ class Strategy:
                 return low < ob.low
             else:
                 return high > ob.high
+
+    def _select_entry_price(self, ob: StrategyOrderBlock, current_high: float,
+                            current_low: float, previous_close: float) -> Optional[float]:
+        """
+        Select entry inside the traded OB overlap and prioritize price nearest
+        to previous candle close.
+        """
+        overlap_low = max(ob.low, current_low)
+        overlap_high = min(ob.high, current_high)
+
+        if overlap_low > overlap_high:
+            return None
+
+        reference_price = previous_close
+        if not np.isfinite(reference_price):
+            reference_price = (overlap_low + overlap_high) / 2.0
+
+        return min(max(reference_price, overlap_low), overlap_high)
     
     def _create_signal(self, symbol: str, ob: StrategyOrderBlock, entry_time: datetime,
-                       entry_price: float, current_open: float,
-                       current_high: float, current_low: float) -> Optional[Signal]:
+                       current_high: float, current_low: float,
+                       previous_close: float) -> Optional[Signal]:
         """
         Create a trade signal with SL and TP.
         
@@ -460,11 +477,18 @@ class Strategy:
         """
         ob_range = ob.high - ob.low
         buffer = ob_range * self.config.sl_buffer_pct
+
+        entry = self._select_entry_price(
+            ob=ob,
+            current_high=current_high,
+            current_low=current_low,
+            previous_close=previous_close,
+        )
+        if entry is None:
+            return None
         
         if ob.bias == 'BULLISH':
             trade_type = 'LONG'
-            body_low = min(current_open, entry_price)
-            entry = min(ob.high, body_low)
             
             base_sl = ob.low - buffer
             base_risk = entry - base_sl
@@ -478,8 +502,6 @@ class Strategy:
             
         else:
             trade_type = 'SHORT'
-            body_high = max(current_open, entry_price)
-            entry = max(ob.low, body_high)
             
             base_sl = ob.high + buffer
             base_risk = base_sl - entry
