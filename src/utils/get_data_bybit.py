@@ -3,7 +3,7 @@ import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
 from src.config import load_config
 from datetime import datetime, timedelta, timezone
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait, ALL_COMPLETED
 import os
 import shutil
 import time
@@ -19,6 +19,78 @@ DEFAULT_CONFIG = {
     'start_date': '2026-01-01',
     'mode': 'by_candles'
 }
+
+
+def _get_env_float(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        print(f"Invalid {name}='{value}', using default {default}")
+        return default
+
+
+def _get_env_int(name, default):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        print(f"Invalid {name}='{value}', using default {default}")
+        return default
+
+
+HTTP_CONNECT_TIMEOUT = _get_env_float('HTTP_CONNECT_TIMEOUT', 5.0)
+HTTP_READ_TIMEOUT = _get_env_float('HTTP_READ_TIMEOUT', 20.0)
+HTTP_TIMEOUT = (HTTP_CONNECT_TIMEOUT, HTTP_READ_TIMEOUT)
+HTTP_MAX_RETRIES = max(1, _get_env_int('HTTP_MAX_RETRIES', 3))
+HTTP_RETRY_BACKOFF_SECONDS = max(0.0, _get_env_float('HTTP_RETRY_BACKOFF_SECONDS', 0.5))
+PARALLEL_WAVE_TIMEOUT_SECONDS = max(1.0, _get_env_float('PARALLEL_WAVE_TIMEOUT_SECONDS', 90.0))
+
+
+def _http_get_with_retry(url, params, exchange_name='Bybit'):
+    symbol = params.get('symbol', 'UNKNOWN')
+    interval = params.get('interval', 'UNKNOWN')
+
+    for attempt in range(1, HTTP_MAX_RETRIES + 1):
+        try:
+            response = requests.get(url, params=params, timeout=HTTP_TIMEOUT)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as e:
+            if attempt >= HTTP_MAX_RETRIES:
+                print(
+                    f"Error connecting to {exchange_name} API for {symbol}_{interval} "
+                    f"after {HTTP_MAX_RETRIES} attempts: {e}"
+                )
+                return None
+
+            delay = HTTP_RETRY_BACKOFF_SECONDS * attempt
+            print(
+                f"{exchange_name} API request failed for {symbol}_{interval} "
+                f"(attempt {attempt}/{HTTP_MAX_RETRIES}): {e}. Retrying in {delay:.1f}s..."
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+    return None
+
+
+def _safe_json(response, exchange_name='Bybit'):
+    try:
+        return response.json()
+    except ValueError as e:
+        print(f"Invalid JSON response from {exchange_name} API: {e}")
+        return None
+
+
+def _batch_timeout(total_tasks, max_workers):
+    workers = max(1, max_workers)
+    waves = max(1, (total_tasks + workers - 1) // workers)
+    return waves * PARALLEL_WAVE_TIMEOUT_SECONDS
 
 # Bybit interval mapping (Bybit uses different interval format)
 INTERVAL_MAP = {
@@ -80,24 +152,23 @@ def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, l
     if end_time:
         params['end'] = end_time
 
-    try:
-        # Send GET request to Bybit API
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        data = response.json()
-        
-        if data.get('retCode') != 0:
-            print(f"Error connecting to Bybit API: {data.get('retMsg')}")
-            return []
-        
-        # Bybit returns data in descending order, reverse to ascending
-        candles = data.get('result', {}).get('list', [])
-        candles = candles[::-1]  # Reverse to ascending order
-        
-        return _format_candles(candles)
-    except requests.exceptions.RequestException as e:
-        print(f"Error connecting to Bybit API: {e}")
+    response = _http_get_with_retry(url, params, exchange_name='Bybit')
+    if response is None:
         return []
+
+    data = _safe_json(response, exchange_name='Bybit')
+    if not data:
+        return []
+
+    if data.get('retCode') != 0:
+        print(f"Error connecting to Bybit API: {data.get('retMsg')}")
+        return []
+
+    # Bybit returns data in descending order, reverse to ascending
+    candles = data.get('result', {}).get('list', [])
+    candles = candles[::-1]  # Reverse to ascending order
+
+    return _format_candles(candles)
 
 
 # Fetch latest candles (supports fetching multiple candles)
@@ -116,22 +187,22 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             'limit': limit
         }
         
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('retCode') != 0:
-                print(f"Error connecting to Bybit API: {data.get('retMsg')}")
-                return []
-            
-            candles = data.get('result', {}).get('list', [])
-            candles = candles[::-1]  # Reverse to ascending order
-            
-            return _format_candles(candles)
-        except requests.exceptions.RequestException as e:
-            print(f"Error connecting to Bybit API: {e}")
+        response = _http_get_with_retry(url, params, exchange_name='Bybit')
+        if response is None:
             return []
+
+        data = _safe_json(response, exchange_name='Bybit')
+        if not data:
+            return []
+
+        if data.get('retCode') != 0:
+            print(f"Error connecting to Bybit API: {data.get('retMsg')}")
+            return []
+
+        candles = data.get('result', {}).get('list', [])
+        candles = candles[::-1]  # Reverse to ascending order
+
+        return _format_candles(candles)
     
     # If limit > 1000, multiple API requests are needed
     else:
@@ -146,70 +217,70 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             'limit': MAX_API_LIMIT
         }
         
-        try:
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('retCode') != 0:
-                print(f"Error connecting to Bybit API: {data.get('retMsg')}")
-                return []
-            
+        response = _http_get_with_retry(url, params, exchange_name='Bybit')
+        if response is None:
+            return []
+
+        data = _safe_json(response, exchange_name='Bybit')
+        if not data:
+            return []
+
+        if data.get('retCode') != 0:
+            print(f"Error connecting to Bybit API: {data.get('retMsg')}")
+            return []
+
+        candles = data.get('result', {}).get('list', [])
+
+        if not candles:
+            return []
+
+        # Bybit returns newest first, convert and reverse
+        formatted_candles = _format_candles(candles)
+        formatted_candles = formatted_candles[::-1]  # Reverse to ascending
+
+        all_candles.extend(formatted_candles)
+        remaining -= len(formatted_candles)
+
+        # If more candles needed, continue fetching historical data
+        while remaining > 0:
+            # Get endTime from the first candle of the previous fetch
+            end_time = all_candles[0][0] - 1  # Start time of first candle - 1ms
+
+            params = {
+                'category': 'spot',
+                'symbol': symbol,
+                'interval': bybit_interval,
+                'limit': min(MAX_API_LIMIT, remaining),
+                'end': end_time
+            }
+
+            response = _http_get_with_retry(url, params, exchange_name='Bybit')
+            if response is None:
+                break
+
+            data = _safe_json(response, exchange_name='Bybit')
+            if not data or data.get('retCode') != 0:
+                break
+
             candles = data.get('result', {}).get('list', [])
-            
+
             if not candles:
-                return []
-            
-            # Bybit returns newest first, convert and reverse
+                break
+
             formatted_candles = _format_candles(candles)
             formatted_candles = formatted_candles[::-1]  # Reverse to ascending
-            
-            all_candles.extend(formatted_candles)
+
+            all_candles = formatted_candles + all_candles  # Prepend to maintain ascending time order
             remaining -= len(formatted_candles)
-            
-            # If more candles needed, continue fetching historical data
-            while remaining > 0:
-                # Get endTime from the first candle of the previous fetch
-                end_time = all_candles[0][0] - 1  # Start time of first candle - 1ms
-                
-                params = {
-                    'category': 'spot',
-                    'symbol': symbol,
-                    'interval': bybit_interval,
-                    'limit': min(MAX_API_LIMIT, remaining),
-                    'end': end_time
-                }
-                
-                response = requests.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
-                
-                if data.get('retCode') != 0:
-                    break
-                
-                candles = data.get('result', {}).get('list', [])
-                
-                if not candles:
-                    break
-                
-                formatted_candles = _format_candles(candles)
-                formatted_candles = formatted_candles[::-1]  # Reverse to ascending
-                    
-                all_candles = formatted_candles + all_candles  # Prepend to maintain ascending time order
-                remaining -= len(formatted_candles)
-                
-                # Add small delay to avoid API rate limiting
-                time.sleep(0.1)
-            
-            # Trim if fetched more than requested
-            if len(all_candles) > limit:
-                all_candles = all_candles[-limit:]
-                
-            return all_candles
-            
-        except requests.exceptions.RequestException as e:
-            print(f"Error connecting to Bybit API: {e}")
-            return all_candles if all_candles else []
+
+            # Add small delay to avoid API rate limiting
+            time.sleep(0.1)
+
+        # Trim if fetched more than requested
+        if len(all_candles) > limit:
+            all_candles = all_candles[-limit:]
+
+        return all_candles
 
 # Convert timestamp and save to CSV file (atomic write)
 def save_to_csv(candles, filename, max_retries=3):
@@ -338,13 +409,38 @@ def _fetch_single_candle(currency, timeframe, folder_path, limit):
 def fetch_and_save_candles_parallel(currencies, timeframes, folder_path, limit, max_workers=5):
     """Fetch and save candles for multiple currencies in parallel using ThreadPoolExecutor"""
     tasks = [(c, tf, folder_path, limit) for c in currencies for tf in timeframes]
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+    if not tasks:
+        return
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    timed_out = False
+
+    try:
         futures = [executor.submit(_fetch_single_candle, *task) for task in tasks]
-        for future in as_completed(futures):
-            result = future.result()
+        timeout_seconds = _batch_timeout(len(tasks), max_workers)
+        done, not_done = wait(set(futures), timeout=timeout_seconds, return_when=ALL_COMPLETED)
+
+        if not_done:
+            timed_out = True
+            for future in not_done:
+                future.cancel()
+            print(
+                f"fetch_and_save_candles_parallel timed out after {timeout_seconds:.1f}s "
+                f"({len(not_done)} task(s) cancelled)"
+            )
+
+        for future in done:
+            try:
+                result = future.result()
+            except Exception as e:
+                print(f"Parallel fetch worker failed: {e}")
+                continue
+
             if result and not result[2]:
                 print(f"Failed to fetch data for {result[0]}_{result[1]}")
+    finally:
+        executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
 
 def append_latest_candle(currencies, timeframes, folder_path):
@@ -487,11 +583,34 @@ def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
 def append_latest_candle_parallel(currencies, timeframes, folder_path, max_workers=5):
     """Append latest candle for multiple currencies in parallel using ThreadPoolExecutor"""
     tasks = [(c, tf, folder_path) for c in currencies for tf in timeframes]
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+    if not tasks:
+        return
+
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    timed_out = False
+
+    try:
         futures = [executor.submit(_append_single_candle, *task) for task in tasks]
-        for future in as_completed(futures):
-            future.result()  # Wait for completion, errors will be printed inside _append_single_candle
+        timeout_seconds = _batch_timeout(len(tasks), max_workers)
+        done, not_done = wait(set(futures), timeout=timeout_seconds, return_when=ALL_COMPLETED)
+
+        if not_done:
+            timed_out = True
+            for future in not_done:
+                future.cancel()
+            print(
+                f"append_latest_candle_parallel timed out after {timeout_seconds:.1f}s "
+                f"({len(not_done)} task(s) cancelled)"
+            )
+
+        for future in done:
+            try:
+                future.result()  # Wait for completion, errors will be printed inside _append_single_candle
+            except Exception as e:
+                print(f"Parallel append worker failed: {e}")
+    finally:
+        executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
 def getdata_by_date(config=None):
     if config is None:
@@ -580,7 +699,14 @@ def getdata(config_path=None, max_workers=5):
                 currency, timeframe = task[0], task[1]
                 pbar.set_description(f"Downloaded {currency}_{timeframe}")
                 
-                result = future.result()
+                try:
+                    result = future.result()
+                except Exception as e:
+                    tqdm.write(f"Worker failed for {currency}_{timeframe}: {e}")
+                    completed += 1
+                    pbar.update(1)
+                    continue
+
                 if result and not result[2]:
                     tqdm.write(f"Failed to fetch data for {currency}_{timeframe}")
                 

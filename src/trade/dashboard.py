@@ -21,14 +21,18 @@ from rich.text import Text
 # =============================================================================
 
 def create_dashboard() -> Layout:
-    """Create the dashboard layout - 3 rows x 2 columns"""
+    """Create responsive dashboard layout that fills terminal height."""
     layout = Layout()
-    
+
     layout.split_column(
         Layout(name="header", size=3),
-        Layout(name="row1", size=10),
-        Layout(name="row2", size=10),
-        Layout(name="row3", size=10),
+        Layout(name="body", ratio=1),
+    )
+
+    layout["body"].split_column(
+        Layout(name="row1", ratio=3, minimum_size=8),
+        Layout(name="row2", ratio=3, minimum_size=8),
+        Layout(name="row3", ratio=4, minimum_size=8),
     )
     
     # Row 1: Process 1 | Stats

@@ -1,6 +1,8 @@
 import os
 import time
 import math
+import sys
+import builtins
 import threading
 from queue import Queue, Empty
 from datetime import datetime, timedelta, timezone
@@ -223,6 +225,50 @@ class AppState:
 
 state = AppState()
 console = Console()
+
+
+_ORIGINAL_PRINT = builtins.print
+_PRINT_CAPTURE_ENABLED = False
+
+
+def _capture_print_to_errors(*args, **kwargs):
+    """Capture all runtime print() calls into dashboard error logs."""
+    file_obj = kwargs.get("file", None)
+    sep = kwargs.get("sep", " ")
+    end = kwargs.get("end", "\n")
+
+    if sep is None:
+        sep = " "
+    if end is None:
+        end = "\n"
+
+    message = sep.join(str(arg) for arg in args)
+    if end:
+        message += end
+
+    for line in message.splitlines():
+        if line.strip():
+            state.add_error("PRT", line)
+
+    # Preserve explicit output to custom file handles.
+    if file_obj not in (None, sys.stdout, sys.stderr):
+        _ORIGINAL_PRINT(*args, **kwargs)
+
+
+def install_print_capture():
+    global _PRINT_CAPTURE_ENABLED
+    if _PRINT_CAPTURE_ENABLED:
+        return
+    builtins.print = _capture_print_to_errors
+    _PRINT_CAPTURE_ENABLED = True
+
+
+def restore_print_capture():
+    global _PRINT_CAPTURE_ENABLED
+    if not _PRINT_CAPTURE_ENABLED:
+        return
+    builtins.print = _ORIGINAL_PRINT
+    _PRINT_CAPTURE_ENABLED = False
 
 # Process 2 queue config
 EVENT_DEBOUNCE_SECONDS = 0.25
@@ -482,60 +528,63 @@ def process_2_event_worker(event_queue: Queue[str]):
 # =============================================================================
 
 def main():
-     
-     remove_all_files(OUTPUT_FOLDER)
-     remove_all_files(DATA_FOLDER)
-     
-     # Create threads for each timeframe
-     tf_threads = []
-     for timeframe in TIMEFRAMES:
-         thread = threading.Thread(
-             target=process_1_data_and_execute,
-             args=(timeframe,),
-             daemon=True,
-             name=f"DataExecuteThread-{timeframe}"
-         )
-         tf_threads.append(thread)
-     
-     # Create watcher thread
-     thread_2 = threading.Thread(
-         target=process_2_watch_output,
-         daemon=True,
-         name="OutputWatcherThread"
-     )
-     
-     # Start all threads
-     for thread in tf_threads:
-         thread.start()
-     thread_2.start()
-     
-     timeframes_str = ", ".join(TIMEFRAMES)
-     state.add_log("Main", f"Application started (TF: {timeframes_str})")
-     
-     # Create dashboard
-     layout = create_dashboard()
-     
-     try:
-          with Live(layout, refresh_per_second=REFRESH_RATE, screen=True) as live:
-               while True:
-                    update_dashboard(
-                         layout,
-                         state,
-                         state_lock,
-                         TIMEFRAMES,
-                         CURRENCIES,
-                         FETCH_INTERVAL,
-                         OUTPUT_FOLDER,
-                         LOG_FILE,
-                         RISK_REWARD_RATIO
-                    )
-                    time.sleep(1.0 / REFRESH_RATE)
-     except KeyboardInterrupt:
-         state.running = False
-         state.shutdown_event.set()  # Signal all threads to stop immediately
-         console.print("\n[bold red]Shutting down...[/bold red]")
-         time.sleep(0.5)  # Brief wait for threads to respond
-         console.print("[bold green]Application terminated.[/bold green]")
+    install_print_capture()
+
+    remove_all_files(OUTPUT_FOLDER)
+    remove_all_files(DATA_FOLDER)
+
+    # Create threads for each timeframe
+    tf_threads = []
+    for timeframe in TIMEFRAMES:
+        thread = threading.Thread(
+            target=process_1_data_and_execute,
+            args=(timeframe,),
+            daemon=True,
+            name=f"DataExecuteThread-{timeframe}"
+        )
+        tf_threads.append(thread)
+
+    # Create watcher thread
+    thread_2 = threading.Thread(
+        target=process_2_watch_output,
+        daemon=True,
+        name="OutputWatcherThread"
+    )
+
+    # Start all threads
+    for thread in tf_threads:
+        thread.start()
+    thread_2.start()
+
+    timeframes_str = ", ".join(TIMEFRAMES)
+    state.add_log("Main", f"Application started (TF: {timeframes_str})")
+
+    # Create dashboard
+    layout = create_dashboard()
+
+    try:
+        with Live(layout, refresh_per_second=REFRESH_RATE, screen=True):
+            while True:
+                update_dashboard(
+                    layout,
+                    state,
+                    state_lock,
+                    TIMEFRAMES,
+                    CURRENCIES,
+                    FETCH_INTERVAL,
+                    OUTPUT_FOLDER,
+                    LOG_FILE,
+                    RISK_REWARD_RATIO
+                )
+                time.sleep(1.0 / REFRESH_RATE)
+    except KeyboardInterrupt:
+        state.running = False
+        state.shutdown_event.set()  # Signal all threads to stop immediately
+        console.print("\n[bold red]Shutting down...[/bold red]")
+        time.sleep(0.5)  # Brief wait for threads to respond
+        console.print("[bold green]Application terminated.[/bold green]")
+    finally:
+        restore_print_capture()
 
 
 if __name__ == "__main__":
