@@ -30,4 +30,4 @@ RUN mkdir -p /app/res/logs/data /app/res/logs/output
 ENV PYTHONUNBUFFERED=1
 
 # Command to run the trading application
-CMD ["python", "-u", "src/trade/run.py"]
+CMD ["python", "-u", "-m", "src.live.run"]

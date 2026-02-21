@@ -8,7 +8,7 @@
 #   ./run_pattern_test.sh 1 2 5 10  # Run pattern 1, 2, 5, and 10
 # ==============================================================================
 
-STRATEGY_FILE="src/strategy.py"
+STRATEGY_FILE="src/strategy/smc_strategy.py"
 
 # Determine which pattern IDs to run
 if [ $# -eq 0 ]; then
@@ -26,7 +26,7 @@ for PATTERN_ID in "${PATTERN_IDS[@]}"; do
     echo "Running with reversal_pattern_ids: [$PATTERN_ID]"
     echo "========================================"
     
-    # Update the pattern ID in strategy.py
+    # Update the pattern ID in smc strategy
     if [[ "$OSTYPE" == "darwin"* ]]; then
         sed -i '' "s/reversal_pattern_ids: List\[int\] = field(default_factory=lambda: \[[0-9]*\])/reversal_pattern_ids: List[int] = field(default_factory=lambda: [$PATTERN_ID])/" "$STRATEGY_FILE"
     else

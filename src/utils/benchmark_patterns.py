@@ -13,14 +13,15 @@ Output:
 
 from pathlib import Path
 from typing import List, Dict, Any
+from dataclasses import fields
 import pandas as pd
 from tqdm import tqdm
 
 # Import strategy components
 from src.strategy import Config, Strategy, STRATEGY_NAME
-from src.statistics import TradeSimulator, generate_summary_report
-from src.config import load_config
-from src.utils.reversal_patterns import PATTERN_PAIR_NAMES, validate_pattern_ids, get_pattern_name
+from src.backtest.statistics import TradeSimulator, generate_summary_report
+from src.config import load_backtest_config, load_strategy_config
+from src.indicators.reversal_patterns import PATTERN_PAIR_NAMES, validate_pattern_ids, get_pattern_name
 
 
 # ==============================================================================
@@ -56,14 +57,23 @@ def get_symbol_from_filename(filename: str) -> str:
 
 def create_config_with_pattern(pattern_ids: List[int]) -> Config:
     """Create Config with specific pattern IDs"""
-    data_config = load_config()
+    data_config = load_backtest_config(include_strategy=False)
+    strategy_config = load_strategy_config()
     
     data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
     output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
+
+    strategy_fields = {item.name for item in fields(Config)}
+    strategy_kwargs = {
+        key: value
+        for key, value in strategy_config.items()
+        if key in strategy_fields and key not in {'data_folder', 'output_folder', 'reversal_pattern_ids'}
+    }
     
     config = Config(
         data_folder=data_folder,
         output_folder=output_folder,
+        **strategy_kwargs,
     )
     config.reversal_pattern_ids = pattern_ids
     
@@ -216,7 +226,7 @@ def main():
     print("=" * 60)
     
     # Load config để lấy data folder
-    data_config = load_config()
+    data_config = load_backtest_config(include_strategy=False)
     data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
     report_folder = data_config.get('report_folder', DEFAULT_REPORT_FOLDER)
     

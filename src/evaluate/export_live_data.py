@@ -14,28 +14,16 @@ import pandas as pd
 import numpy as np
 import json
 import os
-import yaml
 import time
 from glob import glob
 from datetime import datetime
-from pathlib import Path
+
+from src.config import load_live_config
 
 
 # ==================== CONFIGURATION ====================
-def load_trade_config() -> dict:
-    """Load configuration from trade config.yaml"""
-    config_path = Path(__file__).parent / "config.yaml"
-    if config_path.exists():
-        with open(config_path, "r") as f:
-            return yaml.safe_load(f)
-    # Fallback defaults
-    return {
-        "data": {"folder": "res/logs/data"},
-        "output": {"folder": "res/logs/output"}
-    }
-
-# Load config
-_CONFIG = load_trade_config()
+# Read runtime folders from src/config/live.yaml
+_CONFIG = load_live_config(include_strategy=False)
 
 # Folders for live trading data (from config or defaults)
 LIVE_DATA_DIR = _CONFIG.get("data", {}).get("folder", "res/logs/data")

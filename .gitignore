@@ -74,9 +74,9 @@ results.md
 trade/logs/*
 trade/data/*
 
-/src/trade/config.yaml
-/src/config/dev.yaml
-/src/config/trade.yaml
+/src/config/live.yaml
+/src/config/backtest.yaml
+/src/config/strategy.yaml
 
 
 
