@@ -1,7 +1,7 @@
 import requests # pyright: ignore[reportMissingModuleSource]
 import pandas as pd # pyright: ignore[reportMissingModuleSource]
 import numpy as np # pyright: ignore[reportMissingImports]
-from src.config import load_config
+from src.config import load_backtest_config, load_yaml_config
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait, ALL_COMPLETED
 import os
@@ -614,9 +614,9 @@ def append_latest_candle_parallel(currencies, timeframes, folder_path, max_worke
 
 def getdata_by_date(config=None):
     if config is None:
-        config = load_config()
+        config = load_backtest_config(include_strategy=False)
     elif isinstance(config, str):
-        config = load_config(config)
+        config = load_yaml_config(config, default_name='backtest.yaml')
     
     currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])
     timeframes = config.get('timeframes', DEFAULT_CONFIG['timeframes'])
@@ -636,9 +636,9 @@ def getdata_by_date(config=None):
 
 def getdata_by_candles(config=None):
     if config is None:
-        config = load_config()
+        config = load_backtest_config(include_strategy=False)
     elif isinstance(config, str):
-        config = load_config(config)
+        config = load_yaml_config(config, default_name='backtest.yaml')
     
     currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])
     timeframes = config.get('timeframes', DEFAULT_CONFIG['timeframes'])
@@ -675,8 +675,8 @@ def _getdata_single(currency, timeframe, folder_path, mode, config):
 
 def getdata(config_path=None, max_workers=5):
     from tqdm import tqdm  # pyright: ignore[reportMissingModuleSource]
-    config_path = 'src/config/dev.yaml'
-    config = load_config(config_path)
+    config_path = config_path or 'backtest'
+    config = load_yaml_config(config_path, default_name='backtest.yaml')
     mode = config.get('mode', 'by_candles')
     
     currencies = config.get('currencies', DEFAULT_CONFIG['currencies'])

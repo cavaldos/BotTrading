@@ -6,19 +6,25 @@ Compares calculated result with recorded result in trades CSV.
 """
 
 import pandas as pd
-from datetime import datetime
-from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple
+
+
+def _normalize_datetime(values: object) -> pd.Series:
+    """Parse datetimes, normalize to UTC, then drop tz info for safe comparison."""
+    parsed = pd.to_datetime(values, utc=True, errors='coerce')
+    if isinstance(parsed, pd.Series):
+        return parsed.dt.tz_localize(None)
+    return pd.Series(parsed).dt.tz_localize(None)
 
 
 def load_data(candles_path: str, trades_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """Load candles and trades data from CSV files."""
     candles = pd.read_csv(candles_path)
-    candles['Time'] = pd.to_datetime(candles['Time'])
+    candles['Time'] = _normalize_datetime(candles['Time'])
     
     trades = pd.read_csv(trades_path)
-    trades['Entry_Time'] = pd.to_datetime(trades['Entry_Time'])
-    trades['Exit_Time'] = pd.to_datetime(trades['Exit_Time'])
+    trades['Entry_Time'] = _normalize_datetime(trades['Entry_Time'])
+    trades['Exit_Time'] = _normalize_datetime(trades['Exit_Time'])
     
     return candles, trades
 

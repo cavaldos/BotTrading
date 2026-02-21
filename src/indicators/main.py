@@ -30,7 +30,7 @@ from typing import List, Dict
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.config import load_config
+from src.config import load_backtest_config
 
 # Import all indicators
 from src.indicators.BOS import detect_bos, to_json as bos_to_json
@@ -49,7 +49,7 @@ from src.indicators.swing import detect_swings, to_json as swing_to_json
 
 # ==================== CONFIGURATION ====================
 
-config = load_config()
+config = load_backtest_config(include_strategy=False)
 DATA_DIR = config.get('folder_path', 'res/data')
 OUTPUT_DIR = 'chart/public/data/indicators'
 

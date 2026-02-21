@@ -2,7 +2,7 @@
 
 ## 1) Purpose and Scope
 
-This document is a detailed technical specification of the **current live strategy logic** implemented in `src/strategy.py`.
+This document is a detailed technical specification of the **current live strategy logic** implemented in `src/strategy/smc_strategy.py`.
 
 It is written to help you:
 - Reuse the strategy later.
@@ -15,11 +15,11 @@ This specification describes the Python implementation only (not old Pine varian
 
 ## 2) Source of Truth
 
-- Strategy file: `src/strategy.py`
-- Reversal pattern engine: `src/utils/reversal_patterns.py`
-- Signal simulation and reporting: `src/statistics.py`
-- Live execution wrapper: `src/trade/core/execute.py`
-- Live scheduling loop: `src/trade/run.py`
+- Strategy file: `src/strategy/smc_strategy.py`
+- Reversal pattern engine: `src/indicators/reversal_patterns.py`
+- Signal simulation and reporting: `src/backtest/statistics.py`
+- Live execution wrapper: `src/live/core/execute.py`
+- Live scheduling loop: `src/live/run.py`
 
 ---
 
@@ -458,6 +458,6 @@ return signals
 
 ## 14) Final Notes
 
-This document reflects the current behavior in `src/strategy.py` and related execution wrappers at the time of writing.
+This document reflects the current behavior in `src/strategy/smc_strategy.py` and related execution wrappers at the time of writing.
 
 If you change config defaults or gating logic later, update this file in the same commit so documentation always matches runtime behavior.

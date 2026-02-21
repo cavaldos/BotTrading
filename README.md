@@ -2,7 +2,8 @@
 
 Trading bot with real-time dashboard.
 
-![Dashboard](docs/image.png)
+![Dashboard](docs/screenshots/image.png)
+![Exchange](docs/screenshots/image2.png)
 
 ## Quick Start
 
@@ -20,8 +21,10 @@ pip install -r requirements.txt
 pip install -e .
 
 # 3. Configure
-cp src/trade/config.example.yaml src/trade/config.yaml
-# Edit src/trade/config.yaml as needed
+cp src/config/live.ex.yaml src/config/live.yaml
+cp src/config/backtest.ex.yaml src/config/backtest.yaml
+cp src/config/strategy.ex.yaml src/config/strategy.yaml
+# Edit config files as needed
 
 # 4. Setup environment variables
 # Create .env file with:
@@ -29,14 +32,19 @@ TELEGRAM_TOKEN=your_telegram_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 
 # 5. Run
-python src/trade/run.py
+python -m src.live.run
+
+# Run backtest
+python -m src.backtest.main
 ```
 
 ### Docker
 
 ```bash
 # 1. Prepare config files
-cp src/trade/config.example.yaml src/trade/config.yaml
+cp src/config/live.ex.yaml src/config/live.yaml
+cp src/config/backtest.ex.yaml src/config/backtest.yaml
+cp src/config/strategy.ex.yaml src/config/strategy.yaml
 # Create .env file with TELEGRAM_TOKEN and TELEGRAM_CHAT_ID
 
 # 2. Build and run
@@ -54,19 +62,10 @@ docker-compose down
 
 ## Configuration
 
-Edit `src/trade/config.yaml`:
+Edit `src/config/live.yaml`, `src/config/backtest.yaml`, and `src/config/strategy.yaml`:
 
 ```yaml
-data:
-  currencies:
-    - "BTCUSDT"
-    - "ETHUSDT"
-  candles_limit: 1000
-
-timeframe:
-  value: ["5m", "15m", "30m"]
-  delay_seconds: 2
-  run_on_start: true
+risk_reward_ratio: 2.0
 ```
 
 ## File Structure
@@ -74,6 +73,8 @@ timeframe:
 ```
 Bot_Trade/
 ├── .env                      # Telegram credentials
-├── src/trade/config.yaml     # Trading configuration
+├── src/config/live.yaml      # Live runtime configuration
+├── src/config/backtest.yaml  # Backtest runtime configuration
+├── src/config/strategy.yaml  # Shared strategy configuration
 └── res/logs/                 # Data and output logs
 ```

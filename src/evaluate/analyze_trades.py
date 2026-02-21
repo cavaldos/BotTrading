@@ -66,6 +66,11 @@ class TradeAnalyzer:
         self.trades_df['MonthName'] = self.trades_df['Entry_Time'].dt.strftime('%Y-%m')
         self.trades_df['Date'] = self.trades_df['Entry_Time'].dt.date
         
+        # Normalize timezone: strip tz info to avoid tz-naive vs tz-aware mismatch
+        for col in ['Entry_Time', 'Exit_Time']:
+            if self.trades_df[col].dt.tz is not None:
+                self.trades_df[col] = self.trades_df[col].dt.tz_localize(None)
+
         # Tính toán thời gian giao dịch (phút)
         self.trades_df['Duration_Minutes'] = (
             self.trades_df['Exit_Time'] - self.trades_df['Entry_Time']
@@ -1452,6 +1457,7 @@ class TradeAnalyzer:
         
         # Lưu file
         output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(html_content)
         

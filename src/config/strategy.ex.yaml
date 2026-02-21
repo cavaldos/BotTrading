@@ -1,0 +1,41 @@
+# Shared strategy configuration used by both live and backtest.
+
+# Risk/Reward
+risk_reward_ratio: 2.0
+
+# Structure Detection
+swing_length: 10
+internal_length: 3
+
+# EQH/EQL Detection
+eqhl_length: 3
+eqhl_threshold: 0.3
+
+# Order Block
+ob_mitigation: "close" # "close" or "high_low"
+ob_body_ratio: 0.35
+ob_timeframe: "5m"
+
+# Entry Filters
+require_liquidity: true
+require_reversal_pattern: true
+enable_simple_reversal: true
+simple_reversal_wick_ratio: 0.25
+touch_tolerance_pct: 0.0
+touch_confirmation_bars: 0
+
+# FVG
+fvg_atr_filter: true
+
+# Risk Management
+sl_buffer_pct: 0.1
+sl_multiplier: 1.05
+min_sl_pct: 0.05
+risk_per_trade: 10.0
+reversal_pattern_ids: [0]
+
+# Execution guards / fees
+max_adverse_slippage_pct: 0.0
+entry_fee_rate: 0.00055
+exit_fee_rate_sl: 0.00055
+exit_fee_rate_tp: 0.00055

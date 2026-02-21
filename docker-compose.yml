@@ -17,7 +17,8 @@ services:
     # Mount volumes for config and data persistence
     volumes:
       # Mount config file (read-only)
-      - ./src/trade/config.yaml:/app/src/trade/config.yaml:ro
+      - ./src/config/live.yaml:/app/src/config/live.yaml:ro
+      - ./src/config/strategy.yaml:/app/src/config/strategy.yaml:ro
       # Mount logs directory for data persistence
       - ./res/logs:/app/res/logs
     restart: unless-stopped
