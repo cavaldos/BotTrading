@@ -27,4 +27,8 @@ dashboard:
   refresh_rate: 2       # Refresh rate per second
   max_logs: 10           # Maximum number of logs to display
 
+# Runtime settings
+runtime:
+    reset_state_on_start: false # true only for manual reset/debug runs
+
 # Shared strategy settings are loaded from: src/config/strategy.yaml
