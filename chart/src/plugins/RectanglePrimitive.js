@@ -111,7 +111,8 @@ class RectangleRenderer {
       
       const x = Math.min(startX, endX);
       const y = Math.min(highY, lowY);
-      const width = Math.abs(endX - startX);
+      const minWidth = 40; // Minimum width in pixels so thin trades are still visible
+      const width = Math.max(Math.abs(endX - startX), minWidth);
       const height = Math.abs(lowY - highY);
 
       // Draw filled rectangle
