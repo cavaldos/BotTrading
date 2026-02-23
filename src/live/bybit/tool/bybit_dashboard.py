@@ -615,7 +615,7 @@ class BybitDashboard:
         except Exception:
             pass
         
-        all_records.sort(key=lambda x: int(x.get('createdTime', 0)), reverse=True)
+        all_records.sort(key=lambda x: int(x.get('updatedTime', 0) or x.get('createdTime', 0)), reverse=True)
         return all_records[:limit]
 
     def _create_orders_history_panel(self) -> Panel:
@@ -676,8 +676,8 @@ class BybitDashboard:
                     else:
                         total_loss += closed_pnl
                     
-                    created_time = int(record.get('createdTime', 0))
-                    time_str = datetime.fromtimestamp(created_time / 1000).strftime('%m-%d %H:%M') if created_time else 'N/A'
+                    exit_time = int(record.get('updatedTime', 0) or record.get('createdTime', 0))
+                    time_str = datetime.fromtimestamp(exit_time / 1000).strftime('%m-%d %H:%M') if exit_time else 'N/A'
                     
                     side_color = "green" if side == "BUY" else "red"
                     pnl_color = "green" if closed_pnl >= 0 else "red"
