@@ -327,7 +327,7 @@ def check_and_send_open_orders(
                 order_type=row['Type'],
                 entry_price=float(row['Entry_Price']),
                 stop_loss=float(row['Stop_Loss']),
-                take_profit=None,
+                take_profit=float(row['Take_Profit']) if pd.notna(row.get('Take_Profit')) else None,
                 entry_time=row['Entry_Time'],
                 risk_per_trade=risk_per_trade,
                 signal_timestamp=signal_timestamp,

@@ -1,5 +1,6 @@
 import time
 from datetime import datetime
+from typing import Optional
 
 from src.config import load_strategy_config
 
@@ -14,8 +15,10 @@ from src.live.bybit.limit_order import (
     check_limit_order_status as bybit_check_limit_order_status,
 )
 STRATEGY_CONFIG = load_strategy_config()
-risk_per_trade = STRATEGY_CONFIG.get("risk_per_trade", 5)
-risk_reward_ratio = STRATEGY_CONFIG.get("risk_reward_ratio", 2.0)
+DEFAULT_RISK_PER_TRADE = float(STRATEGY_CONFIG.get("risk_per_trade", 5) or 5)
+DEFAULT_RISK_REWARD_RATIO = float(STRATEGY_CONFIG.get("risk_reward_ratio", 2.0) or 2.0)
+risk_per_trade = DEFAULT_RISK_PER_TRADE
+risk_reward_ratio = DEFAULT_RISK_REWARD_RATIO
 
 
 def place_market_order(
@@ -23,12 +26,12 @@ def place_market_order(
     order_type: str,
     entry_price: float,
     stop_loss: float,
-    take_profit: float,
+    take_profit: Optional[float],
     entry_time: str,
     leverage: int = 20,
-    risk_per_trade: float = risk_per_trade,
-    risk_reward_ratio: float = risk_reward_ratio,
-    signal_timestamp: float = None,
+    risk_per_trade: float = DEFAULT_RISK_PER_TRADE,
+    risk_reward_ratio: float = DEFAULT_RISK_REWARD_RATIO,
+    signal_timestamp: Optional[float] = None,
 ) -> dict:
     order_type = order_type.strip().upper()
     side = 'buy' if order_type in ('BUY', 'LONG') else 'sell'
@@ -67,12 +70,12 @@ def place_limit_order(
     order_type: str,
     entry_price: float,
     stop_loss: float,
-    take_profit: float = None,
-    entry_time: str = None,
+    take_profit: Optional[float] = None,
+    entry_time: Optional[str] = None,
     leverage: int = 20,
-    risk_per_trade: float = risk_per_trade,
-    risk_reward_ratio: float = risk_reward_ratio,
-    signal_timestamp: float = None,
+    risk_per_trade: float = DEFAULT_RISK_PER_TRADE,
+    risk_reward_ratio: float = DEFAULT_RISK_REWARD_RATIO,
+    signal_timestamp: Optional[float] = None,
     time_in_force: str = 'GTC',
 ) -> dict:
     order_type = order_type.strip().upper()
@@ -163,7 +166,8 @@ if __name__ == "__main__":
         risk_per_trade=5,
     )
 
-    if order_result.get('bybit'):
+    bybit_result = order_result.get('bybit')
+    if isinstance(bybit_result, dict):
         print("\n[BYBIT]")
-        print(bybit_format_limit_message(order_result.get('bybit')))
+        print(bybit_format_limit_message(bybit_result))
     

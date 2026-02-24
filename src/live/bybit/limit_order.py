@@ -6,6 +6,7 @@ Handle placing limit orders on Bybit
 """
 
 import time
+from typing import Optional
 
 from src.live.bybit.exchange import (
     get_exchange,
@@ -24,11 +25,11 @@ def validate_and_place_limit_order(
     side: str,
     entry_price: float,
     stop_loss: float,
-    take_profit: float = None,
+    take_profit: Optional[float] = None,
     leverage: int = 20,
     risk_per_trade: float = 5,
     risk_reward_ratio: float = 2.0,
-    signal_timestamp: float = None,
+    signal_timestamp: Optional[float] = None,
     time_in_force: str = 'GTC',
 ) -> dict:
     """
