@@ -9,7 +9,7 @@ Main entry point that:
 Output JSON structure:
 {
     candles, volume, bos, choch, orderBlocks, fvg, eqhEql,
-    imbalance, breakerBlocks, mitigationBlocks, retracement, metadata
+    imbalance, breakerBlocks, mitigationBlocks, retracement, swing, gannSwing, metadata
 }
 
 Usage:
@@ -45,13 +45,21 @@ from src.indicators.retracement import detect_retracements, to_json as retraceme
 
 # Swing indicator
 from src.indicators.swing import detect_swings, to_json as swing_to_json
+from src.indicators.gann_swing import detect_gann_swings, to_json as gann_swing_to_json
 
 
 # ==================== CONFIGURATION ====================
 
-config = load_backtest_config(include_strategy=False)
+config = load_backtest_config(include_strategy=True)
 DATA_DIR = config.get('folder_path', 'res/data')
 OUTPUT_DIR = 'chart/public/data/indicators'
+
+strategy_config = config.get('strategy', {}) if isinstance(config.get('strategy', {}), dict) else {}
+try:
+    gann_length_raw = strategy_config.get('gann_swing_length', strategy_config.get('internal_length', 3))
+    GANN_SWING_LENGTH = max(1, int(gann_length_raw))
+except (TypeError, ValueError):
+    GANN_SWING_LENGTH = 3
 
 COLORS = {
     'bullish_candle': '#26a69a',
@@ -219,6 +227,12 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     results['swing'] = swing_to_json(swings, times=df['Time'].values)
     print(f" {len(swings)} found")
 
+    # 11. Gann Swings (leg-based HH/HL/LH/LL)
+    print(f"    Gann Swing (len={GANN_SWING_LENGTH})...", end='', flush=True)
+    gann_swings = detect_gann_swings(df, length=GANN_SWING_LENGTH)
+    results['gannSwing'] = gann_swing_to_json(gann_swings, times=list(df['Time'].values))
+    print(f" {len(gann_swings)} found")
+
     return results
 
 
@@ -244,6 +258,7 @@ def export_symbol(symbol_info: dict) -> dict:
             'timeframe': symbol_info['timeframe'],
             'id': symbol_info['id'],
             'dataPoints': len(df),
+            'gannSwingLength': GANN_SWING_LENGTH,
             'exportedAt': datetime.now().isoformat(),
         }
     }
@@ -272,6 +287,7 @@ def export_symbol(symbol_info: dict) -> dict:
             'mitigationBlocks': len(indicator_results['mitigationBlocks']),
             'retracement': len(indicator_results['retracement']),
             'swing': len(indicator_results.get('swing', [])),
+            'gannSwing': len(indicator_results.get('gannSwing', [])),
         },
     }
 
@@ -337,6 +353,7 @@ def main():
               f"FVG={ind['fvg']}, EQH/EQL={ind['eqhEql']}")
         print(f"    Imbalance={ind['imbalance']}, Breaker={ind['breakerBlocks']}, "
               f"Mitigation={ind['mitigationBlocks']}, Retracement={ind['retracement']}")
+        print(f"    Swing={ind.get('swing', 0)}, GannSwing={ind.get('gannSwing', 0)}")
     print(f"\nOutput directory: {OUTPUT_DIR}/")
 
 

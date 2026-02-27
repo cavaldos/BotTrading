@@ -257,7 +257,9 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             'total_rr': 0.0,
             'rr_count': 0,
             'longest_win_streak': 0,
-            'longest_loss_streak': 0
+            'longest_loss_streak': 0,
+            'avg_win_streak': 0.0,
+            'avg_loss_streak': 0.0
         }
     
     wins = [t for t in trades if t.result == 'WIN']
@@ -290,16 +292,36 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
     longest_loss_streak = 0
     current_win_streak = 0
     current_loss_streak = 0
+    win_streaks = []
+    loss_streaks = []
     
     for trade in trades:
         if trade.result == 'WIN':
             current_win_streak += 1
-            current_loss_streak = 0
+            if current_loss_streak > 0:
+                loss_streaks.append(current_loss_streak)
+                current_loss_streak = 0
             longest_win_streak = max(longest_win_streak, current_win_streak)
         elif trade.result == 'LOSS':
+            if current_win_streak > 0:
+                win_streaks.append(current_win_streak)
+                current_win_streak = 0
             current_loss_streak += 1
-            current_win_streak = 0
             longest_loss_streak = max(longest_loss_streak, current_loss_streak)
+        else:
+            if current_win_streak > 0:
+                win_streaks.append(current_win_streak)
+                current_win_streak = 0
+            if current_loss_streak > 0:
+                loss_streaks.append(current_loss_streak)
+                current_loss_streak = 0
+    if current_win_streak > 0:
+        win_streaks.append(current_win_streak)
+    if current_loss_streak > 0:
+        loss_streaks.append(current_loss_streak)
+
+    avg_win_streak = sum(win_streaks) / len(win_streaks) if win_streaks else 0
+    avg_loss_streak = sum(loss_streaks) / len(loss_streaks) if loss_streaks else 0
     
     return {
         'symbol': symbol,
@@ -314,7 +336,9 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         'total_rr': total_rr,
         'rr_count': len(rr_values),
         'longest_win_streak': longest_win_streak,
-        'longest_loss_streak': longest_loss_streak
+        'longest_loss_streak': longest_loss_streak,
+        'avg_win_streak': round(avg_win_streak, 2),
+        'avg_loss_streak': round(avg_loss_streak, 2)
     }
 
 
@@ -361,10 +385,10 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     lines = [
         "",
         f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
-        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
-            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "%SL", "RR", "SLM", "ROE", "W-S", "L-S"
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "%SL", "RR", "SLM", "ROE", "W-S", "L-S", "W-AVG", "L-AVG"
         ),
-        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->8}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|".format("", "", "", "", "", "", "", "", "", "", "", ""),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->8}|{:->6}|{:->7}|{:->8}|{:->6}|{:->6}|{:->7}|{:->7}|".format("", "", "", "", "", "", "", "", "", "", "", "", "", ""),
     ]
     
     # Add results grouped by timeframe
@@ -372,7 +396,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         for summary in timeframe_groups[timeframe]:
             # ROE = (Sum RR Wins) - Losses
             roe = summary['total_rr_wins'] - summary['losses']
-            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
                 summary['symbol'],
                 summary['total_trades'],
                 summary['wins'],
@@ -384,7 +408,9 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
                 f"{sl_multiplier}",
                 f"{round(roe, 2)}",
                 summary['longest_win_streak'],
-                summary['longest_loss_streak']
+                summary['longest_loss_streak'],
+                summary['avg_win_streak'],
+                summary['avg_loss_streak']
             )
             lines.append(row)
     
@@ -395,15 +421,23 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # Calculate overall streaks and average SL percent
     overall_longest_win_streak = 0
     overall_longest_loss_streak = 0
+    overall_avg_win_streaks = []
+    overall_avg_loss_streaks = []
     all_sl_percents = []
     for summary in all_summaries:
         overall_longest_win_streak = max(overall_longest_win_streak, summary['longest_win_streak'])
         overall_longest_loss_streak = max(overall_longest_loss_streak, summary['longest_loss_streak'])
         if summary['avg_sl_percent'] > 0:
             all_sl_percents.append(summary['avg_sl_percent'])
+        if summary['avg_win_streak'] > 0:
+            overall_avg_win_streaks.append(summary['avg_win_streak'])
+        if summary['avg_loss_streak'] > 0:
+            overall_avg_loss_streaks.append(summary['avg_loss_streak'])
     overall_avg_sl_percent = sum(all_sl_percents) / len(all_sl_percents) if all_sl_percents else 0
+    overall_avg_win_streak = sum(overall_avg_win_streaks) / len(overall_avg_win_streaks) if overall_avg_win_streaks else 0
+    overall_avg_loss_streak = sum(overall_avg_loss_streaks) / len(overall_avg_loss_streaks) if overall_avg_loss_streaks else 0
     
-    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} |".format(
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
         "**TOTAL**",
         total_trades,
         total_wins,
@@ -415,7 +449,9 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         f"{sl_multiplier}",
         f"{round(overall_roe, 2)}",
         overall_longest_win_streak,
-        overall_longest_loss_streak
+        overall_longest_loss_streak,
+        round(overall_avg_win_streak, 2),
+        round(overall_avg_loss_streak, 2)
     )
     lines.append(total_row)
     lines.append("")
@@ -450,6 +486,7 @@ def print_quick_stats(summary: Dict) -> None:
     print(f"  - Wins: {summary['wins']}, Losses: {summary['losses']}, Open: {summary['open_trades']}")
     print(f"  - Win Rate: {summary['win_rate']}%")
     print(f"  - Longest Win Streak: {summary['longest_win_streak']}, Longest Loss Streak: {summary['longest_loss_streak']}")
+    print(f"  - Avg Win Streak: {summary['avg_win_streak']}, Avg Loss Streak: {summary['avg_loss_streak']}")
 
 
 def print_final_summary(all_trades: List[Trade]) -> None:
@@ -466,24 +503,48 @@ def print_final_summary(all_trades: List[Trade]) -> None:
         overall_wr = (wins / closed_trades * 100) if closed_trades > 0 else 0
         print(f"Wins: {wins}, Losses: {losses}, Open: {open_trades}")
         print(f"Overall win rate: {round(overall_wr, 2)}%")
+        total_rr_wins = sum(t.rr_ratio for t in all_trades if t.result == 'WIN' and t.rr_ratio is not None)
+        overall_roe = total_rr_wins - losses
+        print(f"ROE (total symbols): {round(overall_roe, 2)}")
         
         # Calculate streaks
         longest_win_streak = 0
         longest_loss_streak = 0
         current_win_streak = 0
         current_loss_streak = 0
+        win_streaks = []
+        loss_streaks = []
         
         for trade in all_trades:
             if trade.result == 'WIN':
                 current_win_streak += 1
-                current_loss_streak = 0
+                if current_loss_streak > 0:
+                    loss_streaks.append(current_loss_streak)
+                    current_loss_streak = 0
                 longest_win_streak = max(longest_win_streak, current_win_streak)
             elif trade.result == 'LOSS':
+                if current_win_streak > 0:
+                    win_streaks.append(current_win_streak)
+                    current_win_streak = 0
                 current_loss_streak += 1
-                current_win_streak = 0
                 longest_loss_streak = max(longest_loss_streak, current_loss_streak)
+            else:
+                if current_win_streak > 0:
+                    win_streaks.append(current_win_streak)
+                    current_win_streak = 0
+                if current_loss_streak > 0:
+                    loss_streaks.append(current_loss_streak)
+                    current_loss_streak = 0
+        if current_win_streak > 0:
+            win_streaks.append(current_win_streak)
+        if current_loss_streak > 0:
+            loss_streaks.append(current_loss_streak)
+        avg_win_streak = sum(win_streaks) / len(win_streaks) if win_streaks else 0
+        avg_loss_streak = sum(loss_streaks) / len(loss_streaks) if loss_streaks else 0
         
         print(f"Longest win streak: {longest_win_streak}")
         print(f"Longest loss streak: {longest_loss_streak}")
+        print(f"Average win streak: {round(avg_win_streak, 2)}")
+        print(f"Average loss streak: {round(avg_loss_streak, 2)}")
     
     print("=" * 60)

@@ -15,6 +15,7 @@ const DEFAULT_VISIBILITY = {
   mitigationBlocks: false,
   retracement: false,
   swing: true,
+  gannSwing: false,
 };
 
 const FULL_SCREEN_APP_STYLE = {
@@ -163,6 +164,7 @@ function IndicatorPage() {
         return latestSwingTime <= cutoffTime;
       }),
       swing: (data.swing || []).filter(item => item.time <= cutoffTime),
+      gannSwing: (data.gannSwing || []).filter(item => item.time <= cutoffTime),
     };
   }, [data, backtestMode, backtestIndex]);
 
@@ -179,6 +181,7 @@ function IndicatorPage() {
       mitigationBlocks: visibleData.mitigationBlocks?.length || 0,
       retracement: visibleData.retracement?.length || 0,
       swing: visibleData.swing?.length || 0,
+      gannSwing: visibleData.gannSwing?.length || 0,
     };
   }, [backtestMode, visibleData, indicatorCounts]);
 

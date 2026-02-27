@@ -13,6 +13,7 @@ export class LinePrimitive {
       startTime: options.startTime,
       endTime: options.endTime,
       price: options.price,
+      endPrice: options.endPrice ?? options.price,
       color: options.color || 'rgba(255, 255, 255, 0.5)',
       lineWidth: options.lineWidth || 1,
       lineStyle: options.lineStyle || 'solid', // 'solid', 'dashed', 'dotted'
@@ -20,6 +21,7 @@ export class LinePrimitive {
       labelPosition: options.labelPosition || 'center', // 'left', 'center', 'right'
       labelColor: options.labelColor || null, // defaults to line color
       labelSize: options.labelSize || 10,
+      zOrder: options.zOrder || 'bottom',
     };
     this._chart = null;
     this._series = null;
@@ -66,7 +68,7 @@ class LinePaneView {
   }
 
   zOrder() {
-    return 'bottom';
+    return this._source.getOptions().zOrder;
   }
 }
 
@@ -89,8 +91,9 @@ class LineRenderer {
 
     if (startX === null || endX === null) return;
 
-    const y = series.priceToCoordinate(options.price);
-    if (y === null) return;
+    const startY = series.priceToCoordinate(options.price);
+    const endY = series.priceToCoordinate(options.endPrice ?? options.price);
+    if (startY === null || endY === null) return;
 
     target.useMediaCoordinateSpace(scope => {
       const ctx = scope.context;
@@ -109,8 +112,8 @@ class LineRenderer {
 
       // Draw line
       ctx.beginPath();
-      ctx.moveTo(startX, y);
-      ctx.lineTo(endX, y);
+      ctx.moveTo(startX, startY);
+      ctx.lineTo(endX, endY);
       ctx.stroke();
       ctx.setLineDash([]);
 
@@ -123,21 +126,23 @@ class LineRenderer {
 
         const textWidth = ctx.measureText(options.label).width;
         let labelX;
+        let labelY;
 
         switch (options.labelPosition) {
           case 'left':
             labelX = Math.min(startX, endX) + 4;
+            labelY = startY - 4;
             break;
           case 'right':
             labelX = Math.max(startX, endX) - textWidth - 4;
+            labelY = endY - 4;
             break;
           case 'center':
           default:
             labelX = (startX + endX) / 2 - textWidth / 2;
+            labelY = (startY + endY) / 2 - 4;
             break;
         }
-
-        const labelY = y - 4;
 
         // Text shadow for readability
         ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
@@ -191,6 +196,29 @@ export function createEqhEqlLine(item) {
     label: item.type,
     labelPosition: 'center',
     labelSize: 8,
+  });
+}
+
+/**
+ * Create one zigzag segment between two swing points.
+ * @param {Object} from - Swing point {time, price}
+ * @param {Object} to - Swing point {time, price}
+ * @param {Object} options - Optional segment style
+ * @returns {LinePrimitive}
+ */
+export function createSwingSegmentLine(from, to, options = {}) {
+  return new LinePrimitive({
+    startTime: from.time,
+    endTime: to.time,
+    price: from.price,
+    endPrice: to.price,
+    color: options.color || '#ffb300',
+    lineWidth: options.lineWidth || 2,
+    lineStyle: options.lineStyle || 'solid',
+    label: options.label || null,
+    labelPosition: options.labelPosition || 'center',
+    labelSize: options.labelSize || 8,
+    zOrder: options.zOrder || 'top',
   });
 }
 

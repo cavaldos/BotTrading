@@ -18,6 +18,7 @@ const DEFAULT_VISIBILITY = {
   mitigationBlocks: false,
   retracement: false,
   swing: true,
+  gannSwing: false,
 };
 
 function CombinePage() {

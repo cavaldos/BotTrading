@@ -1,7 +1,7 @@
 import { useEffect, useRef, useMemo, useImperativeHandle, forwardRef, useState, useCallback } from 'react';
 import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
 import { RectanglePrimitive } from '../plugins/RectanglePrimitive';
-import { createStructureLine, createEqhEqlLine } from '../plugins/LinePrimitive';
+import { createStructureLine, createEqhEqlLine, createSwingSegmentLine } from '../plugins/LinePrimitive';
 import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 
@@ -471,6 +471,54 @@ const IndicatorChart = forwardRef(function IndicatorChart({
           labelColor: s.isHigh ? '#ff5252' : '#00bfa5',
         }));
       });
+    }
+
+    // --- Gann Swings (zigzag line through swing pivots) ---
+    if (visibility.gannSwing && data.gannSwing?.length > 0) {
+      const items = data.gannSwing
+        .slice(-1200)
+        .filter(s => Number.isFinite(s?.time) && Number.isFinite(s?.price))
+        .sort((a, b) => a.time - b.time);
+
+      for (let i = 1; i < items.length; i += 1) {
+        newPrimitives.push(createSwingSegmentLine(items[i - 1], items[i], {
+          color: '#ffb300',
+          lineWidth: 3,
+          zOrder: 'top',
+        }));
+      }
+
+      // Extend last confirmed swing to current bar extreme (active leg)
+      const lastSwing = items[items.length - 1];
+      const latestCandle = candles?.[candles.length - 1];
+      if (
+        lastSwing
+        && latestCandle
+        && Number.isFinite(latestCandle.time)
+        && latestCandle.time > lastSwing.time
+      ) {
+        let projectedPrice = Number(lastSwing.price);
+        for (let i = candles.length - 1; i >= 0; i -= 1) {
+          const c = candles[i];
+          if (!c || !Number.isFinite(c.time) || c.time < lastSwing.time) break;
+          if (lastSwing.isHigh) {
+            if (Number.isFinite(c.low) && c.low < projectedPrice) projectedPrice = c.low;
+          } else if (Number.isFinite(c.high) && c.high > projectedPrice) {
+            projectedPrice = c.high;
+          }
+        }
+
+        if (Number.isFinite(projectedPrice) && projectedPrice !== lastSwing.price) {
+          newPrimitives.push(createSwingSegmentLine(lastSwing, {
+            time: latestCandle.time,
+            price: projectedPrice,
+          }, {
+            color: '#ffb300',
+            lineWidth: 3,
+            zOrder: 'top',
+          }));
+        }
+      }
     }
 
     // Attach all primitives

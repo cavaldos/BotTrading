@@ -73,6 +73,13 @@ const INDICATOR_CONFIG = [
     color: 'rgba(255, 82, 82, 0.9)',
     type: 'marker',
   },
+  {
+    key: 'gannSwing',
+    label: 'Gann',
+    description: 'Gann swing pivots (HH/HL/LH/LL)',
+    color: 'rgba(255, 193, 7, 0.9)',
+    type: 'line',
+  },
 ];
 
 function IndicatorToggle({ visibility, onToggle, counts = {} }) {

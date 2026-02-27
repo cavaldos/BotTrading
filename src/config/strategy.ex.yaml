@@ -6,6 +6,7 @@ risk_reward_ratio: 2.0
 # Structure Detection
 swing_length: 10
 internal_length: 3
+gann_swing_length: 3
 
 # EQH/EQL Detection
 eqhl_length: 3
