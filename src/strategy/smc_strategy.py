@@ -84,6 +84,7 @@ class Config(BaseConfig):
     simple_reversal_wick_ratio: float = 0.25  # Min wick/range ratio for simple reversal
     touch_tolerance_pct: float = 0.0    # OB touch tolerance as % of OB range
     touch_confirmation_bars: int = 0    # Allow entry within N bars after first touch (0 = same bar only)
+    entry_on_candle_close: bool = False # If True, execute at signal candle close instead of intrabar OB overlap
     
     # === FVG ===
     fvg_atr_filter: bool = True     # (kept for compatibility; logic removed from strategy)
@@ -112,6 +113,7 @@ class Config(BaseConfig):
             "simple_reversal_wick_ratio": self.simple_reversal_wick_ratio,
             "touch_tolerance_pct": self.touch_tolerance_pct,
             "touch_confirmation_bars": self.touch_confirmation_bars,
+            "entry_on_candle_close": self.entry_on_candle_close,
             "sl_buffer_pct": self.sl_buffer_pct,
             "sl_multiplier": self.sl_multiplier,
             "min_sl_pct": self.min_sl_pct,
@@ -371,6 +373,7 @@ class Strategy(BaseStrategy):
                             entry_time=current_time,
                             current_high=highs[i],
                             current_low=lows[i],
+                            current_close=closes[i],
                             previous_close=closes[i - 1] if i > 0 else closes[i],
                         )
                         if signal:
@@ -484,30 +487,33 @@ class Strategy(BaseStrategy):
         return min(max(reference_price, overlap_low), overlap_high)
     
     def _create_signal(self, symbol: str, ob: StrategyOrderBlock, entry_time: datetime,
-                       current_high: float, current_low: float,
+                       current_high: float, current_low: float, current_close: float,
                        previous_close: float) -> Optional[Signal]:
         """
         Create a trade signal with SL and TP.
         
         LONG:
-        - Entry: When price touches OB zone
+        - Entry: Candle close (if entry_on_candle_close=True) or OB overlap price
         - SL: Below OB low with buffer
         - TP: Entry + (Entry - SL) * RR
         
         SHORT:
-        - Entry: When price touches OB zone
+        - Entry: Candle close (if entry_on_candle_close=True) or OB overlap price
         - SL: Above OB high with buffer
         - TP: Entry - (SL - Entry) * RR
         """
         ob_range = ob.high - ob.low
         buffer = ob_range * self.config.sl_buffer_pct
 
-        entry = self._select_entry_price(
-            ob=ob,
-            current_high=current_high,
-            current_low=current_low,
-            previous_close=previous_close,
-        )
+        if self.config.entry_on_candle_close:
+            entry = current_close if np.isfinite(current_close) else None
+        else:
+            entry = self._select_entry_price(
+                ob=ob,
+                current_high=current_high,
+                current_low=current_low,
+                previous_close=previous_close,
+            )
         if entry is None:
             return None
         

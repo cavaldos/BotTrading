@@ -27,6 +27,7 @@ class BaseConfig:
     simple_reversal_wick_ratio: float = 0.25
     touch_tolerance_pct: float = 0.0
     touch_confirmation_bars: int = 0
+    entry_on_candle_close: bool = False
 
     fvg_atr_filter: bool = True
 

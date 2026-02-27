@@ -63,6 +63,7 @@ DEFAULT_ENABLE_SIMPLE_REVERSAL = True
 DEFAULT_SIMPLE_REVERSAL_WICK_RATIO = 0.25
 DEFAULT_TOUCH_TOLERANCE_PCT = 0.0
 DEFAULT_TOUCH_CONFIRMATION_BARS = 0
+DEFAULT_ENTRY_ON_CANDLE_CLOSE = True
 # FVG
 DEFAULT_FVG_ATR_FILTER = True
 # Risk Management
@@ -116,6 +117,7 @@ def create_config() -> Config:
          "simple_reversal_wick_ratio": DEFAULT_SIMPLE_REVERSAL_WICK_RATIO,
          "touch_tolerance_pct": DEFAULT_TOUCH_TOLERANCE_PCT,
          "touch_confirmation_bars": DEFAULT_TOUCH_CONFIRMATION_BARS,
+         "entry_on_candle_close": DEFAULT_ENTRY_ON_CANDLE_CLOSE,
          "fvg_atr_filter": DEFAULT_FVG_ATR_FILTER,
          "sl_buffer_pct": DEFAULT_SL_BUFFER_PCT,
          "sl_multiplier": DEFAULT_SL_MULTIPLIER,
