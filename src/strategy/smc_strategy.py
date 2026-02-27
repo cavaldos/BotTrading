@@ -34,12 +34,9 @@ Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL detection
 
 import pandas as pd
 import numpy as np
-import json
-import hashlib
 from datetime import datetime
-from pathlib import Path
-from typing import List, Optional, Any, Dict
-from dataclasses import dataclass, field, asdict
+from typing import List, Optional, Any
+from dataclasses import dataclass, field
 from numba import njit
 
 from src.strategy.base_strategy import BaseConfig, BaseSignal, BaseStrategy
@@ -55,9 +52,6 @@ from src.indicators.eqh_eql import detect_eqh_eql, EqualHL as IndicatorEqualHL
 
 # ==================== STRATEGY NAME ====================
 STRATEGY_NAME = "SMC"
-STATE_CACHE_SCHEMA_VERSION = 1
-STATE_CACHE_LOGIC_VERSION = "smc_resume_v2"
-DEFAULT_STATE_CACHE_DIR = "res/cache/smc_strategy"
 
 
 # ==================== CONFIGURATION ====================
@@ -156,7 +150,7 @@ class Signal(BaseSignal):
 
 # ==================== NUMBA JIT HELPER ====================
 
-@njit(cache=True)
+@njit
 def _check_trending_candle_jit(opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
                                lows: np.ndarray, candle_idx: int, body_ratio_threshold: float) -> bool:
     """
@@ -184,69 +178,6 @@ class Strategy(BaseStrategy):
     def __init__(self, config: Config):
         super().__init__(config)
 
-    def _state_cache_enabled(self) -> bool:
-        """Allow disabling cache via legacy or new config key."""
-        enabled = getattr(self.config, "enable_state_cache", None)
-        if enabled is None:
-            enabled = getattr(self.config, "enable_indicator_cache", True)
-        return bool(enabled)
-
-    def _state_cache_dir(self) -> Path:
-        cache_dir = getattr(self.config, "state_cache_dir", None)
-        if not cache_dir:
-            cache_dir = getattr(self.config, "indicator_cache_dir", DEFAULT_STATE_CACHE_DIR)
-        cache_dir = str(cache_dir).strip()
-        return Path(cache_dir or DEFAULT_STATE_CACHE_DIR)
-
-    def _state_cache_path(self, symbol: str, config_hash: str) -> Path:
-        safe_symbol = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in symbol)
-        return self._state_cache_dir() / f"{safe_symbol}_{config_hash[:16]}.json"
-
-    def _state_config_hash(self) -> str:
-        """Hash only logic-impacting config, not IO paths/cache settings."""
-        config_payload = asdict(self.config)
-        for key in (
-            "data_folder",
-            "output_folder",
-            "enable_state_cache",
-            "state_cache_dir",
-            "enable_indicator_cache",
-            "indicator_cache_dir",
-            "indicator_cache_lookback_bars",
-        ):
-            config_payload.pop(key, None)
-
-        payload = {
-            "strategy": STRATEGY_NAME,
-            "logic_version": STATE_CACHE_LOGIC_VERSION,
-            "config": config_payload,
-        }
-        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-    def _prefix_digest(self, times: Any, opens: np.ndarray, highs: np.ndarray,
-                       lows: np.ndarray, closes: np.ndarray, end_index: int) -> str:
-        """Digest of candles [0..end_index] to ensure cache resume is safe."""
-        if end_index < 0:
-            return ""
-
-        end = end_index + 1
-        time_ns = np.asarray(pd.to_datetime(times[:end], utc=True).astype("int64"), dtype=np.int64)
-
-        hasher = hashlib.sha256()
-        hasher.update(time_ns.tobytes())
-        hasher.update(np.ascontiguousarray(opens[:end], dtype=np.float64).tobytes())
-        hasher.update(np.ascontiguousarray(highs[:end], dtype=np.float64).tobytes())
-        hasher.update(np.ascontiguousarray(lows[:end], dtype=np.float64).tobytes())
-        hasher.update(np.ascontiguousarray(closes[:end], dtype=np.float64).tobytes())
-        return hasher.hexdigest()
-
-    def _time_to_iso(self, value: Any) -> str:
-        ts = pd.Timestamp(value)
-        if isinstance(ts, pd.Timestamp):
-            return ts.isoformat()
-        return ""
-
     def _parse_datetime(self, value: Any) -> Optional[datetime]:
         ts = pd.Timestamp(value)
         if ts is pd.NaT:
@@ -255,116 +186,6 @@ class Strategy(BaseStrategy):
         if isinstance(parsed, datetime):
             return parsed
         return None
-
-    def _float_matches(self, left: Any, right: Any) -> bool:
-        try:
-            return bool(np.isclose(float(left), float(right), rtol=0.0, atol=1e-12))
-        except Exception:
-            return False
-
-    def _anchor_matches(self, anchor: Dict[str, Any], time_value: Any,
-                        open_value: float, high_value: float, low_value: float,
-                        close_value: float) -> bool:
-        if not isinstance(anchor, dict):
-            return False
-        if anchor.get("time") != self._time_to_iso(time_value):
-            return False
-        return (
-            self._float_matches(anchor.get("open"), open_value)
-            and self._float_matches(anchor.get("high"), high_value)
-            and self._float_matches(anchor.get("low"), low_value)
-            and self._float_matches(anchor.get("close"), close_value)
-        )
-
-    def _load_state_cache(self, cache_path: Path) -> Optional[Dict[str, Any]]:
-        if not cache_path.exists():
-            return None
-        try:
-            with open(cache_path, "r", encoding="utf-8") as cache_file:
-                data = json.load(cache_file)
-            if isinstance(data, dict):
-                return data
-        except Exception:
-            return None
-        return None
-
-    def _save_state_cache(self, cache_path: Path, payload: Dict[str, Any]) -> None:
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
-        try:
-            with open(temp_path, "w", encoding="utf-8") as cache_file:
-                json.dump(payload, cache_file, ensure_ascii=True, separators=(",", ":"))
-            temp_path.replace(cache_path)
-        except Exception:
-            try:
-                if temp_path.exists():
-                    temp_path.unlink()
-            except Exception:
-                pass
-
-    def _serialize_signal(self, signal: Signal) -> Dict[str, Any]:
-        return {
-            "symbol": signal.symbol,
-            "trade_type": signal.trade_type,
-            "entry_time": self._time_to_iso(signal.entry_time),
-            "entry_price": float(signal.entry_price),
-            "stop_loss": float(signal.stop_loss),
-            "take_profit": float(signal.take_profit),
-        }
-
-    def _deserialize_signal(self, payload: Dict[str, Any]) -> Optional[Signal]:
-        try:
-            entry_time = self._parse_datetime(payload.get("entry_time"))
-            if entry_time is None:
-                return None
-            return Signal(
-                symbol=str(payload["symbol"]),
-                trade_type=str(payload["trade_type"]),
-                entry_time=entry_time,
-                entry_price=float(payload["entry_price"]),
-                stop_loss=float(payload["stop_loss"]),
-                take_profit=float(payload["take_profit"]),
-            )
-        except Exception:
-            return None
-
-    def _serialize_ob(self, ob: StrategyOrderBlock) -> Dict[str, Any]:
-        return {
-            "high": float(ob.high),
-            "low": float(ob.low),
-            "time": self._time_to_iso(ob.time),
-            "index": int(ob.index),
-            "bias": ob.bias,
-            "structure_type": ob.structure_type,
-            "break_index": int(ob.break_index),
-            "is_mitigated": bool(ob.is_mitigated),
-            "has_liquidity": bool(ob.has_liquidity),
-            "liquidity_confirmed_index": int(ob.liquidity_confirmed_index),
-            "entry_triggered": bool(ob.entry_triggered),
-            "last_touch_index": int(ob.last_touch_index),
-        }
-
-    def _deserialize_ob(self, payload: Dict[str, Any]) -> Optional[StrategyOrderBlock]:
-        try:
-            ob_time = self._parse_datetime(payload.get("time"))
-            if ob_time is None:
-                return None
-            return StrategyOrderBlock(
-                high=float(payload["high"]),
-                low=float(payload["low"]),
-                time=ob_time,
-                index=int(payload["index"]),
-                bias=str(payload["bias"]),
-                structure_type=str(payload.get("structure_type", "BOS")),
-                break_index=int(payload["break_index"]),
-                is_mitigated=bool(payload.get("is_mitigated", False)),
-                has_liquidity=bool(payload.get("has_liquidity", False)),
-                liquidity_confirmed_index=int(payload.get("liquidity_confirmed_index", -1)),
-                entry_triggered=bool(payload.get("entry_triggered", False)),
-                last_touch_index=int(payload.get("last_touch_index", -1)),
-            )
-        except Exception:
-            return None
 
     def _deduplicate_signals(self, signals: List[Signal]) -> List[Signal]:
         seen_keys = set()
@@ -404,69 +225,6 @@ class Strategy(BaseStrategy):
 
         if n == 0:
             return []
-
-        start_index = 0
-        active_obs_seed: List[StrategyOrderBlock] = []
-        cache_path: Optional[Path] = None
-        config_hash = ""
-
-        if self._state_cache_enabled():
-            config_hash = self._state_config_hash()
-            cache_path = self._state_cache_path(symbol, config_hash)
-            cache_payload = self._load_state_cache(cache_path)
-
-            if cache_payload is not None:
-                cache_compatible = (
-                    cache_payload.get("schema_version") == STATE_CACHE_SCHEMA_VERSION
-                    and cache_payload.get("logic_version") == STATE_CACHE_LOGIC_VERSION
-                    and cache_payload.get("symbol") == symbol
-                    and cache_payload.get("config_hash") == config_hash
-                )
-
-                if cache_compatible:
-                    try:
-                        cached_last_index = int(cache_payload.get("last_processed_index", -1))
-                    except Exception:
-                        cached_last_index = -2
-
-                    if cached_last_index == -1:
-                        start_index = 0
-
-                    elif 0 <= cached_last_index < n:
-                        anchor_ok = self._anchor_matches(
-                            cache_payload.get("anchor", {}),
-                            times[cached_last_index],
-                            opens[cached_last_index],
-                            highs[cached_last_index],
-                            lows[cached_last_index],
-                            closes[cached_last_index],
-                        )
-
-                        prefix_ok = False
-                        if anchor_ok:
-                            cached_digest = str(cache_payload.get("prefix_digest", ""))
-                            if cached_digest:
-                                current_digest = self._prefix_digest(
-                                    times, opens, highs, lows, closes, cached_last_index
-                                )
-                                prefix_ok = current_digest == cached_digest
-                            else:
-                                prefix_ok = True
-
-                        if anchor_ok and prefix_ok:
-                            for item in cache_payload.get("signals", []):
-                                signal = self._deserialize_signal(item)
-                                if signal is not None:
-                                    signals.append(signal)
-                            for item in cache_payload.get("active_obs", []):
-                                ob = self._deserialize_ob(item)
-                                if ob is not None:
-                                    active_obs_seed.append(ob)
-
-                            start_index = cached_last_index + 1
-
-                            if start_index >= n:
-                                return self._deduplicate_signals(signals)
         
         # ========== 1. PRE-COMPUTE INDICATORS ==========
         mitigation_mode = 'CLOSE' if self.config.ob_mitigation == 'close' else 'HIGHLOW'
@@ -539,9 +297,9 @@ class Strategy(BaseStrategy):
             eqhl_by_confirm.setdefault(ci, []).append(eqhl)
 
         # ========== 3. CAUSAL BAR-BY-BAR LOOP ==========
-        active_obs: List[StrategyOrderBlock] = list(active_obs_seed)
-        
-        for i in range(start_index, n):
+        active_obs: List[StrategyOrderBlock] = []
+
+        for i in range(n):
             current_time = self._parse_datetime(times[i])
             if current_time is None:
                 continue
@@ -625,35 +383,6 @@ class Strategy(BaseStrategy):
         
         # ========== 4. DEDUPLICATE SIGNALS ==========
         signals = self._deduplicate_signals(signals)
-
-        # ========== 5. SAVE RESUME CACHE ==========
-        if self._state_cache_enabled() and cache_path is not None:
-            last_index = n - 1
-            cache_payload = {
-                "schema_version": STATE_CACHE_SCHEMA_VERSION,
-                "logic_version": STATE_CACHE_LOGIC_VERSION,
-                "strategy": STRATEGY_NAME,
-                "symbol": symbol,
-                "config_hash": config_hash,
-                "last_processed_index": last_index,
-                "signals": [self._serialize_signal(signal) for signal in signals],
-                "active_obs": [self._serialize_ob(ob) for ob in active_obs],
-                "saved_at": datetime.utcnow().isoformat(),
-            }
-
-            if last_index >= 0:
-                cache_payload["anchor"] = {
-                    "time": self._time_to_iso(times[last_index]),
-                    "open": float(opens[last_index]),
-                    "high": float(highs[last_index]),
-                    "low": float(lows[last_index]),
-                    "close": float(closes[last_index]),
-                }
-                cache_payload["prefix_digest"] = self._prefix_digest(
-                    times, opens, highs, lows, closes, last_index
-                )
-
-            self._save_state_cache(cache_path, cache_payload)
 
         return signals
 
