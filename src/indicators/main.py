@@ -210,7 +210,7 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     # 9. Retracement
     print("    Retracement...", end='', flush=True)
     ret_list = detect_retracements(df)
-    results['retracement'] = retracement_to_json(ret_list)
+    results['retracement'] = retracement_to_json(ret_list, times=df['Time'].values)
     print(f" {len(ret_list)} found")
 
     # 10. Swings (HH/HL/LH/LL)

@@ -340,14 +340,25 @@ def detect_retracements(df: pd.DataFrame, swing_length: int = 10,
 
 # ==================== JSON EXPORT ====================
 
-def to_json(retracements: List[Retracement]) -> List[dict]:
+def to_json(retracements: List[Retracement], times: np.ndarray = None) -> List[dict]:
     """
     Convert Retracement list to JSON-serializable format for client display.
     
     Format compatible with TradingView lightweight-charts.
+    If `times` is provided (same array as candle Time), swing times are
+    computed with the same conversion as candle export for exact alignment.
     """
     result = []
     for ret in retracements:
+        if times is not None and len(times) > 0:
+            shi = int(ret.swing_high_index)
+            sli = int(ret.swing_low_index)
+            swing_high_ts = int(pd.Timestamp(times[shi]).timestamp()) if shi < len(times) else int(ret.swing_high_time.timestamp())
+            swing_low_ts = int(pd.Timestamp(times[sli]).timestamp()) if sli < len(times) else int(ret.swing_low_time.timestamp())
+        else:
+            swing_high_ts = int(ret.swing_high_time.timestamp())
+            swing_low_ts = int(ret.swing_low_time.timestamp())
+
         levels_json = []
         for lvl in ret.levels:
             levels_json.append({
@@ -370,8 +381,8 @@ def to_json(retracements: List[Retracement]) -> List[dict]:
         result.append({
             'swingHigh': ret.swing_high,
             'swingLow': ret.swing_low,
-            'swingHighTime': int(ret.swing_high_time.timestamp()),
-            'swingLowTime': int(ret.swing_low_time.timestamp()),
+            'swingHighTime': swing_high_ts,
+            'swingLowTime': swing_low_ts,
             'swingHighIndex': ret.swing_high_index,
             'swingLowIndex': ret.swing_low_index,
             'direction': ret.direction,
