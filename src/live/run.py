@@ -109,32 +109,7 @@ if FETCH_INTERVAL <= 0:
 REFRESH_RATE = CONFIG["dashboard"]["refresh_rate"]
 MAX_LOGS = CONFIG["dashboard"]["max_logs"]
 
-# Strategy settings
-RISK_REWARD_RATIO = STRATEGY_CONFIG.get("risk_reward_ratio", 2.0)
-# Structure Detection
-SWING_LENGTH = STRATEGY_CONFIG.get("swing_length", 10)
-INTERNAL_LENGTH = STRATEGY_CONFIG.get("internal_length", 3)
-# EQH/EQL Detection
-EQHL_LENGTH = STRATEGY_CONFIG.get("eqhl_length", 3)
-EQHL_THRESHOLD = STRATEGY_CONFIG.get("eqhl_threshold", 0.3)
-# Order Block
-OB_MITIGATION = STRATEGY_CONFIG.get("ob_mitigation", "high_low")
-OB_BODY_RATIO = STRATEGY_CONFIG.get("ob_body_ratio", 0.35)
-# Entry filters
-REQUIRE_LIQUIDITY = STRATEGY_CONFIG.get("require_liquidity", True)
-REQUIRE_REVERSAL_PATTERN = STRATEGY_CONFIG.get("require_reversal_pattern", True)
-ENABLE_SIMPLE_REVERSAL = STRATEGY_CONFIG.get("enable_simple_reversal", True)
-SIMPLE_REVERSAL_WICK_RATIO = STRATEGY_CONFIG.get("simple_reversal_wick_ratio", 0.25)
-TOUCH_TOLERANCE_PCT = STRATEGY_CONFIG.get("touch_tolerance_pct", 0.0)
-TOUCH_CONFIRMATION_BARS = STRATEGY_CONFIG.get("touch_confirmation_bars", 0)
-# FVG
-FVG_ATR_FILTER = STRATEGY_CONFIG.get("fvg_atr_filter", True)
-# Risk Management
-SL_BUFFER_PCT = STRATEGY_CONFIG.get("sl_buffer_pct", 0.1)
-SL_MULTIPLIER = STRATEGY_CONFIG.get("sl_multiplier", 1.05)
-MIN_SL_PCT = STRATEGY_CONFIG.get("min_sl_pct", 0.05)
-RISK_PER_TRADE = STRATEGY_CONFIG.get("risk_per_trade", 10.0)
-REVERSAL_PATTERN_IDS = STRATEGY_CONFIG.get("reversal_pattern_ids", [0])
+RISK_REWARD_RATIO = float(STRATEGY_CONFIG.get("risk_reward_ratio", 2.0) or 2.0)
 
 
 # =============================================================================
@@ -378,25 +353,7 @@ def run_cycle(timeframe: str):
              DATA_FOLDER, OUTPUT_FOLDER, exec_timeframe,
              signal_timeframe=exec_signal_tf,
              entry_timeframe=exec_entry_tf,
-             risk_reward_ratio=RISK_REWARD_RATIO,
-             swing_length=SWING_LENGTH,
-             internal_length=INTERNAL_LENGTH,
-             eqhl_length=EQHL_LENGTH,
-             eqhl_threshold=EQHL_THRESHOLD,
-             ob_mitigation=OB_MITIGATION,
-             ob_body_ratio=OB_BODY_RATIO,
-             require_liquidity=REQUIRE_LIQUIDITY,
-             require_reversal_pattern=REQUIRE_REVERSAL_PATTERN,
-             enable_simple_reversal=ENABLE_SIMPLE_REVERSAL,
-             simple_reversal_wick_ratio=SIMPLE_REVERSAL_WICK_RATIO,
-             touch_tolerance_pct=TOUCH_TOLERANCE_PCT,
-             touch_confirmation_bars=TOUCH_CONFIRMATION_BARS,
-             fvg_atr_filter=FVG_ATR_FILTER,
-             sl_buffer_pct=SL_BUFFER_PCT,
-             sl_multiplier=SL_MULTIPLIER,
-             min_sl_pct=MIN_SL_PCT,
-             risk_per_trade=RISK_PER_TRADE,
-             reversal_pattern_ids=REVERSAL_PATTERN_IDS,
+             strategy_config=STRATEGY_CONFIG,
           )
          
          tf_state.cycles += 1

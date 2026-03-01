@@ -13,13 +13,13 @@ To change strategy:
 """
 
 from pathlib import Path
-from dataclasses import fields
+from typing import cast
 
 import pandas as pd
 from tqdm import tqdm
 
 # Import strategy components (interface contract)
-from src.strategy import Config, Strategy, Signal, STRATEGY_NAME
+from src.strategy import Config, Strategy, Signal, STRATEGY_NAME, build_strategy_config
 
 # Import statistics/reporting functions
 from src.backtest.statistics import (
@@ -47,35 +47,9 @@ DEFAULT_DATA_FOLDER = "res/data"
 DEFAULT_OUTPUT_FOLDER = "res/output"
 DEFAULT_REPORT_FOLDER = "res/report"
 DEFAULT_BACKTEST_RESULTS_FILE = "backtest_results"
-DEFAULT_RISK_REWARD_RATIO = 2.0
 # Multi-timeframe settings (anti-repainting)
 DEFAULT_SIGNAL_TIMEFRAMES = ["5m"]
 DEFAULT_ENTRY_TIMEFRAME = "1m"
-# Structure Detection
-DEFAULT_SWING_LENGTH = 10
-DEFAULT_INTERNAL_LENGTH = 3
-# EQH/EQL Detection
-DEFAULT_EQHL_LENGTH = 3
-DEFAULT_EQHL_THRESHOLD = 0.3
-# Order Block
-DEFAULT_OB_MITIGATION = "high_low"
-DEFAULT_OB_BODY_RATIO = 0.35
-# Entry filters
-DEFAULT_REQUIRE_LIQUIDITY = True
-DEFAULT_REQUIRE_REVERSAL_PATTERN = True
-DEFAULT_ENABLE_SIMPLE_REVERSAL = True
-DEFAULT_SIMPLE_REVERSAL_WICK_RATIO = 0.25
-DEFAULT_TOUCH_TOLERANCE_PCT = 0.0
-DEFAULT_TOUCH_CONFIRMATION_BARS = 0
-DEFAULT_ENTRY_ON_CANDLE_CLOSE = True
-# FVG
-DEFAULT_FVG_ATR_FILTER = True
-# Risk Management
-DEFAULT_SL_BUFFER_PCT = 0.1
-DEFAULT_SL_MULTIPLIER = 1.05
-DEFAULT_MIN_SL_PCT = 0.05
-DEFAULT_RISK_PER_TRADE = 10.0
-DEFAULT_REVERSAL_PATTERN_IDS = [0]
 
 
 # ==============================================================================
@@ -121,67 +95,6 @@ def normalize_signal_timeframes(value) -> list[str]:
     return normalized or list(DEFAULT_SIGNAL_TIMEFRAMES)
 
 
-def create_config(
-    signal_timeframe: str,
-    entry_timeframe: str,
-    data_config: dict | None = None,
-    strategy_cfg: dict | None = None,
-) -> Config:
-    """
-    Create strategy Config by composing backtest and strategy config files.
-    """
-    data_config = data_config or load_backtest_config(include_strategy=False)
-    strategy_cfg = strategy_cfg or load_strategy_config()
-
-    data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
-    output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
-
-    strategy_defaults = {
-        "risk_reward_ratio": DEFAULT_RISK_REWARD_RATIO,
-        "signal_timeframe": signal_timeframe,
-        "entry_timeframe": entry_timeframe,
-        "swing_length": DEFAULT_SWING_LENGTH,
-        "internal_length": DEFAULT_INTERNAL_LENGTH,
-        "eqhl_length": DEFAULT_EQHL_LENGTH,
-        "eqhl_threshold": DEFAULT_EQHL_THRESHOLD,
-        "ob_mitigation": DEFAULT_OB_MITIGATION,
-        "ob_body_ratio": DEFAULT_OB_BODY_RATIO,
-        "require_liquidity": DEFAULT_REQUIRE_LIQUIDITY,
-        "require_reversal_pattern": DEFAULT_REQUIRE_REVERSAL_PATTERN,
-        "enable_simple_reversal": DEFAULT_ENABLE_SIMPLE_REVERSAL,
-        "simple_reversal_wick_ratio": DEFAULT_SIMPLE_REVERSAL_WICK_RATIO,
-        "touch_tolerance_pct": DEFAULT_TOUCH_TOLERANCE_PCT,
-        "touch_confirmation_bars": DEFAULT_TOUCH_CONFIRMATION_BARS,
-        "entry_on_candle_close": DEFAULT_ENTRY_ON_CANDLE_CLOSE,
-        "fvg_atr_filter": DEFAULT_FVG_ATR_FILTER,
-        "sl_buffer_pct": DEFAULT_SL_BUFFER_PCT,
-        "sl_multiplier": DEFAULT_SL_MULTIPLIER,
-        "min_sl_pct": DEFAULT_MIN_SL_PCT,
-        "risk_per_trade": DEFAULT_RISK_PER_TRADE,
-        "reversal_pattern_ids": DEFAULT_REVERSAL_PATTERN_IDS,
-    }
-
-    config_fields = {item.name for item in fields(Config)}
-    strategy_kwargs = {
-        key: strategy_cfg.get(key, default_value)
-        for key, default_value in strategy_defaults.items()
-        if key in config_fields
-    }
-
-    if "signal_timeframe" in strategy_kwargs:
-        strategy_kwargs["signal_timeframe"] = signal_timeframe
-    if "entry_timeframe" in strategy_kwargs:
-        strategy_kwargs["entry_timeframe"] = entry_timeframe
-
-    base_kwargs = {}
-    if "data_folder" in config_fields:
-        base_kwargs["data_folder"] = data_folder
-    if "output_folder" in config_fields:
-        base_kwargs["output_folder"] = output_folder
-
-    return Config(**base_kwargs, **strategy_kwargs)
-
-
 def get_report_folder() -> str:
     """Get report folder from config"""
     data_config = load_backtest_config(include_strategy=False)
@@ -205,21 +118,24 @@ def main():
     print("=" * 60)
     data_config = load_backtest_config(include_strategy=False)
     strategy_cfg = load_strategy_config()
+    data_folder = str(data_config.get('folder_path', DEFAULT_DATA_FOLDER)).strip() or DEFAULT_DATA_FOLDER
+    output_folder = str(data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)).strip() or DEFAULT_OUTPUT_FOLDER
 
-    signal_timeframes = normalize_signal_timeframes(
-        strategy_cfg.get('signal_timeframe', strategy_cfg.get('indicator_timeframe', DEFAULT_SIGNAL_TIMEFRAMES))
-    )
+    signal_timeframes = normalize_signal_timeframes(strategy_cfg.get('signal_timeframe', DEFAULT_SIGNAL_TIMEFRAMES))
     entry_tf = str(strategy_cfg.get('entry_timeframe', DEFAULT_ENTRY_TIMEFRAME)).strip() or DEFAULT_ENTRY_TIMEFRAME
 
     configs_by_signal: dict[str, Config] = {}
     strategies_by_signal: dict[str, Strategy] = {}
     simulators_by_signal: dict[str, TradeSimulator] = {}
     for signal_tf in signal_timeframes:
-        tf_config = create_config(
-            signal_timeframe=signal_tf,
-            entry_timeframe=entry_tf,
-            data_config=data_config,
-            strategy_cfg=strategy_cfg,
+        tf_config = build_strategy_config(
+            data_folder=data_folder,
+            output_folder=output_folder,
+            strategy_config=strategy_cfg,
+            overrides={
+                "signal_timeframe": signal_tf,
+                "entry_timeframe": entry_tf,
+            },
         )
         configs_by_signal[signal_tf] = tf_config
         strategies_by_signal[signal_tf] = Strategy(tf_config)
@@ -284,15 +200,15 @@ def main():
 
             if signal_tf != entry_tf:
                 tqdm.write(f"  - Converting {entry_tf} -> {signal_tf} for indicators...")
-                df_signal = convert_timeframe(df_entry, signal_tf)
-                if df_signal.empty:
+                converted_signal_df = convert_timeframe(df_entry, signal_tf)
+                if not isinstance(converted_signal_df, pd.DataFrame) or converted_signal_df.empty:
                     tqdm.write(f"  - Skipped {signal_tf}: conversion returned no candles")
                     continue
-                tqdm.write(f"  - Converted to {len(df_signal)} candles ({signal_tf})")
-                signals = strategy.generate_signals(df_signal, symbol, df_entry=df_entry)
+                signal_df = cast(pd.DataFrame, converted_signal_df)
+                tqdm.write(f"  - Converted to {len(signal_df)} candles ({signal_tf})")
+                signals = strategy.generate_signals(signal_df, symbol, df_entry=df_entry)
             else:
-                df_signal = df_entry
-                signals = strategy.generate_signals(df_signal, symbol)
+                signals = strategy.generate_signals(df_entry, symbol)
 
             tqdm.write(f"  - [{signal_tf}] Generated {len(signals)} signals")
 

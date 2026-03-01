@@ -14,12 +14,11 @@ Usage:
 
 from pathlib import Path
 from datetime import datetime, timezone
-from dataclasses import fields
-from typing import Any
+from typing import Any, cast
 import pandas as pd
 
 # Import strategy components (interface contract)
-from src.strategy import Config, Strategy
+from src.strategy import Strategy, build_strategy_config
 
 # Import trade simulation and report generation
 from src.backtest.statistics import TradeSimulator, generate_trade_orders
@@ -104,88 +103,14 @@ def extract_base_symbol(filename: str) -> str:
     return parts[0] if len(parts) > 1 else name
 
 
-def create_config(
-    DATA_FOLDER, 
-    OUTPUT_FOLDER, 
-    risk_reward_ratio: float = 2.0,
-    signal_timeframe: str = "5m",
-    entry_timeframe: str = "1m",
-    swing_length: int = 10,
-    internal_length: int = 3,
-    eqhl_length: int = 3,
-    eqhl_threshold: float = 0.3,
-    ob_mitigation: str = "high_low",
-    ob_body_ratio: float = 0.35,
-    require_liquidity: bool = True,
-    require_reversal_pattern: bool = True,
-    enable_simple_reversal: bool = True,
-    simple_reversal_wick_ratio: float = 0.25,
-    touch_tolerance_pct: float = 0.0,
-    touch_confirmation_bars: int = 0,
-    fvg_atr_filter: bool = True,
-    sl_buffer_pct: float = 0.1,
-    sl_multiplier: float = 1.05,
-    min_sl_pct: float = 0.05,
-    risk_per_trade: float = 10.0,
-    reversal_pattern_ids: list[int] | None = None,
-) -> Config:
-    """Create Config with system paths and all strategy settings."""
-    config_values = {
-        "data_folder": DATA_FOLDER,
-        "output_folder": OUTPUT_FOLDER,
-        "risk_reward_ratio": risk_reward_ratio,
-        "signal_timeframe": signal_timeframe,
-        "entry_timeframe": entry_timeframe,
-        "swing_length": swing_length,
-        "internal_length": internal_length,
-        "eqhl_length": eqhl_length,
-        "eqhl_threshold": eqhl_threshold,
-        "ob_mitigation": ob_mitigation,
-        "ob_body_ratio": ob_body_ratio,
-        "require_liquidity": require_liquidity,
-        "require_reversal_pattern": require_reversal_pattern,
-        "enable_simple_reversal": enable_simple_reversal,
-        "simple_reversal_wick_ratio": simple_reversal_wick_ratio,
-        "touch_tolerance_pct": touch_tolerance_pct,
-        "touch_confirmation_bars": touch_confirmation_bars,
-        "fvg_atr_filter": fvg_atr_filter,
-        "sl_buffer_pct": sl_buffer_pct,
-        "sl_multiplier": sl_multiplier,
-        "min_sl_pct": min_sl_pct,
-        "risk_per_trade": risk_per_trade,
-        "reversal_pattern_ids": reversal_pattern_ids if reversal_pattern_ids is not None else [0],
-    }
-
-    config_fields = {item.name for item in fields(Config)}
-    filtered_values = {key: value for key, value in config_values.items() if key in config_fields}
-    return Config(**filtered_values)
-
-
 def execute(
     DATA_FOLDER="res/data", 
     OUTPUT_FOLDER="res/output", 
     timeframe: str = "",
     signal_timeframe: str | list[str] | None = None,
     entry_timeframe: str = "",
-    risk_reward_ratio: float = 2.0,
-    swing_length: int = 10,
-    internal_length: int = 3,
-    eqhl_length: int = 3,
-    eqhl_threshold: float = 0.3,
-    ob_mitigation: str = "high_low",
-    ob_body_ratio: float = 0.35,
-    require_liquidity: bool = True,
-    require_reversal_pattern: bool = True,
-    enable_simple_reversal: bool = True,
-    simple_reversal_wick_ratio: float = 0.25,
-    touch_tolerance_pct: float = 0.0,
-    touch_confirmation_bars: int = 0,
-    fvg_atr_filter: bool = True,
-    sl_buffer_pct: float = 0.1,
-    sl_multiplier: float = 1.05,
-    min_sl_pct: float = 0.05,
-    risk_per_trade: float = 10.0,
-    reversal_pattern_ids: list[int] | None = None,
+    strategy_config: dict[str, Any] | None = None,
+    **strategy_overrides: Any,
 ):
     """Main execution function
     
@@ -202,36 +127,31 @@ def execute(
         timeframe: (Legacy) Single timeframe filter (e.g., "1m", "5m", "1h")
         signal_timeframe: Timeframe(s) for signal/indicator calculation (e.g., "5m" or ["3m", "5m"])
         entry_timeframe: Timeframe for precise entry detection (e.g., "1m")
-        All other args: Strategy configuration parameters
+        strategy_config: Shared strategy settings (typically loaded from strategy.yaml)
+        strategy_overrides: Optional runtime overrides for strategy fields
     """
-    strategy_signal_tfs = _normalize_signal_timeframes(signal_timeframe)
-    use_strategy_timeframes = bool(strategy_signal_tfs and entry_timeframe)
+    strategy_payload = dict(strategy_config or {})
+    for key, value in strategy_overrides.items():
+        if value is not None:
+            strategy_payload[key] = value
+
+    configured_signal_timeframes = _normalize_signal_timeframes(strategy_payload.get("signal_timeframe"))
+    strategy_signal_tfs = _normalize_signal_timeframes(signal_timeframe) or configured_signal_timeframes
+
+    configured_entry_timeframe = str(strategy_payload.get("entry_timeframe", "")).strip()
+    active_entry_timeframe = entry_timeframe or configured_entry_timeframe
+    use_strategy_timeframes = bool(strategy_signal_tfs and active_entry_timeframe)
 
     base_signal_tf = strategy_signal_tfs[0] if strategy_signal_tfs else (timeframe or "5m")
-    base_entry_tf = entry_timeframe if use_strategy_timeframes else base_signal_tf
-    base_config = create_config(
-        DATA_FOLDER, OUTPUT_FOLDER,
-        risk_reward_ratio=risk_reward_ratio,
-        signal_timeframe=base_signal_tf,
-        entry_timeframe=base_entry_tf,
-        swing_length=swing_length,
-        internal_length=internal_length,
-        eqhl_length=eqhl_length,
-        eqhl_threshold=eqhl_threshold,
-        ob_mitigation=ob_mitigation,
-        ob_body_ratio=ob_body_ratio,
-        require_liquidity=require_liquidity,
-        require_reversal_pattern=require_reversal_pattern,
-        enable_simple_reversal=enable_simple_reversal,
-        simple_reversal_wick_ratio=simple_reversal_wick_ratio,
-        touch_tolerance_pct=touch_tolerance_pct,
-        touch_confirmation_bars=touch_confirmation_bars,
-        fvg_atr_filter=fvg_atr_filter,
-        sl_buffer_pct=sl_buffer_pct,
-        sl_multiplier=sl_multiplier,
-        min_sl_pct=min_sl_pct,
-        risk_per_trade=risk_per_trade,
-        reversal_pattern_ids=reversal_pattern_ids,
+    base_entry_tf = active_entry_timeframe if use_strategy_timeframes else base_signal_tf
+    base_config = build_strategy_config(
+        data_folder=DATA_FOLDER,
+        output_folder=OUTPUT_FOLDER,
+        strategy_config=strategy_payload,
+        overrides={
+            "signal_timeframe": base_signal_tf,
+            "entry_timeframe": base_entry_tf,
+        },
     )
 
     # Create output folder if not exists
@@ -243,7 +163,7 @@ def execute(
     if use_strategy_timeframes:
         # === STRATEGY TIMEFRAME MODE ===
         # Load entry timeframe files once, then evaluate each configured signal timeframe.
-        entry_files = list(data_dir.glob(f"*_{entry_timeframe}.csv"))
+        entry_files = list(data_dir.glob(f"*_{active_entry_timeframe}.csv"))
 
         if not entry_files:
             return
@@ -251,30 +171,14 @@ def execute(
         strategies_by_signal: dict[str, Strategy] = {}
         simulators_by_signal: dict[str, TradeSimulator] = {}
         for signal_tf in strategy_signal_tfs:
-            tf_config = create_config(
-                DATA_FOLDER,
-                OUTPUT_FOLDER,
-                risk_reward_ratio=risk_reward_ratio,
-                signal_timeframe=signal_tf,
-                entry_timeframe=entry_timeframe,
-                swing_length=swing_length,
-                internal_length=internal_length,
-                eqhl_length=eqhl_length,
-                eqhl_threshold=eqhl_threshold,
-                ob_mitigation=ob_mitigation,
-                ob_body_ratio=ob_body_ratio,
-                require_liquidity=require_liquidity,
-                require_reversal_pattern=require_reversal_pattern,
-                enable_simple_reversal=enable_simple_reversal,
-                simple_reversal_wick_ratio=simple_reversal_wick_ratio,
-                touch_tolerance_pct=touch_tolerance_pct,
-                touch_confirmation_bars=touch_confirmation_bars,
-                fvg_atr_filter=fvg_atr_filter,
-                sl_buffer_pct=sl_buffer_pct,
-                sl_multiplier=sl_multiplier,
-                min_sl_pct=min_sl_pct,
-                risk_per_trade=risk_per_trade,
-                reversal_pattern_ids=reversal_pattern_ids,
+            tf_config = build_strategy_config(
+                data_folder=DATA_FOLDER,
+                output_folder=OUTPUT_FOLDER,
+                strategy_config=strategy_payload,
+                overrides={
+                    "signal_timeframe": signal_tf,
+                    "entry_timeframe": active_entry_timeframe,
+                },
             )
             strategies_by_signal[signal_tf] = Strategy(tf_config)
             simulators_by_signal[signal_tf] = TradeSimulator(tf_config)
@@ -283,7 +187,7 @@ def execute(
             base_symbol = extract_base_symbol(entry_file.name)
 
             df_entry = load_data(str(entry_file))
-            df_entry = _drop_incomplete_candle(df_entry, entry_timeframe)
+            df_entry = _drop_incomplete_candle(df_entry, active_entry_timeframe)
             if df_entry.empty:
                 continue
 
@@ -291,14 +195,14 @@ def execute(
                 strategy = strategies_by_signal[signal_tf]
                 simulator = simulators_by_signal[signal_tf]
 
-                if signal_tf != entry_timeframe:
-                    df_signal = convert_timeframe(df_entry, signal_tf)
-                    if df_signal.empty:
+                if signal_tf != active_entry_timeframe:
+                    converted_signal_df = convert_timeframe(df_entry, signal_tf)
+                    if not isinstance(converted_signal_df, pd.DataFrame) or converted_signal_df.empty:
                         continue
-                    signals = strategy.generate_signals(df_signal, base_symbol, df_entry=df_entry)
+                    signal_df = cast(pd.DataFrame, converted_signal_df)
+                    signals = strategy.generate_signals(signal_df, base_symbol, df_entry=df_entry)
                 else:
-                    df_signal = df_entry
-                    signals = strategy.generate_signals(df_signal, base_symbol)
+                    signals = strategy.generate_signals(df_entry, base_symbol)
 
                 trades = simulator.simulate(signals, df_entry)
                 report_symbol = f"{base_symbol}_{signal_tf}"
