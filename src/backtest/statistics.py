@@ -37,6 +37,7 @@ class Trade:
     entry_price: float
     stop_loss: float
     take_profit: float
+    signal_timeframe: str = ""
     rr_ratio: Optional[float] = None
     
     # Exit info (calculated by TradeSimulator)
@@ -136,7 +137,7 @@ class TradeSimulator:
         seen_keys = set()
         unique_signals = []
         for signal in signals:
-            key = (signal.entry_time, signal.trade_type)
+            key = (signal.entry_time, signal.trade_type, signal.signal_timeframe)
             if key not in seen_keys:
                 seen_keys.add(key)
                 unique_signals.append(signal)
@@ -184,6 +185,7 @@ class TradeSimulator:
                 entry_price=signal.entry_price,
                 stop_loss=signal.stop_loss,
                 take_profit=signal.take_profit,
+                signal_timeframe=signal.signal_timeframe,
                 rr_ratio=rr_ratio,
                 exit_time=exit_time_dt,
                 exit_price=exit_price,
@@ -214,6 +216,7 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
         
         data.append({
             'Symbol': t.symbol,
+            'Signal_Timeframe': t.signal_timeframe,
             'Type': t.trade_type,
             'Entry_Time': t.entry_time,
             'Entry_Price': round_price(t.entry_price),

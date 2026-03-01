@@ -71,12 +71,19 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
                     symbol = str(row.get('Symbol', '')).strip()
                     trade_type = str(row.get('Type', '')).strip().upper()
                     entry_time = str(row.get('Entry_Time', '')).strip()
+                    signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
                     result = str(row.get('Result', '')).strip().upper() if row.get('Result') else ''
-                    
-                    trade_key = f"{symbol}|{trade_type}|{entry_time}"
+
+                    if signal_timeframe:
+                        trade_key = f"{symbol}|{trade_type}|{entry_time}|{signal_timeframe}"
+                        legacy_trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                    else:
+                        trade_key = f"{symbol}|{trade_type}|{entry_time}"
+                        legacy_trade_key = trade_key
                     
                     if result in ('WIN', 'LOSS', 'OPEN'):
                         trades_from_csv[trade_key] = result
+                        trades_from_csv[legacy_trade_key] = result
                     
             except Exception:
                 continue
@@ -130,6 +137,16 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
 
 
 def generate_order_key(row: pd.Series) -> str:
+    symbol = str(row['Symbol']).strip()
+    trade_type = str(row['Type']).strip().upper()
+    entry_time = str(row['Entry_Time']).strip()
+    signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
+    if signal_timeframe:
+        return f"{symbol}|{trade_type}|{entry_time}|{signal_timeframe}"
+    return f"{symbol}|{trade_type}|{entry_time}"
+
+
+def generate_legacy_order_key(row: pd.Series) -> str:
     symbol = str(row['Symbol']).strip()
     trade_type = str(row['Type']).strip().upper()
     entry_time = str(row['Entry_Time']).strip()
@@ -308,8 +325,14 @@ def check_and_send_open_orders(
     
     for row in open_orders:
         order_key = generate_order_key(row)
-        
-        if order_key in sent_keys or order_key in skipped_keys:
+        legacy_order_key = generate_legacy_order_key(row)
+
+        if (
+            order_key in sent_keys
+            or legacy_order_key in sent_keys
+            or order_key in skipped_keys
+            or legacy_order_key in skipped_keys
+        ):
             continue
         
         entry_time_str = str(row['Entry_Time']).strip()
@@ -359,6 +382,7 @@ def check_and_send_open_orders(
                 "order_id": bybit_order_id,
                 "symbol": row['Symbol'],
                 "type": row['Type'],
+                "signal_timeframe": str(row.get('Signal_Timeframe', '')).strip(),
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
                 "take_profit": float(row['Take_Profit']),

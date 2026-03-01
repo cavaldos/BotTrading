@@ -8,6 +8,7 @@ from io import StringIO
 
 TIMEFRAME_TO_MINUTES = {
     '1m': 1, '1min': 1,
+    '2m': 2, '2min': 2,
     '3m': 3, '3min': 3,
     '5m': 5, '5min': 5,
     '15m': 15, '15min': 15,

@@ -1,34 +1,38 @@
-# Trade Application Configuration TRADE
+# Live trading configuration (example values).
+# Note: fallback defaults are shown inline as `default: ...`.
 
-# Exchange to use: "binance" or "bybit"
-exchange: "binance"
+# Exchange: "binance" | "bybit"
+exchange: "binance" # default: "binance"
 
-# Data settings
+# Data feed settings
 data:
-  folder: "res/logs/data"
-  currencies:
+  folder: "res/logs/data" # required path for candle CSV files
+  currencies: # required list of symbols
     - "BTCUSDT"
     - "BNBUSDT"
-
-  candles_limit: 2000
+  candles_limit: 2000 # required for fetch requests
 
 # Output settings
 output:
-  folder: "res/logs/output"
-  log_file: "res/logs/sent_orders.json"
+  folder: "res/logs/output" # required output directory
+  log_file: "res/logs/sent_orders.json" # required sent-orders state file
 
-# Timeframe settings
+# Runtime scheduling
 timeframe:
-  value: ["5m" ,"15m"]          # Timeframe to use: 1m, 5m, 15m, 30m, 1h, 4h, 1d
-  fetch_interval: 60   # Interval in seconds between each fetch cycle
+  value: ["5m", "15m"] # required in single-TF mode; ignored when strategy signal/entry TF is set
+  fetch_interval: 60 # default: 60 (seconds)
+  wait_for_close: false # default: false
+  close_delay: 3 # default: 3 (seconds after candle close)
 
 # Dashboard settings
 dashboard:
-  refresh_rate: 2       # Refresh rate per second
-  max_logs: 10           # Maximum number of logs to display
+  refresh_rate: 2 # required, UI updates per second
+  max_logs: 10 # required, max log rows shown in dashboard
 
-# Runtime settings
+# Runtime behavior
 runtime:
-    reset_state_on_start: false # true only for manual reset/debug runs
+  reset_state_on_start: false # default: false
 
-# Shared strategy settings are loaded from: src/config/strategy.yaml
+# Strategy settings are loaded from: src/config/strategy.yaml
+# - signal_timeframe (supports list)
+# - entry_timeframe

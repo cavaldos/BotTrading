@@ -34,8 +34,8 @@ Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL detection
 
 import pandas as pd
 import numpy as np
-from datetime import datetime
-from typing import List, Optional, Any
+from datetime import datetime, timedelta
+from typing import List, Optional, Any, Tuple
 from dataclasses import dataclass, field
 from numba import njit
 
@@ -64,6 +64,10 @@ class Config(BaseConfig):
     data_folder: str = "res/data"
     output_folder: str = "res/output"
     risk_reward_ratio: float = 2.0  # Loaded from YAML config
+    
+    # === MULTI-TIMEFRAME SETTINGS (anti-repainting) ===
+    signal_timeframe: str = "5m"    # Timeframe for indicator calculation
+    entry_timeframe: str = "1m"     # Timeframe for precise entry detection
     
     # === STRUCTURE DETECTION ===
     swing_length: int = 10          # Lookback for swing structure (adjusted for 15m/30m)
@@ -101,6 +105,8 @@ class Config(BaseConfig):
         """Return strategy configuration for reporting"""
         return {
             "name": STRATEGY_NAME,
+            "signal_timeframe": self.signal_timeframe,
+            "entry_timeframe": self.entry_timeframe,
             "swing_length": self.swing_length,
             "internal_length": self.internal_length,
             "eqhl_length": self.eqhl_length,
@@ -167,6 +173,23 @@ def _check_trending_candle_jit(opens: np.ndarray, closes: np.ndarray, highs: np.
     return (body / candle_range) > body_ratio_threshold
 
 
+# ==================== TIMEFRAME UTILITIES ====================
+
+def _parse_timeframe_minutes(tf: str) -> int:
+    """
+    Convert timeframe string to minutes.
+    E.g. '1m'->1, '5m'->5, '15m'->15, '1h'->60, '4h'->240, '1d'->1440
+    """
+    tf = tf.lower().strip()
+    if tf.endswith("m"):
+        return int(tf[:-1])
+    elif tf.endswith("h"):
+        return int(tf[:-1]) * 60
+    elif tf.endswith("d"):
+        return int(tf[:-1]) * 1440
+    return 1  # fallback to 1 minute
+
+
 # ==================== STRATEGY CLASS ====================
 
 class Strategy(BaseStrategy):
@@ -193,16 +216,121 @@ class Strategy(BaseStrategy):
         seen_keys = set()
         unique_signals: List[Signal] = []
         for signal in signals:
-            key = (signal.entry_time, signal.trade_type)
+            key = (signal.entry_time, signal.trade_type, signal.signal_timeframe)
             if key in seen_keys:
                 continue
             seen_keys.add(key)
             unique_signals.append(signal)
         return unique_signals
+
+    def _find_precise_entry_1m(
+        self,
+        df_entry: pd.DataFrame,
+        signal_candle_close_time: datetime,
+        signal_tf_minutes: int,
+        ob: 'StrategyOrderBlock',
+        max_bars_to_search: int = 60,
+    ) -> Optional[Tuple[datetime, float]]:
+        """
+        Find the precise entry point using 1m candles AFTER the signal candle closes.
+        
+        CRITICAL: This method prevents look-ahead bias by only searching for entries
+        AFTER the signal timeframe candle has closed. We cannot know about a signal
+        until the signal candle closes.
+        
+        Args:
+            df_entry: DataFrame with 1m candles (must have Time, High, Low, Close columns)
+            signal_candle_close_time: The CLOSE time of the signal candle (not open time!)
+                For a 5m candle that opens at 08:30, the close time is 08:35
+            signal_tf_minutes: Signal timeframe in minutes (e.g., 5 for 5m)
+            ob: The Order Block being tested
+            max_bars_to_search: Maximum number of 1m bars to search after signal close
+        
+        Returns:
+            Tuple of (entry_time, entry_price) for the first 1m candle that touches OB
+            None if no valid entry found within max_bars_to_search
+        
+        Example:
+            Signal candle (5m) opens at 08:30, closes at 08:35
+            signal_candle_close_time = 08:35
+            
+            We search 1m candles starting from 08:35:
+            - 08:35 Close = 10.1 -> not in OB range -> skip
+            - 08:36 Close = 9.95 -> in OB range -> RETURN (08:36, 9.95)
+            
+            We do NOT look at 08:31, 08:32, etc. because those are BEFORE
+            the signal candle closed - that would be look-ahead bias!
+        """
+        if df_entry is None or df_entry.empty:
+            return None
+        
+        # Ensure Time column is datetime
+        df_entry = df_entry.copy()
+        df_entry['Time'] = pd.to_datetime(df_entry['Time'])
+        
+        # Search window: from signal_candle_close_time onwards
+        # We only look at candles AFTER the signal candle closes
+        window_start = signal_candle_close_time
+        window_end = signal_candle_close_time + timedelta(minutes=max_bars_to_search)
+        
+        # Filter 1m candles within the search window (AFTER signal close)
+        mask = (df_entry['Time'] >= window_start) & (df_entry['Time'] <= window_end)
+        candles_in_window = df_entry[mask].sort_values('Time')
+        
+        if candles_in_window.empty:
+            return None
+        
+        # Iterate through 1m candles in chronological order
+        for _, candle in candles_in_window.iterrows():
+            close_price = candle['Close']
+            low_price = candle['Low']
+            high_price = candle['High']
+            candle_time = candle['Time']
+            
+            # Check if Close price is within OB zone (touches OB)
+            # For BULLISH OB: price should touch the OB from above (coming down)
+            # For BEARISH OB: price should touch the OB from below (coming up)
+            ob_tolerance = (ob.high - ob.low) * self.config.touch_tolerance_pct
+            
+            if ob.bias == 'BULLISH':
+                # For long entry: price touches bullish OB zone
+                # Close should be within or touch the OB zone
+                if low_price <= (ob.high + ob_tolerance) and high_price >= (ob.low - ob_tolerance):
+                    # Entry at the Close price of this 1m candle
+                    entry_price = close_price
+                    # Ensure entry is within OB overlap
+                    overlap_low = max(ob.low, low_price)
+                    overlap_high = min(ob.high, high_price)
+                    if overlap_low <= overlap_high:
+                        # Clamp entry price to OB zone
+                        entry_price = min(max(close_price, ob.low), ob.high)
+                        entry_time = candle_time.to_pydatetime() if hasattr(candle_time, 'to_pydatetime') else candle_time
+                        return (entry_time, entry_price)
+            else:
+                # For short entry: price touches bearish OB zone
+                if high_price >= (ob.low - ob_tolerance) and low_price <= (ob.high + ob_tolerance):
+                    entry_price = close_price
+                    overlap_low = max(ob.low, low_price)
+                    overlap_high = min(ob.high, high_price)
+                    if overlap_low <= overlap_high:
+                        entry_price = min(max(close_price, ob.low), ob.high)
+                        entry_time = candle_time.to_pydatetime() if hasattr(candle_time, 'to_pydatetime') else candle_time
+                        return (entry_time, entry_price)
+        
+        return None
     
-    def generate_signals(self, df: pd.DataFrame, symbol: str) -> List[Signal]:
+    def generate_signals(self, df: pd.DataFrame, symbol: str, df_entry: pd.DataFrame | None = None) -> List[Signal]:
         """
         Generate trade signals based on SMC concepts.
+        
+        MULTI-TIMEFRAME MODE (when df_entry is provided):
+        - Uses df (signal timeframe, e.g., 5m) for indicator calculation
+        - Uses df_entry (entry timeframe, e.g., 1m) for precise entry detection
+        - This prevents repainting by finding the FIRST 1m candle that touches OB
+        
+        SINGLE-TIMEFRAME MODE (when df_entry is None):
+        - Uses df for both indicator calculation and entry
+        - This is the legacy behavior
         
         EVENT-TIME GATED: Pre-computes indicators, but consumes them causally.
         Each event (OB, EQH/EQL) is only activated at the bar it becomes known.
@@ -217,6 +345,10 @@ class Strategy(BaseStrategy):
         """
         df = df.copy()
         signals: List[Signal] = []
+        
+        # Determine if we're in multi-timeframe mode
+        use_multi_tf = df_entry is not None and not df_entry.empty
+        signal_tf_minutes = _parse_timeframe_minutes(self.config.signal_timeframe) if use_multi_tf else 0
         
         highs = df['High'].values.astype(np.float64)
         lows = df['Low'].values.astype(np.float64)
@@ -367,18 +499,45 @@ class Strategy(BaseStrategy):
                     )
 
                     if liquidity_ok and reversal_ok:
-                        signal = self._create_signal(
-                            symbol=symbol,
-                            ob=ob,
-                            entry_time=current_time,
-                            current_high=highs[i],
-                            current_low=lows[i],
-                            current_close=closes[i],
-                            previous_close=closes[i - 1] if i > 0 else closes[i],
-                        )
-                        if signal:
-                            signals.append(signal)
-                            ob.entry_triggered = True
+                        # MULTI-TIMEFRAME MODE: Find precise entry from 1m candles
+                        if use_multi_tf:
+                            # CRITICAL: Calculate signal candle CLOSE time
+                            # current_time is the candle OPEN time (e.g., 08:30 for 5m candle)
+                            # The candle CLOSES at open_time + signal_tf_minutes (e.g., 08:35)
+                            # We can only know about the signal AFTER the candle closes
+                            signal_candle_close_time = current_time + timedelta(minutes=signal_tf_minutes)
+                            
+                            precise_entry = self._find_precise_entry_1m(
+                                df_entry=df_entry,
+                                signal_candle_close_time=signal_candle_close_time,
+                                signal_tf_minutes=signal_tf_minutes,
+                                ob=ob,
+                            )
+                            if precise_entry:
+                                entry_time_1m, entry_price_1m = precise_entry
+                                signal = self._create_signal_with_price(
+                                    symbol=symbol,
+                                    ob=ob,
+                                    entry_time=entry_time_1m,
+                                    entry_price=entry_price_1m,
+                                )
+                                if signal:
+                                    signals.append(signal)
+                                    ob.entry_triggered = True
+                        else:
+                            # SINGLE-TIMEFRAME MODE: Use signal candle for entry (legacy)
+                            signal = self._create_signal(
+                                symbol=symbol,
+                                ob=ob,
+                                entry_time=current_time,
+                                current_high=highs[i],
+                                current_low=lows[i],
+                                current_close=closes[i],
+                                previous_close=closes[i - 1] if i > 0 else closes[i],
+                            )
+                            if signal:
+                                signals.append(signal)
+                                ob.entry_triggered = True
                 
                 remaining_obs.append(ob)
             
@@ -567,5 +726,88 @@ class Strategy(BaseStrategy):
             entry_time=entry_time,
             entry_price=round_price(entry),
             stop_loss=round_price(stop_loss),
-            take_profit=round_price(take_profit)
+            take_profit=round_price(take_profit),
+            signal_timeframe=self.config.signal_timeframe,
+        )
+
+    def _create_signal_with_price(
+        self, 
+        symbol: str, 
+        ob: StrategyOrderBlock, 
+        entry_time: datetime,
+        entry_price: float
+    ) -> Optional[Signal]:
+        """
+        Create a trade signal with a specific entry price (for multi-timeframe mode).
+        
+        This method is used when we have a precise entry price from 1m candles,
+        so we don't need to calculate entry from the signal timeframe candle.
+        
+        Args:
+            symbol: Trading symbol
+            ob: Order Block that triggered the signal
+            entry_time: Precise entry time from 1m candle
+            entry_price: Precise entry price (Close of 1m candle)
+        
+        Returns:
+            Signal with SL and TP calculated based on OB and entry price
+        """
+        ob_range = ob.high - ob.low
+        buffer = ob_range * self.config.sl_buffer_pct
+        entry = entry_price
+        
+        if ob.bias == 'BULLISH':
+            trade_type = 'LONG'
+            
+            base_sl = ob.low - buffer
+            base_risk = entry - base_sl
+            stop_loss = entry - (base_risk * self.config.sl_multiplier)
+            
+            # For multi-TF mode, we use OB low as reference instead of candle low
+            if stop_loss > ob.low:
+                stop_loss = ob.low - buffer
+            
+            actual_risk = entry - stop_loss
+            take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
+            
+        else:
+            trade_type = 'SHORT'
+            
+            base_sl = ob.high + buffer
+            base_risk = base_sl - entry
+            stop_loss = entry + (base_risk * self.config.sl_multiplier)
+            
+            # For multi-TF mode, we use OB high as reference instead of candle high
+            if stop_loss < ob.high:
+                stop_loss = ob.high + buffer
+            
+            actual_risk = stop_loss - entry
+            take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
+        
+        if trade_type == 'LONG' and stop_loss >= entry:
+            return None
+        if trade_type == 'SHORT' and stop_loss <= entry:
+            return None
+        
+        sl_pct = abs(entry - stop_loss) / entry * 100
+        if sl_pct < self.config.min_sl_pct:
+            min_sl_distance = entry * self.config.min_sl_pct / 100
+            if trade_type == 'LONG':
+                stop_loss = entry - min_sl_distance
+            else:
+                stop_loss = entry + min_sl_distance
+            actual_risk = abs(entry - stop_loss)
+            if trade_type == 'LONG':
+                take_profit = entry + (actual_risk * self.config.risk_reward_ratio)
+            else:
+                take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
+        
+        return Signal(
+            symbol=symbol,
+            trade_type=trade_type,
+            entry_time=entry_time,
+            entry_price=round_price(entry),
+            stop_loss=round_price(stop_loss),
+            take_profit=round_price(take_profit),
+            signal_timeframe=self.config.signal_timeframe,
         )

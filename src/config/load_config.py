@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import yaml  # pyright: ignore[reportMissingModuleSource]
 
@@ -88,8 +88,37 @@ def merge_strategy_config(env_config: Optional[Dict[str, Any]] = None, strategy_
     return merged
 
 
+def _normalize_timeframe_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, list):
+        return []
+
+    normalized: List[str] = []
+    for item in value:
+        tf = str(item).strip()
+        if tf:
+            normalized.append(tf)
+    return normalized
+
+
 def load_strategy_config(config_path: Optional[ConfigPath] = None) -> Dict[str, Any]:
-    return load_yaml_config(config_path=config_path, default_name="strategy.yaml")
+    config = load_yaml_config(config_path=config_path, default_name="strategy.yaml")
+
+    if not isinstance(config, dict):
+        return {}
+
+    if "signal_timeframe" not in config and "indicator_timeframe" in config:
+        config["signal_timeframe"] = config.get("indicator_timeframe")
+
+    signal_timeframes = _normalize_timeframe_list(config.get("signal_timeframe", "5m"))
+    config["signal_timeframe"] = signal_timeframes or ["5m"]
+
+    entry_timeframe = str(config.get("entry_timeframe", "1m")).strip()
+    config["entry_timeframe"] = entry_timeframe or "1m"
+
+    return config
 
 
 def load_backtest_config(config_path: Optional[ConfigPath] = None, include_strategy: bool = True) -> Dict[str, Any]:

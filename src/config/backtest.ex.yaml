@@ -1,35 +1,26 @@
+# Backtest environment configuration (example values).
+# Note: fallback defaults are shown inline as `default: ...`.
 
-# ===================================================================
-## Data Configuration DEV
-# ===================================================================
-currencies:
+# Data source
+currencies: # default: ["BTCUSDT"]
   - "BTCUSDT"
   - "ETHUSDT"
   - "BNBUSDT"
 
-# List of timeframes
-timeframes:
+timeframes: # default: ["5m", "15m"] (used by data fetch utilities)
   - "5m"
   - "15m"
 
-# Directory path to save data
-folder_path: "res/data"
-# Number of candles to fetch (for mode: by_candles)
-candles_limit: 2000
+folder_path: "res/data" # default: "res/data"
+candles_limit: 2000 # default: 2000 (when mode="by_candles")
+start_date: "2026-01-01" # default: "2026-01-01" (when mode="by_date")
+mode: "by_candles" # default: "by_candles" ("by_candles" | "by_date")
 
-# Start date for fetching data (for mode: by_date, format: YYYY-MM-DD)
-start_date: "2026-01-01"
+# Backtest outputs
+output_folder: "res/output" # default: "res/output"
+report_folder: "res/report" # default: "res/report"
+backtest_results_file: "backtest_results" # default: "backtest_results" (without extension)
 
-# Fetch mode: "by_candles" or "by_date"
-mode: "by_candles"
-
-# Output folder for trade reports
-output_folder: "res/output"
-
-# Folder for markdown summary report
-report_folder: "res/report"
-
-# Backtest results filename (without extension)
-backtest_results_file: "backtest_results"
-
-# Shared strategy settings are loaded from: src/config/strategy.yaml
+# Strategy settings are loaded from: src/config/strategy.yaml
+# - signal_timeframe (supports list)
+# - entry_timeframe

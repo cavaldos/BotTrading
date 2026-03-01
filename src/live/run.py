@@ -44,6 +44,21 @@ def parse_timeframe(timeframe: str) -> int:
         raise ValueError(f"Invalid timeframe format: {timeframe}")
 
 
+def normalize_timeframe_list(value) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+
+    if not isinstance(value, list):
+        return []
+
+    normalized = []
+    for item in value:
+        tf = str(item).strip()
+        if tf:
+            normalized.append(tf)
+    return normalized
+
+
 # Load config (live setup + shared strategy settings)
 CONFIG = load_live_config(include_strategy=False)
 STRATEGY_CONFIG = load_strategy_config()
@@ -63,9 +78,23 @@ LOG_FILE = CONFIG["output"]["log_file"]
 # Timeframe settings - support multiple timeframes
 TIMEFRAMES_CONFIG = CONFIG["timeframe"]
 if isinstance(TIMEFRAMES_CONFIG.get("value"), list):
-    TIMEFRAMES = TIMEFRAMES_CONFIG["value"]
+    RUNTIME_TIMEFRAMES = TIMEFRAMES_CONFIG["value"]
 else:
-    TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
+    RUNTIME_TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
+
+# Strategy-driven timeframe settings (loaded from strategy.yaml)
+SIGNAL_TIMEFRAMES = normalize_timeframe_list(
+    STRATEGY_CONFIG.get("signal_timeframe", STRATEGY_CONFIG.get("indicator_timeframe", []))
+)
+ENTRY_TIMEFRAME = str(STRATEGY_CONFIG.get("entry_timeframe", "")).strip()
+USE_STRATEGY_TIMEFRAMES = bool(SIGNAL_TIMEFRAMES and ENTRY_TIMEFRAME)
+
+# In strategy-timeframe mode, run only one scheduler thread on entry timeframe
+# to avoid concurrent writes to the same data files.
+if USE_STRATEGY_TIMEFRAMES:
+    TIMEFRAMES = [ENTRY_TIMEFRAME]
+else:
+    TIMEFRAMES = RUNTIME_TIMEFRAMES
 
 TIMEFRAME_MINUTES_MAP = {tf: parse_timeframe(tf) for tf in TIMEFRAMES}
 FETCH_INTERVAL = int(TIMEFRAMES_CONFIG.get("fetch_interval", 60))  # Default 60 seconds
@@ -302,22 +331,29 @@ class OutputFolderHandler(FileSystemEventHandler):
 # =============================================================================
 
 def getdata(timeframe: str):
-      """Fetch data from API for a specific timeframe"""
+      """Fetch data from API for a specific timeframe
+      
+      In multi-TF mode, fetches entry_timeframe data (e.g., 1m) regardless of
+      the timeframe parameter, since signal_timeframe is computed via conversion.
+      """
       if not os.path.exists(DATA_FOLDER):
           os.makedirs(DATA_FOLDER)
       
+      # In strategy-timeframe mode, always fetch entry_timeframe data
+      fetch_tf = ENTRY_TIMEFRAME if USE_STRATEGY_TIMEFRAMES else timeframe
+      
       # Check if data files exist (first run vs subsequent runs)
       has_data_files = any(
-          os.path.isfile(os.path.join(DATA_FOLDER, f"{curr}_{timeframe}.csv"))
+          os.path.isfile(os.path.join(DATA_FOLDER, f"{curr}_{fetch_tf}.csv"))
           for curr in CURRENCIES
       )
       
       if not has_data_files:
           # First run: remove old data and fetch all candles (parallel)
-          fetch_and_save_candles_parallel(CURRENCIES, [timeframe], DATA_FOLDER, CANDLES_LIMIT)
+          fetch_and_save_candles_parallel(CURRENCIES, [fetch_tf], DATA_FOLDER, CANDLES_LIMIT)
       else:
           # Subsequent runs: only append latest candle and remove second row (parallel)
-          append_latest_candle_parallel(CURRENCIES, [timeframe], DATA_FOLDER)
+          append_latest_candle_parallel(CURRENCIES, [fetch_tf], DATA_FOLDER)
 
 
 def run_cycle(timeframe: str):
@@ -330,8 +366,18 @@ def run_cycle(timeframe: str):
          
          tf_state.status = "Executing..."
          state.add_log(f"TF[{timeframe}]", "Running execute...")
+         
+         # Determine timeframe params for execute
+         # In strategy-timeframe mode: pass signal_timeframes and entry_timeframe
+         # In single-TF mode: pass timeframe as before
+         exec_timeframe = "" if USE_STRATEGY_TIMEFRAMES else timeframe
+         exec_signal_tf = SIGNAL_TIMEFRAMES if USE_STRATEGY_TIMEFRAMES else None
+         exec_entry_tf = ENTRY_TIMEFRAME if USE_STRATEGY_TIMEFRAMES else ""
+         
          execute(
-             DATA_FOLDER, OUTPUT_FOLDER, timeframe,
+             DATA_FOLDER, OUTPUT_FOLDER, exec_timeframe,
+             signal_timeframe=exec_signal_tf,
+             entry_timeframe=exec_entry_tf,
              risk_reward_ratio=RISK_REWARD_RATIO,
              swing_length=SWING_LENGTH,
              internal_length=INTERNAL_LENGTH,
@@ -345,12 +391,12 @@ def run_cycle(timeframe: str):
              simple_reversal_wick_ratio=SIMPLE_REVERSAL_WICK_RATIO,
              touch_tolerance_pct=TOUCH_TOLERANCE_PCT,
              touch_confirmation_bars=TOUCH_CONFIRMATION_BARS,
-              fvg_atr_filter=FVG_ATR_FILTER,
-              sl_buffer_pct=SL_BUFFER_PCT,
-              sl_multiplier=SL_MULTIPLIER,
-              min_sl_pct=MIN_SL_PCT,
-              risk_per_trade=RISK_PER_TRADE,
-              reversal_pattern_ids=REVERSAL_PATTERN_IDS,
+             fvg_atr_filter=FVG_ATR_FILTER,
+             sl_buffer_pct=SL_BUFFER_PCT,
+             sl_multiplier=SL_MULTIPLIER,
+             min_sl_pct=MIN_SL_PCT,
+             risk_per_trade=RISK_PER_TRADE,
+             reversal_pattern_ids=REVERSAL_PATTERN_IDS,
           )
          
          tf_state.cycles += 1
@@ -556,7 +602,11 @@ def main():
     thread_2.start()
 
     timeframes_str = ", ".join(TIMEFRAMES)
-    state.add_log("Main", f"Application started (TF: {timeframes_str})")
+    if USE_STRATEGY_TIMEFRAMES:
+        signal_label = ",".join(SIGNAL_TIMEFRAMES)
+        state.add_log("Main", f"Application started (Strategy TF: signal=[{signal_label}], entry={ENTRY_TIMEFRAME})")
+    else:
+        state.add_log("Main", f"Application started (TF: {timeframes_str})")
 
     # Create dashboard
     layout = create_dashboard()
