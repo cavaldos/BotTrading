@@ -14,7 +14,8 @@ LONG Setup:
 3. After CHoCH, EQH must form while waiting for price to return to OB
 4. Price touches OB zone -> Entry LONG
 5. SL: Below OB with buffer (avoid stop hunt)
-6. TP: Entry + (Entry - SL) * RR (fixed RR = 2)
+6. TP: Flexible target from market structure (opposite OB or opposite swing high).
+   If no target exists, strategy can skip trade or fallback to fixed RR (configurable).
 
 SHORT Setup: (opposite)
 1. CHoCH Bearish detected
@@ -22,7 +23,8 @@ SHORT Setup: (opposite)
 3. After CHoCH, EQL must form while waiting for price to return to OB
 4. Price touches OB zone -> Entry SHORT
 5. SL: Above OB with buffer
-6. TP: Entry - (SL - Entry) * RR
+6. TP: Flexible target from market structure (opposite OB or opposite swing low).
+   If no target exists, strategy can skip trade or fallback to fixed RR (configurable).
 
 INTERFACE CONTRACT (must export for main.py):
 - Config: dataclass with strategy configuration
@@ -32,11 +34,12 @@ INTERFACE CONTRACT (must export for main.py):
 Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL detection.
 """
 
-import pandas as pd
-import numpy as np
 from datetime import datetime, timedelta
-from typing import List, Optional, Any, Tuple, cast
 from dataclasses import dataclass, field
+from typing import Any, List, Optional, Tuple, cast
+
+import numpy as np
+import pandas as pd
 from numba import njit
 
 from src.strategy.base_strategy import (
@@ -47,13 +50,13 @@ from src.strategy.base_strategy import (
     parse_timeframe_minutes,
 )
 from src.indicators.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
-from src.utils.rounding import round_price
 
 from src.indicators.CHOCH import detect_choch, CHoCH
 from src.indicators.BOS import detect_bos, BOS
 from src.indicators.order_block import detect_order_blocks as detect_order_blocks_indicator
 from src.indicators.order_block import OrderBlock as IndicatorOrderBlock
 from src.indicators.eqh_eql import detect_eqh_eql, EqualHL as IndicatorEqualHL
+from src.indicators.swing import detect_swings, Swing as IndicatorSwing
 
 
 # ==================== STRATEGY NAME ====================
@@ -97,6 +100,18 @@ class Config(BaseConfig):
     # === REVERSAL PATTERNS ===
     reversal_pattern_ids: List[int] = field(default_factory=lambda: [0])
 
+    # === FLEXIBLE TAKE PROFIT ===
+    # fixed_rr: TP from risk_reward_ratio only
+    # opposite_ob: TP from opposite active OB only
+    # opposite_swing: TP from opposite confirmed swing only
+    # opposite_ob_or_swing: combine both target sources
+    tp_mode: str = "opposite_ob_or_swing"
+    # skip: reject trade when no structural target exists
+    # fixed_rr: fallback to classic RR TP when no structural target exists
+    tp_no_target_policy: str = "skip"
+    # Swing length used to build opposite swing targets
+    tp_swing_length: int = 5
+
     def get_strategy_info(self) -> dict:
         """Return strategy configuration for reporting"""
         return {
@@ -122,6 +137,9 @@ class Config(BaseConfig):
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
             "reversal_pattern_ids": self.reversal_pattern_ids,
+            "tp_mode": self.tp_mode,
+            "tp_no_target_policy": self.tp_no_target_policy,
+            "tp_swing_length": self.tp_swing_length,
         }
 
 
@@ -183,6 +201,7 @@ class Strategy(BaseStrategy):
     def __init__(self, config: Config):
         super().__init__(config)
         self.config: Config = config  # type narrowing: BaseConfig → Config
+        self._tp_context: dict[str, Any] | None = None
 
     def generate_signals(self, df: pd.DataFrame, symbol: str, df_entry: pd.DataFrame | None = None) -> List[Signal]:
         """
@@ -210,6 +229,7 @@ class Strategy(BaseStrategy):
         """
         df = df.copy()
         signals: List[BaseSignal] = []
+        self._tp_context = None
 
         # Determine if we're in multi-timeframe mode
         use_multi_tf = df_entry is not None and not df_entry.empty
@@ -259,6 +279,16 @@ class Strategy(BaseStrategy):
             threshold=self.config.eqhl_threshold,
         )
 
+        uses_swing_targets = self._normalize_tp_mode() in {"opposite_swing", "opposite_ob_or_swing"}
+        swings_by_confirm: dict[int, List[IndicatorSwing]] = {}
+        if uses_swing_targets:
+            tp_swing_length = max(1, int(self.config.tp_swing_length))
+            swing_events = detect_swings(df, length=tp_swing_length)
+            for swing in swing_events:
+                confirm_index = int(swing.index + tp_swing_length)
+                if 0 <= confirm_index < n:
+                    swings_by_confirm.setdefault(confirm_index, []).append(swing)
+
         # ========== 2. BUILD EVENT QUEUES (indexed by activation bar) ==========
 
         # OBs: filter by body_ratio, group by break_index (activation bar)
@@ -293,6 +323,8 @@ class Strategy(BaseStrategy):
 
         # ========== 3. CAUSAL BAR-BY-BAR LOOP ==========
         active_obs: List[StrategyOrderBlock] = []
+        confirmed_swing_high_levels: List[float] = []
+        confirmed_swing_low_levels: List[float] = []
 
         for i in range(n):
             current_time = self._parse_datetime(times[i])
@@ -316,6 +348,23 @@ class Strategy(BaseStrategy):
                     elif ob.bias == 'BEARISH' and eqhl.type == 'EQL':
                         ob.has_liquidity = True
                         ob.liquidity_confirmed_index = int(eqhl.confirmed_index)
+
+            # 3c.1 Activate confirmed swings for TP targets (causal, no look-ahead)
+            for swing in swings_by_confirm.get(i, []):
+                if swing.is_high:
+                    confirmed_swing_high_levels.append(float(swing.price))
+                else:
+                    confirmed_swing_low_levels.append(float(swing.price))
+
+            self._tp_context = {
+                "current_index": i,
+                "current_high": float(highs[i]),
+                "current_low": float(lows[i]),
+                "current_close": float(closes[i]),
+                "active_obs": active_obs,
+                "confirmed_swing_high_levels": confirmed_swing_high_levels,
+                "confirmed_swing_low_levels": confirmed_swing_low_levels,
+            }
 
             # 3d. Check mitigation & entry for each active OB
             remaining_obs = []
@@ -404,6 +453,7 @@ class Strategy(BaseStrategy):
 
         # ========== 4. DEDUPLICATE SIGNALS ==========
         deduped = self._deduplicate_signals(signals)
+        self._tp_context = None
 
         return cast(List[Signal], deduped)
 
@@ -465,3 +515,222 @@ class Strategy(BaseStrategy):
         wick_ok = (upper_wick / candle_range) >= wick_ratio
         displacement_ok = c_curr < c_prev
         return c_curr < o_curr and (wick_ok or displacement_ok)
+
+    def _normalize_tp_mode(self) -> str:
+        mode = str(self.config.tp_mode).strip().lower()
+        valid_modes = {
+            "fixed_rr",
+            "opposite_ob",
+            "opposite_swing",
+            "opposite_ob_or_swing",
+        }
+        if mode not in valid_modes:
+            return "opposite_ob_or_swing"
+        return mode
+
+    def _normalize_tp_no_target_policy(self) -> str:
+        policy = str(self.config.tp_no_target_policy).strip().lower()
+        if policy not in {"skip", "fixed_rr"}:
+            return "skip"
+        return policy
+
+    def _collect_tp_candidates_from_opposite_ob(
+        self,
+        *,
+        entry: float,
+        risk: float,
+        trade_type: str,
+        current_index: int,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        active_obs: List[StrategyOrderBlock],
+    ) -> List[Tuple[float, float, int]]:
+        candidates: List[Tuple[float, float, int]] = []
+
+        for target_ob in active_obs:
+            if trade_type == "LONG" and target_ob.bias != "BEARISH":
+                continue
+            if trade_type == "SHORT" and target_ob.bias != "BULLISH":
+                continue
+            if target_ob.break_index > current_index:
+                continue
+            if self._zone_is_mitigated(target_ob, current_high, current_low, current_close):
+                continue
+
+            level = target_ob.low if trade_type == "LONG" else target_ob.high
+            if trade_type == "LONG" and level <= entry:
+                continue
+            if trade_type == "SHORT" and level >= entry:
+                continue
+
+            rr = (level - entry) / risk if trade_type == "LONG" else (entry - level) / risk
+            if rr > 0:
+                # source_priority: 0 = opposite OB
+                candidates.append((float(level), float(rr), 0))
+
+        return candidates
+
+    def _collect_tp_candidates_from_opposite_swing(
+        self,
+        *,
+        entry: float,
+        risk: float,
+        trade_type: str,
+        confirmed_swing_high_levels: List[float],
+        confirmed_swing_low_levels: List[float],
+    ) -> List[Tuple[float, float, int]]:
+        candidates: List[Tuple[float, float, int]] = []
+
+        if trade_type == "LONG":
+            for level in confirmed_swing_high_levels:
+                if level <= entry:
+                    continue
+                rr = (level - entry) / risk
+                if rr > 0:
+                    # source_priority: 1 = opposite swing
+                    candidates.append((float(level), float(rr), 1))
+        else:
+            for level in confirmed_swing_low_levels:
+                if level >= entry:
+                    continue
+                rr = (entry - level) / risk
+                if rr > 0:
+                    candidates.append((float(level), float(rr), 1))
+
+        return candidates
+
+    def _select_take_profit_from_structure(
+        self,
+        *,
+        entry: float,
+        stop_loss: float,
+        trade_type: str,
+    ) -> Optional[float]:
+        """
+        Select TP from market-structure targets.
+
+        Rules:
+        - Gather candidates based on tp_mode.
+        - Prefer candidates with RR >= anchor (risk_reward_ratio), nearest anchor wins.
+        - If no candidate reaches anchor, pick candidate with highest RR.
+        """
+        context = self._tp_context
+        if not context:
+            return None
+
+        risk = abs(entry - stop_loss)
+        if risk <= 0:
+            return None
+
+        current_index = int(context.get("current_index", -1))
+        if current_index < 0:
+            return None
+
+        current_high = float(context.get("current_high", entry))
+        current_low = float(context.get("current_low", entry))
+        current_close = float(context.get("current_close", entry))
+
+        active_obs = cast(List[StrategyOrderBlock], context.get("active_obs", []))
+        confirmed_swing_high_levels = cast(List[float], context.get("confirmed_swing_high_levels", []))
+        confirmed_swing_low_levels = cast(List[float], context.get("confirmed_swing_low_levels", []))
+
+        tp_mode = self._normalize_tp_mode()
+        candidates: List[Tuple[float, float, int]] = []
+
+        if tp_mode in {"opposite_ob", "opposite_ob_or_swing"}:
+            candidates.extend(
+                self._collect_tp_candidates_from_opposite_ob(
+                    entry=entry,
+                    risk=risk,
+                    trade_type=trade_type,
+                    current_index=current_index,
+                    current_high=current_high,
+                    current_low=current_low,
+                    current_close=current_close,
+                    active_obs=active_obs,
+                )
+            )
+
+        if tp_mode in {"opposite_swing", "opposite_ob_or_swing"}:
+            candidates.extend(
+                self._collect_tp_candidates_from_opposite_swing(
+                    entry=entry,
+                    risk=risk,
+                    trade_type=trade_type,
+                    confirmed_swing_high_levels=confirmed_swing_high_levels,
+                    confirmed_swing_low_levels=confirmed_swing_low_levels,
+                )
+            )
+
+        if not candidates:
+            return None
+
+        rr_anchor = max(0.1, float(self.config.risk_reward_ratio))
+        above_anchor = [candidate for candidate in candidates if candidate[1] >= rr_anchor]
+
+        if above_anchor:
+            if trade_type == "LONG":
+                best = min(
+                    above_anchor,
+                    key=lambda candidate: (abs(candidate[1] - rr_anchor), candidate[2], candidate[0]),
+                )
+            else:
+                best = min(
+                    above_anchor,
+                    key=lambda candidate: (abs(candidate[1] - rr_anchor), candidate[2], -candidate[0]),
+                )
+            return float(best[0])
+
+        if trade_type == "LONG":
+            best = max(candidates, key=lambda candidate: (candidate[1], -candidate[2], -candidate[0]))
+        else:
+            best = max(candidates, key=lambda candidate: (candidate[1], -candidate[2], candidate[0]))
+
+        return float(best[0])
+
+    def _compute_sl_tp(
+        self,
+        entry: float,
+        zone: BaseZone,
+        trade_type: str,
+        candle_high: Optional[float] = None,
+        candle_low: Optional[float] = None,
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Compute SL/TP with flexible TP mode.
+
+        SL is inherited from BaseStrategy.
+        TP is selected by:
+        - fixed RR (tp_mode=fixed_rr), OR
+        - structure target (opposite OB/swing), with optional RR fallback policy.
+        """
+        base_result = super()._compute_sl_tp(
+            entry=entry,
+            zone=zone,
+            trade_type=trade_type,
+            candle_high=candle_high,
+            candle_low=candle_low,
+        )
+        if base_result is None:
+            return None
+
+        stop_loss, rr_take_profit = base_result
+        tp_mode = self._normalize_tp_mode()
+        if tp_mode == "fixed_rr":
+            return (stop_loss, rr_take_profit)
+
+        structure_take_profit = self._select_take_profit_from_structure(
+            entry=entry,
+            stop_loss=stop_loss,
+            trade_type=trade_type,
+        )
+        if structure_take_profit is not None:
+            if trade_type == "LONG" and structure_take_profit > entry:
+                return (stop_loss, structure_take_profit)
+            if trade_type == "SHORT" and structure_take_profit < entry:
+                return (stop_loss, structure_take_profit)
+
+        if self._normalize_tp_no_target_policy() == "fixed_rr":
+            return (stop_loss, rr_take_profit)
+        return None

@@ -36,3 +36,8 @@ sl_multiplier: 1.05 # default: 1.05
 min_sl_pct: 0.05 # default: 0.05
 risk_per_trade: 10.0 # default: 10.0
 reversal_pattern_ids: [0] # default: [0]
+
+# Flexible TP (structure-based)
+tp_mode: "opposite_ob_or_swing" # default: "opposite_ob_or_swing" ("fixed_rr" | "opposite_ob" | "opposite_swing" | "opposite_ob_or_swing")
+tp_no_target_policy: "skip" # default: "skip" ("skip" | "fixed_rr")
+tp_swing_length: 5 # default: 5
