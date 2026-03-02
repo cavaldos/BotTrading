@@ -18,7 +18,7 @@ eqhl_length: 3 # default: 3
 eqhl_threshold: 0.3 # default: 0.3
 
 # Order Block
-ob_mitigation: "close" # default: "high_low" ("close" | "high_low")
+mitigation_mode: "close" # default: "high_low" ("close" | "high_low")
 ob_body_ratio: 0.35 # default: 0.35
 
 # Entry Filters
