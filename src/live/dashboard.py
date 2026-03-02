@@ -295,6 +295,9 @@ def load_trades_for_sent_orders(output_folder: str, log_file: str) -> list:
             "Type": trade_type,
             "Entry_Time": entry_time,
             "Entry_Price": str(order.get("entry_price", "-")),
+            "Stop_Loss": order.get("stop_loss"),
+            "Take_Profit": order.get("take_profit"),
+            "Signal_Timeframe": str(order.get("signal_timeframe", "")).strip(),
             "Result": status
         })
     
@@ -311,9 +314,10 @@ def generate_orders_panel(trades: list) -> Panel:
     
     table = Table(show_header=True, box=None, padding=(0, 1), expand=True)
     table.add_column("Entry Time", style="dim", width=9)
-    table.add_column("Symbol", style="cyan", width=10)
+    table.add_column("Symbol", style="cyan", width=14)
     table.add_column("Type", style="dim", width=5)
     table.add_column("Entry Price", style="green", width=11)
+    table.add_column("RR", style="magenta", width=6)
     table.add_column("Result", style="dim", width=8)
     
     for trade in recent_trades:
@@ -329,8 +333,12 @@ def generate_orders_panel(trades: list) -> Panel:
             time_only = "-"
         
         symbol = trade.get("Symbol", "-")
+        timeframe = trade.get("Signal_Timeframe", "")
+        symbol_display = f"{symbol}_{timeframe}" if timeframe else symbol
         order_type = trade.get("Type", "-").upper()
         entry_price = trade.get("Entry_Price", "-")
+        stop_loss = trade.get("Stop_Loss")
+        take_profit = trade.get("Take_Profit")
         result = trade.get("Result", "Open")
         
         # Style for type
@@ -341,6 +349,8 @@ def generate_orders_panel(trades: list) -> Panel:
             result_style = "green bold"
         elif result == "LOSS":
             result_style = "red bold"
+        elif result == "PASSED":
+            result_style = "cyan bold"
         else:  # OPEN
             result_style = "yellow bold"
         
@@ -350,12 +360,32 @@ def generate_orders_panel(trades: list) -> Panel:
             entry_price_str = f"{entry_price_float:,.4f}"
         except:
             entry_price_str = entry_price
+
+        rr_value = "-"
+        try:
+            entry_float = float(entry_price)
+            sl_float = float(stop_loss)
+            tp_float = float(take_profit)
+            if order_type == "LONG":
+                risk = entry_float - sl_float
+                reward = tp_float - entry_float
+            elif order_type == "SHORT":
+                risk = sl_float - entry_float
+                reward = entry_float - tp_float
+            else:
+                risk = 0
+                reward = 0
+            if risk > 0 and reward > 0:
+                rr_value = f"{reward / risk:.2f}"
+        except:
+            rr_value = "-"
         
         table.add_row(
             time_only,
-            Text(symbol, style="cyan"),
+            Text(symbol_display, style="cyan"),
             Text(order_type, style=type_style),
             Text(entry_price_str, style="green"),
+            Text(rr_value, style="magenta"),
             Text(result, style=result_style)
         )
     
