@@ -15,6 +15,7 @@ import numpy as np
 import json
 import sys
 import os
+from bisect import bisect_left
 from glob import glob
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
@@ -94,13 +95,36 @@ def load_data(data_file: str, trades_file: str | None) -> tuple:
 
 def datetime_to_timestamp(dt) -> int:
     """Convert datetime to Unix timestamp (seconds)."""
+    if dt is None:
+        return 0
+
     if isinstance(dt, pd.Timestamp):
-        return int(dt.timestamp())
+        ts_value = dt.value
+        if ts_value == pd.NaT.value:
+            return 0
+        return int(ts_value // 1_000_000_000)
     elif isinstance(dt, datetime):
         return int(dt.timestamp())
     elif isinstance(dt, np.datetime64):
-        return int(pd.Timestamp(dt).timestamp())
+        if np.isnat(dt):
+            return 0
+        ts_value = pd.Timestamp(dt).value
+        if ts_value == pd.NaT.value:
+            return 0
+        return int(ts_value // 1_000_000_000)
     return int(dt)
+
+
+def snap_to_next_candle(timestamp: int, candle_times: list[int]) -> int:
+    """Snap timestamp forward to the nearest available candle time."""
+    if not candle_times:
+        return timestamp
+
+    idx = bisect_left(candle_times, timestamp)
+    if idx < len(candle_times):
+        return candle_times[idx]
+
+    return candle_times[-1]
 
 
 def export_candles(df: pd.DataFrame) -> list:
@@ -130,19 +154,27 @@ def export_volume(df: pd.DataFrame) -> list:
     return volume
 
 
-def export_trades(trades_df: pd.DataFrame | None) -> list:
+def export_trades(trades_df: pd.DataFrame | None, candle_times: list[int]) -> list:
     """Export trades data with entry/exit info."""
     if trades_df is None:
         return []
     
     trades = []
-    for idx, row in trades_df.iterrows():
+    records = trades_df.to_dict('records')
+    for idx, row in enumerate(records):
         is_win = row['Result'] != 'Loss'
+        entry_time_raw = datetime_to_timestamp(row['Entry_Time'])
+        exit_time_raw = datetime_to_timestamp(row['Exit_Time'])
+        entry_time = snap_to_next_candle(entry_time_raw, candle_times)
+        exit_time = snap_to_next_candle(exit_time_raw, candle_times)
+
         trades.append({
             'id': int(idx),
             'type': row['Type'],
-            'entryTime': datetime_to_timestamp(row['Entry_Time']),
-            'exitTime': datetime_to_timestamp(row['Exit_Time']),
+            'entryTime': entry_time,
+            'exitTime': exit_time,
+            'entryTimeRaw': entry_time_raw,
+            'exitTimeRaw': exit_time_raw,
             'entryPrice': float(row['Entry_Price']),
             'exitPrice': float(row['Exit_Price']),
             'stopLoss': float(row['Stop_Loss']),
@@ -153,7 +185,7 @@ def export_trades(trades_df: pd.DataFrame | None) -> list:
     return trades
 
 
-def export_markers(trades_df: pd.DataFrame | None) -> list:
+def export_markers(trades_df: pd.DataFrame | None, candle_times: list[int]) -> list:
     """
     Export trade markers for lightweight-charts.
     Creates entry and exit markers.
@@ -162,14 +194,17 @@ def export_markers(trades_df: pd.DataFrame | None) -> list:
         return []
     
     markers = []
-    
-    for idx, row in trades_df.iterrows():
+    records = trades_df.to_dict('records')
+
+    for idx, row in enumerate(records):
         is_long = row['Type'] == 'LONG'
         is_win = row['Result'] != 'Loss'
+        entry_time = snap_to_next_candle(datetime_to_timestamp(row['Entry_Time']), candle_times)
+        exit_time = snap_to_next_candle(datetime_to_timestamp(row['Exit_Time']), candle_times)
         
         # Entry marker
         markers.append({
-            'time': datetime_to_timestamp(row['Entry_Time']),
+            'time': entry_time,
             'position': 'belowBar' if is_long else 'aboveBar',
             'color': '#26a69a' if is_long else '#ef5350',
             'shape': 'arrowUp' if is_long else 'arrowDown',
@@ -179,7 +214,7 @@ def export_markers(trades_df: pd.DataFrame | None) -> list:
         
         # Exit marker
         markers.append({
-            'time': datetime_to_timestamp(row['Exit_Time']),
+            'time': exit_time,
             'position': 'aboveBar' if is_win else 'belowBar',
             'color': '#26a69a' if is_win else '#ef5350',
             'shape': 'circle',
@@ -225,12 +260,18 @@ def export_symbol(symbol_info: dict) -> dict:
     else:
         print(" (no trades)")
     
+    candles = export_candles(df)
+    candle_times = [c['time'] for c in candles]
+    volume = export_volume(df)
+    trades = export_trades(trades_df, candle_times)
+    markers = export_markers(trades_df, candle_times)
+
     # Build export object
     chart_data = {
-        'candles': export_candles(df),
-        'volume': export_volume(df),
-        'trades': export_trades(trades_df),
-        'markers': export_markers(trades_df),
+        'candles': candles,
+        'volume': volume,
+        'trades': trades,
+        'markers': markers,
         'summary': calculate_summary(trades_df),
         'metadata': {
             'symbol': symbol_info['symbol'],

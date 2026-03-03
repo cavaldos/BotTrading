@@ -7,6 +7,35 @@ import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import { applyPositionLabelsToMarkers } from './positionMarkers';
 
+function normalizeChartTime(time) {
+  if (Number.isFinite(time)) {
+    return Number(time);
+  }
+
+  if (typeof time === 'string') {
+    const asNumber = Number(time);
+    if (Number.isFinite(asNumber)) {
+      return asNumber;
+    }
+    const parsedTime = Date.parse(time);
+    if (Number.isFinite(parsedTime)) {
+      return Math.floor(parsedTime / 1000);
+    }
+    return null;
+  }
+
+  if (time && typeof time === 'object') {
+    if (Number.isFinite(time.timestamp)) {
+      return Number(time.timestamp);
+    }
+    if (Number.isFinite(time.year) && Number.isFinite(time.month) && Number.isFinite(time.day)) {
+      return Math.floor(Date.UTC(time.year, time.month - 1, time.day) / 1000);
+    }
+  }
+
+  return null;
+}
+
 const CombineChart = forwardRef(function CombineChart({
   candles,
   volume,
@@ -16,6 +45,7 @@ const CombineChart = forwardRef(function CombineChart({
   showOrderBlocks = true,
   indicatorData = {},
   indicatorVisibility = {},
+  onTradeSelect = null,
 }, ref) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -73,10 +103,70 @@ const CombineChart = forwardRef(function CombineChart({
 
   const chartMarkers = useMemo(() => applyPositionLabelsToMarkers(markers, trades), [markers, trades]);
 
+  const tradeIndexByTime = useMemo(() => {
+    const index = new Map();
+
+    (Array.isArray(trades) ? trades : []).forEach((trade) => {
+      const entryTime = Number(trade?.entryTime);
+      const exitTime = Number(trade?.exitTime);
+
+      if (Number.isFinite(entryTime)) {
+        const entries = index.get(entryTime) || [];
+        entries.push({ trade, source: 'entry' });
+        index.set(entryTime, entries);
+      }
+
+      if (Number.isFinite(exitTime)) {
+        const entries = index.get(exitTime) || [];
+        entries.push({ trade, source: 'exit' });
+        index.set(exitTime, entries);
+      }
+    });
+
+    return index;
+  }, [trades]);
+
   const barDuration = useMemo(() => {
     if (!candles || candles.length < 2) return 900;
     return candles[1].time - candles[0].time;
   }, [candles]);
+
+  const focusTrade = useCallback((trade, barsAround = 40) => {
+    if (!trade || !chartRef.current || !candleSeriesRef.current) return;
+
+    const entryTime = Number(trade.entryTime);
+    const entryPrice = Number(trade.entryPrice);
+    const stopLoss = Number(trade.stopLoss);
+    const takeProfit = Number(trade.takeProfit);
+    if (!Number.isFinite(entryTime) || !Number.isFinite(entryPrice) || !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit)) {
+      return;
+    }
+
+    const timeScale = chartRef.current.timeScale();
+    const from = entryTime - (barsAround * barDuration);
+    const to = entryTime + (barsAround * barDuration);
+    timeScale.setVisibleRange({ from, to });
+
+    const low = Math.min(entryPrice, stopLoss, takeProfit);
+    const high = Math.max(entryPrice, stopLoss, takeProfit);
+    const spread = Math.max(high - low, Math.abs(entryPrice) * 0.001, 0.0001);
+    const padding = spread * 0.5;
+
+    const seriesPriceScale = candleSeriesRef.current.priceScale();
+    if (seriesPriceScale) {
+      seriesPriceScale.applyOptions({ autoScale: false });
+      if (typeof seriesPriceScale.setVisibleRange === 'function') {
+        seriesPriceScale.setVisibleRange({
+          from: low - padding,
+          to: high + padding,
+        });
+      }
+    }
+
+    if (typeof onTradeSelect === 'function') {
+      onTradeSelect(trade);
+    }
+  }, [barDuration, onTradeSelect]);
 
   useImperativeHandle(ref, () => ({
     scrollToTime: (time, barsAround = 30) => {
@@ -237,6 +327,10 @@ const CombineChart = forwardRef(function CombineChart({
       rightPriceScale: {
         borderColor: colors.grid,
         autoScale: false,
+        scaleMargins: {
+          top: 0.08,
+          bottom: 0.12,
+        },
       },
       timeScale: {
         borderColor: colors.grid,
@@ -369,6 +463,27 @@ const CombineChart = forwardRef(function CombineChart({
       markersRef.current = createSeriesMarkers(candleSeriesRef.current, sortedMarkers);
     }
   }, [chartMarkers]);
+
+  useEffect(() => {
+    if (!chartRef.current || tradeIndexByTime.size === 0) return;
+
+    const chart = chartRef.current;
+    const handleChartClick = (param) => {
+      const clickedTime = normalizeChartTime(param?.time);
+      if (!Number.isFinite(clickedTime)) return;
+
+      const matchedTrades = tradeIndexByTime.get(clickedTime);
+      if (!matchedTrades || matchedTrades.length === 0) return;
+
+      const selected = matchedTrades.find(item => item.source === 'entry') || matchedTrades[matchedTrades.length - 1];
+      focusTrade(selected.trade);
+    };
+
+    chart.subscribeClick(handleChartClick);
+    return () => {
+      chart.unsubscribeClick(handleChartClick);
+    };
+  }, [tradeIndexByTime, focusTrade]);
 
   // Update trade zones and order blocks
   useEffect(() => {

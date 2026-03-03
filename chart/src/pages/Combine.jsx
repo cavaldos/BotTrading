@@ -85,6 +85,10 @@ function CombinePage() {
     }
   }, []);
 
+  const handleTradeSelect = useCallback((trade) => {
+    setSelectedTradeId(trade.id);
+  }, []);
+
   const handleToggle = useCallback((key) => {
     setVisibility(prev => ({
       ...prev,
@@ -191,6 +195,7 @@ function CombinePage() {
           orderBlocks={tradeData?.orderBlocks}
           indicatorData={indicatorData || {}}
           indicatorVisibility={visibility}
+          onTradeSelect={handleTradeSelect}
         />
 
         <TradeList

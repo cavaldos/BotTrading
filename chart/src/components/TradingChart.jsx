@@ -5,6 +5,35 @@ import { createTradeZones, createOrderBlockRect } from '../plugins/RectanglePrim
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import { applyPositionLabelsToMarkers } from './positionMarkers';
 
+function normalizeChartTime(time) {
+  if (Number.isFinite(time)) {
+    return Number(time);
+  }
+
+  if (typeof time === 'string') {
+    const asNumber = Number(time);
+    if (Number.isFinite(asNumber)) {
+      return asNumber;
+    }
+    const parsedTime = Date.parse(time);
+    if (Number.isFinite(parsedTime)) {
+      return Math.floor(parsedTime / 1000);
+    }
+    return null;
+  }
+
+  if (time && typeof time === 'object') {
+    if (Number.isFinite(time.timestamp)) {
+      return Number(time.timestamp);
+    }
+    if (Number.isFinite(time.year) && Number.isFinite(time.month) && Number.isFinite(time.day)) {
+      return Math.floor(Date.UTC(time.year, time.month - 1, time.day) / 1000);
+    }
+  }
+
+  return null;
+}
+
 /**
  * TradingChart component using TradingView's lightweight-charts
  * Features:
@@ -22,6 +51,7 @@ const TradingChart = forwardRef(function TradingChart({
   trades = [],
   orderBlocks = [],
   showOrderBlocks = true,
+  onTradeSelect = null,
 }, ref) {
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
@@ -79,39 +109,102 @@ const TradingChart = forwardRef(function TradingChart({
 
   const chartMarkers = useMemo(() => applyPositionLabelsToMarkers(markers, trades), [markers, trades]);
 
+  const tradeIndexByTime = useMemo(() => {
+    const index = new Map();
+
+    (Array.isArray(trades) ? trades : []).forEach((trade) => {
+      const entryTime = Number(trade?.entryTime);
+      const exitTime = Number(trade?.exitTime);
+
+      if (Number.isFinite(entryTime)) {
+        const entries = index.get(entryTime) || [];
+        entries.push({ trade, source: 'entry' });
+        index.set(entryTime, entries);
+      }
+
+      if (Number.isFinite(exitTime)) {
+        const entries = index.get(exitTime) || [];
+        entries.push({ trade, source: 'exit' });
+        index.set(exitTime, entries);
+      }
+    });
+
+    return index;
+  }, [trades]);
+
+  const barDuration = useMemo(() => {
+    if (!candles || candles.length < 2) return 900;
+    return candles[1].time - candles[0].time;
+  }, [candles]);
+
+  const focusTrade = useCallback((trade, barsAround = 40) => {
+    if (!trade || !chartRef.current || !candleSeriesRef.current) return;
+
+    const entryTime = Number(trade.entryTime);
+    const entryPrice = Number(trade.entryPrice);
+    const stopLoss = Number(trade.stopLoss);
+    const takeProfit = Number(trade.takeProfit);
+    if (!Number.isFinite(entryTime) || !Number.isFinite(entryPrice) || !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit)) {
+      return;
+    }
+
+    const timeScale = chartRef.current.timeScale();
+    const from = entryTime - (barsAround * barDuration);
+    const to = entryTime + (barsAround * barDuration);
+    timeScale.setVisibleRange({ from, to });
+
+    const low = Math.min(entryPrice, stopLoss, takeProfit);
+    const high = Math.max(entryPrice, stopLoss, takeProfit);
+    const spread = Math.max(high - low, Math.abs(entryPrice) * 0.001, 0.0001);
+    const padding = spread * 0.5;
+
+    const seriesPriceScale = candleSeriesRef.current.priceScale();
+    if (seriesPriceScale) {
+      seriesPriceScale.applyOptions({ autoScale: false });
+      if (typeof seriesPriceScale.setVisibleRange === 'function') {
+        seriesPriceScale.setVisibleRange({
+          from: low - padding,
+          to: high + padding,
+        });
+      }
+    }
+
+    if (typeof onTradeSelect === 'function') {
+      onTradeSelect(trade);
+    }
+  }, [barDuration, onTradeSelect]);
+
   // Expose scrollToTrade method via ref
   useImperativeHandle(ref, () => ({
     scrollToTime: (time, barsAround = 30) => {
       if (!chartRef.current) return;
-      
+
       const timeScale = chartRef.current.timeScale();
-      const barDuration = 900; // 15 minutes in seconds
-      
+
       // Set visible range around the target time
       const from = time - (barsAround * barDuration);
       const to = time + (barsAround * barDuration);
-      
+
       timeScale.setVisibleRange({ from, to });
     },
     
     scrollToTrade: (time, priceRange, barsAround = 30) => {
       if (!chartRef.current || !candleSeriesRef.current) return;
-      
+
       const timeScale = chartRef.current.timeScale();
-      const barDuration = 900; // 15 minutes in seconds
-      
+
       // Set visible range for time (horizontal)
       const from = time - (barsAround * barDuration);
       const to = time + (barsAround * barDuration);
       timeScale.setVisibleRange({ from, to });
-      
+
       // Set visible range for price (vertical) with padding
       if (priceRange) {
         const { low, high } = priceRange;
         const padding = (high - low) * 0.5; // 50% padding for better visibility
         const minValue = low - padding;
         const maxValue = high + padding;
-        
+
         // Get the series price scale and set visible range
         const seriesPriceScale = candleSeriesRef.current.priceScale();
         if (seriesPriceScale) {
@@ -119,7 +212,7 @@ const TradingChart = forwardRef(function TradingChart({
           seriesPriceScale.applyOptions({
             autoScale: false,
           });
-          
+
           // Use setVisibleRange if available (lightweight-charts v5+)
           if (typeof seriesPriceScale.setVisibleRange === 'function') {
             seriesPriceScale.setVisibleRange({
@@ -184,7 +277,6 @@ const TradingChart = forwardRef(function TradingChart({
       // Get price scale position
       let priceRange = null;
       if (candleSeriesRef.current) {
-        const priceScale = candleSeriesRef.current.priceScale();
         // Try to get visible price range
         const barsInfo = candleSeriesRef.current.barsInLogicalRange(logicalRange);
         if (barsInfo) {
@@ -238,7 +330,7 @@ const TradingChart = forwardRef(function TradingChart({
       }
     },
     isMeasuring: () => activeMeasurementTool !== null,
-  }), [activeMeasurementTool, candles, animateVisibleRange]);
+  }), [activeMeasurementTool, barDuration, candles, animateVisibleRange]);
 
   // Initialize chart
   useEffect(() => {
@@ -270,9 +362,10 @@ const TradingChart = forwardRef(function TradingChart({
       },
       rightPriceScale: {
         borderColor: colors.grid,
+        autoScale: false, // Disable auto-scale to allow manual vertical movement
         scaleMargins: {
-          top: 0.1,
-          bottom: 0.2,
+          top: 0.08,
+          bottom: 0.12,
         },
       },
       timeScale: {
@@ -297,9 +390,6 @@ const TradingChart = forwardRef(function TradingChart({
         },
         mouseWheel: true,
         pinch: true,
-      },
-      rightPriceScale: {
-        autoScale: false, // Disable auto-scale to allow manual vertical movement
       },
     });
 
@@ -431,6 +521,27 @@ const TradingChart = forwardRef(function TradingChart({
       markersRef.current = createSeriesMarkers(candleSeriesRef.current, sortedMarkers);
     }
   }, [chartMarkers]);
+
+  useEffect(() => {
+    if (!chartRef.current || tradeIndexByTime.size === 0) return;
+
+    const chart = chartRef.current;
+    const handleChartClick = (param) => {
+      const clickedTime = normalizeChartTime(param?.time);
+      if (!Number.isFinite(clickedTime)) return;
+
+      const matchedTrades = tradeIndexByTime.get(clickedTime);
+      if (!matchedTrades || matchedTrades.length === 0) return;
+
+      const selected = matchedTrades.find(item => item.source === 'entry') || matchedTrades[matchedTrades.length - 1];
+      focusTrade(selected.trade);
+    };
+
+    chart.subscribeClick(handleChartClick);
+    return () => {
+      chart.unsubscribeClick(handleChartClick);
+    };
+  }, [tradeIndexByTime, focusTrade]);
 
   // Update trade zones (rectangles) and order blocks
   useEffect(() => {

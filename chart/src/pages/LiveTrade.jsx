@@ -155,6 +155,10 @@ function LiveTrade() {
         }
     };
 
+    const handleTradeSelect = (trade) => {
+        setSelectedTradeId(trade.id);
+    };
+
     // Handle symbol change
     const handleSymbolChange = (symbolId) => {
         setSelectedSymbol(symbolId);
@@ -287,6 +291,7 @@ function LiveTrade() {
                     markers={filteredMarkers}
                     trades={filteredTrades}
                     orderBlocks={[]}  // No order blocks for live trading
+                    onTradeSelect={handleTradeSelect}
                 />
 
                 {/* Trade List - positioned top right of chart */}

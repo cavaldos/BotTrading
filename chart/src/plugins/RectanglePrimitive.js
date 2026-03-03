@@ -85,6 +85,29 @@ class RectangleRenderer {
     this._source = source;
   }
 
+  _fitLabelToWidth(ctx, text, maxWidth) {
+    if (!text || !Number.isFinite(maxWidth) || maxWidth <= 0) {
+      return text;
+    }
+
+    if (ctx.measureText(text).width <= maxWidth) {
+      return text;
+    }
+
+    const ellipsis = '...';
+    const ellipsisWidth = ctx.measureText(ellipsis).width;
+    if (ellipsisWidth > maxWidth) {
+      return '';
+    }
+
+    let result = text;
+    while (result.length > 0 && (ctx.measureText(result).width + ellipsisWidth) > maxWidth) {
+      result = result.slice(0, -1);
+    }
+
+    return result.length > 0 ? `${result}${ellipsis}` : '';
+  }
+
   draw(target) {
     const options = this._source.getOptions();
     const chart = this._source.getChart();
@@ -108,7 +131,9 @@ class RectangleRenderer {
 
     target.useMediaCoordinateSpace(scope => {
       const ctx = scope.context;
-      
+      const paneWidth = Number.isFinite(ctx?.canvas?.width) ? ctx.canvas.width : null;
+      const paneHeight = Number.isFinite(ctx?.canvas?.height) ? ctx.canvas.height : null;
+
       const x = Math.min(startX, endX);
       const y = Math.min(highY, lowY);
       const minWidth = 40; // Minimum width in pixels so thin trades are still visible
@@ -131,23 +156,55 @@ class RectangleRenderer {
       // Draw label if specified
       if (options.label) {
         const fontSize = 8;
+        const edgePadding = 4;
         ctx.font = `bold ${fontSize}px Arial`;
         ctx.fillStyle = options.labelColor;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        
+
+        const isOutsidePane = paneWidth !== null && paneHeight !== null
+          ? (x > paneWidth || (x + width) < 0 || y > paneHeight || (y + height) < 0)
+          : false;
+
+        if (isOutsidePane) {
+          return;
+        }
+
+        const maxLabelWidth = paneWidth !== null
+          ? Math.max(0, paneWidth - (edgePadding * 2))
+          : Number.POSITIVE_INFINITY;
+
+        const labelText = this._fitLabelToWidth(ctx, options.label, maxLabelWidth);
+        if (!labelText) {
+          return;
+        }
+
+        const textWidth = ctx.measureText(labelText).width;
+
         // Position label at the left side, vertically centered
-        const labelX = x + 5;
-        const labelY = y + height / 2;
-        
+        let labelX = x + 5;
+        let labelY = y + height / 2;
+
+        if (paneWidth !== null) {
+          const minX = edgePadding;
+          const maxX = paneWidth - edgePadding - textWidth;
+          labelX = Math.min(Math.max(labelX, minX), Math.max(minX, maxX));
+        }
+
+        if (paneHeight !== null) {
+          const minY = fontSize + 2;
+          const maxY = paneHeight - 2;
+          labelY = Math.min(Math.max(labelY, minY), maxY);
+        }
+
         // Draw text shadow for better visibility
         ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
         ctx.shadowBlur = 3;
         ctx.shadowOffsetX = 1;
         ctx.shadowOffsetY = 1;
-        
-        ctx.fillText(options.label, labelX, labelY);
-        
+
+        ctx.fillText(labelText, labelX, labelY);
+
         // Reset shadow
         ctx.shadowColor = 'transparent';
         ctx.shadowBlur = 0;
@@ -170,6 +227,8 @@ export function createTradeZones(trade, orderIndex) {
   // Calculate TP% and SL%
   const tpPercent = Math.abs((trade.takeProfit - trade.entryPrice) / trade.entryPrice * 100);
   const slPercent = Math.abs((trade.stopLoss - trade.entryPrice) / trade.entryPrice * 100);
+  const rr = slPercent > 0 ? (tpPercent / slPercent) : null;
+  const rrText = rr !== null && Number.isFinite(rr) ? `${rr.toFixed(2)}R` : 'N/A';
 
   const prefix = orderIndex != null ? `#${orderIndex} ` : '';
 
@@ -182,7 +241,7 @@ export function createTradeZones(trade, orderIndex) {
     fillColor: 'rgba(38, 166, 154, 0.25)',
     borderColor: 'rgba(38, 166, 154, 0.6)',
     borderWidth: 1,
-    label: `${prefix}TP: ${tpPercent.toFixed(2)}%`,
+    label: `${prefix}TP: ${tpPercent.toFixed(2)}% RR: ${rrText}`,
     labelColor: '#26a69a',
   }));
 
@@ -195,7 +254,7 @@ export function createTradeZones(trade, orderIndex) {
     fillColor: 'rgba(239, 83, 80, 0.25)',
     borderColor: 'rgba(239, 83, 80, 0.6)',
     borderWidth: 1,
-    label: `${prefix}SL: ${slPercent.toFixed(2)}%`,
+    label: `${prefix}SL: ${slPercent.toFixed(2)}% RR: ${rrText}`,
     labelColor: '#ef5350',
   }));
 

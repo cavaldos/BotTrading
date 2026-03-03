@@ -60,6 +60,10 @@ function ViewBacktest() {
         }
     };
 
+    const handleTradeSelect = (trade) => {
+        setSelectedTradeId(trade.id);
+    };
+
     // Handle symbol change
     const handleSymbolChange = (symbolId) => {
         setSelectedSymbol(symbolId);
@@ -144,6 +148,7 @@ function ViewBacktest() {
                     markers={filteredMarkers}
                     trades={filteredTrades}
                     orderBlocks={data?.orderBlocks}
+                    onTradeSelect={handleTradeSelect}
                 />
 
                 {/* Trade List - positioned top right of chart */}
