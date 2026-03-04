@@ -239,8 +239,6 @@ export function createTradeZones(trade, orderIndex) {
     lowPrice: isLong ? trade.entryPrice : trade.takeProfit,
     highPrice: isLong ? trade.takeProfit : trade.entryPrice,
     fillColor: 'rgba(38, 166, 154, 0.25)',
-    borderColor: 'rgba(38, 166, 154, 0.6)',
-    borderWidth: 1,
     label: `${prefix}TP: ${tpPercent.toFixed(2)}% RR: ${rrText}`,
     labelColor: '#26a69a',
   }));
@@ -252,8 +250,6 @@ export function createTradeZones(trade, orderIndex) {
     lowPrice: isLong ? trade.stopLoss : trade.entryPrice,
     highPrice: isLong ? trade.entryPrice : trade.stopLoss,
     fillColor: 'rgba(239, 83, 80, 0.25)',
-    borderColor: 'rgba(239, 83, 80, 0.6)',
-    borderWidth: 1,
     label: `${prefix}SL: ${slPercent.toFixed(2)}% RR: ${rrText}`,
     labelColor: '#ef5350',
   }));
