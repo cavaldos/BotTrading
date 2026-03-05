@@ -13,12 +13,11 @@ Output:
 
 from pathlib import Path
 from typing import List, Dict, Any
-from dataclasses import fields
 import pandas as pd
 from tqdm import tqdm
 
 # Import strategy components
-from src.strategy import Config, Strategy, STRATEGY_NAME
+from src.strategy import Config, Strategy, STRATEGY_NAME, build_strategy_config
 from src.backtest.statistics import TradeSimulator, generate_summary_report
 from src.config import load_backtest_config, load_strategy_config
 from src.indicators.reversal_patterns import PATTERN_PAIR_NAMES, validate_pattern_ids, get_pattern_name
@@ -28,9 +27,9 @@ from src.indicators.reversal_patterns import PATTERN_PAIR_NAMES, validate_patter
 # CONFIGURATION
 # ==============================================================================
 
-# Danh sách pattern IDs cần test (0 = all, 1-10 = từng cặp)
-# Thay đổi mảng này nếu chỉ muốn test một số pattern nhất định
-PATTERN_IDS_TO_TEST = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+# Danh sách pattern IDs cần test (1-10, bỏ 5 vì đã remove)
+# Nếu muốn benchmark "all patterns", thêm ID 0 vào danh sách
+PATTERN_IDS_TO_TEST = [1, 2, 3, 4, 6, 7, 8, 9, 10]
 
 # Folders
 DEFAULT_DATA_FOLDER = "res/data"
@@ -63,19 +62,26 @@ def create_config_with_pattern(pattern_ids: List[int]) -> Config:
     data_folder = data_config.get('folder_path', DEFAULT_DATA_FOLDER)
     output_folder = data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)
 
-    strategy_fields = {item.name for item in fields(Config)}
-    strategy_kwargs = {
-        key: value
-        for key, value in strategy_config.items()
-        if key in strategy_fields and key not in {'data_folder', 'output_folder', 'reversal_pattern_ids'}
-    }
-    
-    config = Config(
-        data_folder=data_folder,
-        output_folder=output_folder,
-        **strategy_kwargs,
+    raw_signal_timeframe = strategy_config.get('signal_timeframe', '5m')
+    if isinstance(raw_signal_timeframe, list):
+        signal_timeframe = next((str(tf).strip() for tf in raw_signal_timeframe if str(tf).strip()), '5m')
+    else:
+        signal_timeframe = str(raw_signal_timeframe).strip() or '5m'
+
+    entry_timeframe = str(strategy_config.get('entry_timeframe', '1m')).strip() or '1m'
+
+    config = build_strategy_config(
+        data_folder=str(data_folder),
+        output_folder=str(output_folder),
+        strategy_config=strategy_config,
+        overrides={
+            'signal_timeframe': signal_timeframe,
+            'entry_timeframe': entry_timeframe,
+            'require_reversal_pattern': True,
+            'enable_simple_reversal': False,
+        },
     )
-    config.reversal_pattern_ids = pattern_ids
+    config.reversal_pattern_ids = list(pattern_ids)
     
     return config
 
@@ -240,6 +246,7 @@ def main():
     
     print(f"\n📂 Data folder: {data_folder}")
     print(f"📊 Found {len(csv_files)} data file(s)")
+    print("⚙️ Benchmark mode: require_reversal_pattern=True, enable_simple_reversal=False")
     validated_pattern_ids = validate_pattern_ids(PATTERN_IDS_TO_TEST)
     print(f"🔢 Testing {len(validated_pattern_ids)} pattern(s): {list(validated_pattern_ids)}")
     print("-" * 60)
