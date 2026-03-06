@@ -19,8 +19,20 @@ body {
 .app {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100%;
   width: 100%;
+  min-height: 0;
+}
+
+.main-layout {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.main-layout > main {
+  flex: 1;
+  min-height: 0;
 }
 
 .header {

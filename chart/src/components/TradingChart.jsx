@@ -3,6 +3,11 @@ import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-cha
 import { createSeriesMarkers } from 'lightweight-charts';
 import { createTradeZones, createOrderBlockRect } from '../plugins/RectanglePrimitive';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
+import {
+  crosshairTimeAxisLabelStyle,
+  hideCrosshairTimeLabel,
+  updateCrosshairTimeLabel,
+} from './crosshairTimeLabel';
 import { applyPositionLabelsToMarkers } from './positionMarkers';
 
 function normalizeChartTime(time) {
@@ -54,6 +59,7 @@ const TradingChart = forwardRef(function TradingChart({
   onTradeSelect = null,
 }, ref) {
   const chartContainerRef = useRef(null);
+  const timeAxisLabelRef = useRef(null);
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
@@ -442,8 +448,40 @@ const TradingChart = forwardRef(function TradingChart({
     measurementRef.current = measurementPrimitive;
     measurementHandlerRef.current = createMeasurementHandler(chart, candleSeries, measurementPrimitive);
 
+    const handleCrosshairMove = (param) => {
+      updateCrosshairTimeLabel({
+        chart,
+        container: chart.chartElement(),
+        labelElement: timeAxisLabelRef.current,
+        pointX: param?.point?.x,
+        time: param?.time,
+      });
+    };
+
+    const chartElement = chart.chartElement();
+    const handleMouseMove = (event) => {
+      const rect = chartElement.getBoundingClientRect();
+      updateCrosshairTimeLabel({
+        chart,
+        container: chartElement,
+        labelElement: timeAxisLabelRef.current,
+        pointX: event.clientX - rect.left,
+      });
+    };
+
+    const handleMouseLeave = () => {
+      hideCrosshairTimeLabel(timeAxisLabelRef.current);
+    };
+
+    chart.subscribeCrosshairMove(handleCrosshairMove);
+    chartElement.addEventListener('mousemove', handleMouseMove);
+    chartElement.addEventListener('mouseleave', handleMouseLeave);
+
     return () => {
       window.removeEventListener('resize', handleResize);
+      chart.unsubscribeCrosshairMove(handleCrosshairMove);
+      chartElement.removeEventListener('mousemove', handleMouseMove);
+      chartElement.removeEventListener('mouseleave', handleMouseLeave);
       if (measurementHandlerRef.current) {
         measurementHandlerRef.current.disable();
       }
@@ -451,6 +489,7 @@ const TradingChart = forwardRef(function TradingChart({
         cancelAnimationFrame(scrollAnimationRef.current);
         scrollAnimationRef.current = null;
       }
+      hideCrosshairTimeLabel(timeAxisLabelRef.current);
       chart.remove();
     };
   }, [colors]);
@@ -682,6 +721,11 @@ const TradingChart = forwardRef(function TradingChart({
           height: '100%',
           minHeight: '500px',
         }}
+      />
+      <div
+        ref={timeAxisLabelRef}
+        aria-hidden="true"
+        style={crosshairTimeAxisLabelStyle}
       />
     </div>
   );

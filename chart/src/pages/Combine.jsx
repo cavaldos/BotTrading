@@ -74,6 +74,9 @@ function CombinePage() {
     return filterMarkers(tradeData.markers, trades);
   }, [tradeData?.markers, tradeData?.trades, filter]);
 
+  const combinedCandles = tradeData?.candles?.length ? tradeData.candles : (indicatorData?.candles || []);
+  const combinedVolume = tradeData?.volume?.length ? tradeData.volume : (indicatorData?.volume || []);
+
   const handleTradeClick = useCallback((trade) => {
     setSelectedTradeId(trade.id);
     if (chartRef.current) {
@@ -188,8 +191,8 @@ function CombinePage() {
       <div className="chart-container">
         <CombineChart
           ref={chartRef}
-          candles={tradeData?.candles || indicatorData?.candles}
-          volume={tradeData?.volume || indicatorData?.volume}
+          candles={combinedCandles}
+          volume={combinedVolume}
           markers={filteredMarkers}
           trades={filteredTrades}
           orderBlocks={tradeData?.orderBlocks}

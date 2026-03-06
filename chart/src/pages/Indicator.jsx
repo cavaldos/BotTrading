@@ -21,8 +21,8 @@ const DEFAULT_VISIBILITY = {
 const FULL_SCREEN_APP_STYLE = {
   position: 'relative',
   width: '100%',
-  height: 'calc(100vh - 40px)',
-  minHeight: 'calc(100vh - 40px)',
+  height: '100%',
+  minHeight: 0,
   display: 'flex',
   flexDirection: 'column',
   backgroundColor: '#131722',
