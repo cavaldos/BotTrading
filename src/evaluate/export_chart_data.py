@@ -15,7 +15,7 @@ import numpy as np
 import json
 import sys
 import os
-from bisect import bisect_left
+from bisect import bisect_right
 from glob import glob
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
@@ -29,6 +29,7 @@ config = load_backtest_config(include_strategy=False)
 DATA_DIR = config.get('folder_path', 'res/data')
 TRADES_DIR = config.get('output_folder', 'res/output')
 OUTPUT_DIR = 'chart/public/data/orders'
+CONVERTED_DATA_DIR = 'res/data_converted'
 
 # Colors configuration (matching TradingView style)
 COLORS = {
@@ -39,11 +40,19 @@ COLORS = {
 
 def scan_data_files() -> list[dict]:
     """
-    Scan res/data/ directory for data files and match with trades files.
+    Scan available candle directories and match them with trades files.
     Returns list of dict with data_file, trades_file, symbol, timeframe.
     """
-    data_files = glob(os.path.join(DATA_DIR, '*.csv'))
-    results = []
+    candidate_dirs = []
+    for directory in (DATA_DIR, CONVERTED_DATA_DIR):
+        directory = str(directory)
+        if directory and os.path.isdir(directory) and directory not in candidate_dirs:
+            candidate_dirs.append(directory)
+
+    results_by_id: dict[str, dict] = {}
+    data_files = []
+    for directory in candidate_dirs:
+        data_files.extend(glob(os.path.join(directory, '*.csv')))
     
     for data_file in data_files:
         filename = os.path.basename(data_file)
@@ -64,15 +73,23 @@ def scan_data_files() -> list[dict]:
             print(f"  Warning: No trades file found for {filename}")
             trades_file = None
         
-        results.append({
+        result = {
             'data_file': data_file,
             'trades_file': trades_file,
             'symbol': symbol,
             'timeframe': timeframe,
             'id': name_without_ext,  # e.g., BTCUSDT_15m
-        })
+        }
+
+        existing = results_by_id.get(name_without_ext)
+        if existing is None:
+            results_by_id[name_without_ext] = result
+            continue
+
+        if os.path.getmtime(data_file) >= os.path.getmtime(existing['data_file']):
+            results_by_id[name_without_ext] = result
     
-    return sorted(results, key=lambda x: (x['symbol'], x['timeframe']))
+    return sorted(results_by_id.values(), key=lambda x: (x['symbol'], x['timeframe']))
 
 
 def load_data(data_file: str, trades_file: str | None) -> tuple:
@@ -87,8 +104,8 @@ def load_data(data_file: str, trades_file: str | None) -> tuple:
     if trades_file and os.path.exists(trades_file):
         trades_df = pd.read_csv(trades_file)
         trades_df.columns = trades_df.columns.str.strip()
-        trades_df['Entry_Time'] = pd.to_datetime(trades_df['Entry_Time'])
-        trades_df['Exit_Time'] = pd.to_datetime(trades_df['Exit_Time'])
+        trades_df['Entry_Time'] = pd.to_datetime(trades_df['Entry_Time'], format='mixed', errors='coerce')
+        trades_df['Exit_Time'] = pd.to_datetime(trades_df['Exit_Time'], format='mixed', errors='coerce')
     
     return df, trades_df
 
@@ -115,16 +132,16 @@ def datetime_to_timestamp(dt) -> int:
     return int(dt)
 
 
-def snap_to_next_candle(timestamp: int, candle_times: list[int]) -> int:
-    """Snap timestamp forward to the nearest available candle time."""
+def snap_to_containing_candle(timestamp: int, candle_times: list[int]) -> int:
+    """Snap timestamp to the candle bucket that contains it."""
     if not candle_times:
         return timestamp
 
-    idx = bisect_left(candle_times, timestamp)
-    if idx < len(candle_times):
+    idx = bisect_right(candle_times, timestamp) - 1
+    if idx >= 0:
         return candle_times[idx]
 
-    return candle_times[-1]
+    return candle_times[0]
 
 
 def export_candles(df: pd.DataFrame) -> list:
@@ -165,8 +182,8 @@ def export_trades(trades_df: pd.DataFrame | None, candle_times: list[int]) -> li
         is_win = row['Result'] != 'Loss'
         entry_time_raw = datetime_to_timestamp(row['Entry_Time'])
         exit_time_raw = datetime_to_timestamp(row['Exit_Time'])
-        entry_time = snap_to_next_candle(entry_time_raw, candle_times)
-        exit_time = snap_to_next_candle(exit_time_raw, candle_times)
+        entry_time = snap_to_containing_candle(entry_time_raw, candle_times)
+        exit_time = snap_to_containing_candle(exit_time_raw, candle_times)
 
         trades.append({
             'id': int(idx),
@@ -199,8 +216,8 @@ def export_markers(trades_df: pd.DataFrame | None, candle_times: list[int]) -> l
     for idx, row in enumerate(records):
         is_long = row['Type'] == 'LONG'
         is_win = row['Result'] != 'Loss'
-        entry_time = snap_to_next_candle(datetime_to_timestamp(row['Entry_Time']), candle_times)
-        exit_time = snap_to_next_candle(datetime_to_timestamp(row['Exit_Time']), candle_times)
+        entry_time = snap_to_containing_candle(datetime_to_timestamp(row['Entry_Time']), candle_times)
+        exit_time = snap_to_containing_candle(datetime_to_timestamp(row['Exit_Time']), candle_times)
         
         # Entry marker
         markers.append({

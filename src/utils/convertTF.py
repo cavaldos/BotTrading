@@ -62,6 +62,7 @@ def convert_timeframe(df, timeframe):
     # Đảm bảo cột Time là datetime và set làm index
     df = df.copy()
     df['Time'] = pd.to_datetime(df['Time'])
+    df.sort_values('Time', inplace=True)
     df.set_index('Time', inplace=True)
     
     # Quy tắc resample cho OHLCV
@@ -91,8 +92,11 @@ def convert_timeframe(df, timeframe):
     else:
         resample_rule = timeframe
 
-    # Resample theo timeframe mới
-    df_resampled = df.resample(resample_rule).agg(ohlcv_rules)
+    # Resample theo timeframe mới.
+    # Dữ liệu nguồn trong project đang dùng timestamp là thời gian mở nến,
+    # nên resample phải giữ nhãn bucket ở cạnh trái để 5m `15:30` đại diện
+    # cho cụm 15:30 -> 15:34.
+    df_resampled = df.resample(resample_rule, label='left', closed='left').agg(ohlcv_rules)
     
     # Loại bỏ các hàng có giá trị NaN (nếu có)
     df_resampled.dropna(inplace=True)
