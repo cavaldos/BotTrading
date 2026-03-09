@@ -90,6 +90,7 @@ class Config(BaseConfig):
 
     # === ORDER BLOCK ===
     ob_body_ratio: float = 0.35     # Candle body size / candle range must be > 35%
+    max_active_obs_per_bias: int = 10  # Keep only the most recent bullish/bearish OBs
 
     # === ENTRY FILTERS ===
     require_liquidity: bool = True          # Require EQH/EQL liquidity event after OB break
@@ -128,6 +129,7 @@ class Config(BaseConfig):
             "eqhl_threshold": self.eqhl_threshold,
             "ob_detection": "LuxAlgo extreme candle + trending candle filter",
             "ob_body_ratio": self.ob_body_ratio,
+            "max_active_obs_per_bias": self.max_active_obs_per_bias,
             "require_liquidity": self.require_liquidity,
             "require_reversal_pattern": self.require_reversal_pattern,
             "enable_simple_reversal": self.enable_simple_reversal,
@@ -400,6 +402,8 @@ class Strategy(BaseStrategy):
             for ob in obs_by_break.get(i, []):
                 active_obs.append(ob)
 
+            active_obs = self._prune_active_obs(active_obs)
+
             # 3b. Activate FVG/IFVG zones that become known at this bar
             for gap_zone in gap_zones_by_index.get(i, []):
                 active_gap_zones.append(gap_zone)
@@ -580,6 +584,24 @@ class Strategy(BaseStrategy):
         if mode not in {"none", "fvg", "ifvg", "both"}:
             return "none"
         return mode
+
+    def _prune_active_obs(self, active_obs: List[StrategyOrderBlock]) -> List[StrategyOrderBlock]:
+        limit = max(1, int(self.config.max_active_obs_per_bias))
+        if len(active_obs) <= limit:
+            return active_obs
+
+        kept_obs: List[StrategyOrderBlock] = []
+        kept_per_bias: dict[str, int] = {}
+
+        for ob in reversed(active_obs):
+            current_count = kept_per_bias.get(ob.bias, 0)
+            if current_count >= limit:
+                continue
+            kept_per_bias[ob.bias] = current_count + 1
+            kept_obs.append(ob)
+
+        kept_obs.reverse()
+        return kept_obs
 
     def _passes_gap_filter(
         self,
