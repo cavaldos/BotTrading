@@ -31,7 +31,8 @@ INTERFACE CONTRACT (must export for main.py):
 - Signal: dataclass representing a trade signal
 - Strategy: class with generate_signals(df, symbol) -> List[Signal] method
 
-Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL detection.
+Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL,
+and optional FVG/IFVG confluence detection.
 """
 
 from datetime import datetime, timedelta
@@ -56,6 +57,8 @@ from src.indicators.BOS import detect_bos, BOS
 from src.indicators.order_block import detect_order_blocks as detect_order_blocks_indicator
 from src.indicators.order_block import OrderBlock as IndicatorOrderBlock
 from src.indicators.eqh_eql import detect_eqh_eql, EqualHL as IndicatorEqualHL
+from src.indicators.FVG import detect_fvg, FairValueGap
+from src.indicators.ifvg import detect_ifvg, InverseFairValueGap
 from src.indicators.swing import detect_swings, Swing as IndicatorSwing
 
 
@@ -94,8 +97,9 @@ class Config(BaseConfig):
     enable_simple_reversal: bool = True     # Allow simpler rejection/displacement reversal
     simple_reversal_wick_ratio: float = 0.25  # Min wick/range ratio for simple reversal
 
-    # === FVG ===
-    fvg_atr_filter: bool = True     # (kept for compatibility; logic removed from strategy)
+    # === IMBALANCE FILTER ===
+    gap_filter_mode: str = "none"   # none | fvg | ifvg | both
+    fvg_atr_filter: bool = True     # Legacy name; toggles FVG/IFVG auto-threshold filter
 
     # === REVERSAL PATTERNS ===
     reversal_pattern_ids: List[int] = field(default_factory=lambda: [0])
@@ -128,6 +132,8 @@ class Config(BaseConfig):
             "require_reversal_pattern": self.require_reversal_pattern,
             "enable_simple_reversal": self.enable_simple_reversal,
             "simple_reversal_wick_ratio": self.simple_reversal_wick_ratio,
+            "gap_filter_mode": self.gap_filter_mode,
+            "fvg_atr_filter": self.fvg_atr_filter,
             "touch_tolerance_pct": self.touch_tolerance_pct,
             "touch_confirmation_bars": self.touch_confirmation_bars,
             "entry_on_candle_close": self.entry_on_candle_close,
@@ -158,6 +164,14 @@ class StrategyOrderBlock(BaseZone):
     liquidity_confirmed_index: int = -1
     entry_triggered: bool = False
     last_touch_index: int = -1
+
+
+@dataclass
+class StrategyGapZone(BaseZone):
+    """Represents an active FVG/IFVG zone used as entry confluence."""
+    index: int = 0
+    gap_type: str = 'FVG'            # 'FVG' or 'IFVG'
+    source_index: int = -1
 
 
 @dataclass
@@ -223,8 +237,10 @@ class Strategy(BaseStrategy):
 
         NO LOOK-AHEAD BIAS:
         - OB activated at break_index (structure break bar)
+        - FVG/IFVG activated at their detection bar
         - EQH/EQL activated at confirmed_index (confirmation bar, not pivot bar)
         - OB mitigation checked at each bar using current price only
+        - FVG/IFVG validity checked at each bar using current price only
         - has_liquidity updated incrementally as events arrive
         - CHoCH is not required during retrace
         """
@@ -295,6 +311,14 @@ class Strategy(BaseStrategy):
             threshold=self.config.eqhl_threshold,
         )
 
+        gap_filter_mode = self._normalize_gap_filter_mode()
+        fvg_list: List[FairValueGap] = []
+        ifvg_list: List[InverseFairValueGap] = []
+        if gap_filter_mode in {"fvg", "both"}:
+            fvg_list = detect_fvg(df, auto_threshold=self.config.fvg_atr_filter)
+        if gap_filter_mode in {"ifvg", "both"}:
+            ifvg_list = detect_ifvg(df, auto_threshold=self.config.fvg_atr_filter)
+
         uses_swing_targets = self._normalize_tp_mode() in {"opposite_swing", "opposite_ob_or_swing"}
         swings_by_confirm: dict[int, List[IndicatorSwing]] = {}
         if uses_swing_targets:
@@ -337,8 +361,33 @@ class Strategy(BaseStrategy):
             ci = eqhl.confirmed_index
             eqhl_by_confirm.setdefault(ci, []).append(eqhl)
 
+        gap_zones_by_index: dict[int, List[StrategyGapZone]] = {}
+        for fvg in fvg_list:
+            gap_zone = self._create_gap_zone(
+                top=fvg.top,
+                bottom=fvg.bottom,
+                bias=fvg.bias,
+                time=fvg.time,
+                index=int(fvg.index),
+                gap_type='FVG',
+            )
+            gap_zones_by_index.setdefault(gap_zone.index, []).append(gap_zone)
+
+        for ifvg in ifvg_list:
+            gap_zone = self._create_gap_zone(
+                top=ifvg.top,
+                bottom=ifvg.bottom,
+                bias=ifvg.bias,
+                time=ifvg.time,
+                index=int(ifvg.index),
+                gap_type='IFVG',
+                source_index=int(ifvg.source_index),
+            )
+            gap_zones_by_index.setdefault(gap_zone.index, []).append(gap_zone)
+
         # ========== 3. CAUSAL BAR-BY-BAR LOOP ==========
         active_obs: List[StrategyOrderBlock] = []
+        active_gap_zones: List[StrategyGapZone] = []
         confirmed_swing_high_levels: List[float] = []
         confirmed_swing_low_levels: List[float] = []
 
@@ -350,6 +399,10 @@ class Strategy(BaseStrategy):
             # 3a. Activate OBs whose structure break happens at this bar
             for ob in obs_by_break.get(i, []):
                 active_obs.append(ob)
+
+            # 3b. Activate FVG/IFVG zones that become known at this bar
+            for gap_zone in gap_zones_by_index.get(i, []):
+                active_gap_zones.append(gap_zone)
 
             # 3c. Process EQH/EQL events confirmed at this bar → update has_liquidity
             for eqhl in eqhl_by_confirm.get(i, []):
@@ -371,6 +424,13 @@ class Strategy(BaseStrategy):
                     confirmed_swing_high_levels.append(float(swing.price))
                 else:
                     confirmed_swing_low_levels.append(float(swing.price))
+
+            remaining_gap_zones = []
+            for gap_zone in active_gap_zones:
+                if self._zone_is_mitigated(gap_zone, highs[i], lows[i], closes[i]):
+                    continue
+                remaining_gap_zones.append(gap_zone)
+            active_gap_zones = remaining_gap_zones
 
             self._tp_context = {
                 "current_index": i,
@@ -414,7 +474,9 @@ class Strategy(BaseStrategy):
                         )
                     )
 
-                    if liquidity_ok:
+                    gap_ok = self._passes_gap_filter(ob, active_gap_zones)
+
+                    if liquidity_ok and gap_ok:
                         # MULTI-TIMEFRAME MODE: Find precise entry from entry-TF candles
                         if use_multi_tf and df_entry is not None:
                             signal_candle_close_time = current_time + timedelta(minutes=signal_tf_minutes)
@@ -484,8 +546,67 @@ class Strategy(BaseStrategy):
                 return 'BOS'
         return 'BOS'
 
+    def _create_gap_zone(
+        self,
+        *,
+        top: float,
+        bottom: float,
+        bias: str,
+        time: datetime,
+        index: int,
+        gap_type: str,
+        source_index: int = -1,
+    ) -> StrategyGapZone:
+        return StrategyGapZone(
+            high=max(float(top), float(bottom)),
+            low=min(float(top), float(bottom)),
+            time=time,
+            bias=bias,
+            index=index,
+            gap_type=gap_type,
+            source_index=source_index,
+        )
+
+    def _normalize_gap_filter_mode(self) -> str:
+        mode = str(self.config.gap_filter_mode).strip().lower()
+        aliases = {
+            "off": "none",
+            "disabled": "none",
+            "either": "both",
+            "any": "both",
+            "fvg_or_ifvg": "both",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"none", "fvg", "ifvg", "both"}:
+            return "none"
+        return mode
+
+    def _passes_gap_filter(
+        self,
+        ob: StrategyOrderBlock,
+        active_gap_zones: List[StrategyGapZone],
+    ) -> bool:
+        gap_filter_mode = self._normalize_gap_filter_mode()
+        if gap_filter_mode == "none":
+            return True
+
+        required_gap_types = {
+            "fvg": {"FVG"},
+            "ifvg": {"IFVG"},
+            "both": {"FVG", "IFVG"},
+        }[gap_filter_mode]
+
+        for gap_zone in active_gap_zones:
+            if gap_zone.bias != ob.bias:
+                continue
+            if gap_zone.gap_type not in required_gap_types:
+                continue
+            return True
+
+        return False
+
     def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
-                           lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
+                            lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
         """Check if current candle is a reversal pattern."""
         is_bullish = (ob_bias == 'BULLISH')
         pattern_ids = np.array(self.config.reversal_pattern_ids, dtype=np.int64)
