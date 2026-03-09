@@ -405,6 +405,29 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       });
     }
 
+    // --- IFVG zones ---
+    if (visibility.ifvg && data.ifvg?.length > 0) {
+      const ifvgItems = data.ifvg.filter(item => !item.isFilled);
+      ifvgItems.forEach(item => {
+        const endTime = item.time + 80 * barDuration;
+        newPrimitives.push(new RectanglePrimitive({
+          startTime: item.startTime || item.sourceTime || item.time,
+          endTime,
+          lowPrice: item.bottom,
+          highPrice: item.top,
+          fillColor: item.color || 'rgba(189, 189, 189, 0.12)',
+          borderColor: item.borderColor || (item.bias === 'BULLISH'
+            ? 'rgba(76, 175, 80, 0.70)'
+            : 'rgba(255, 112, 67, 0.75)'),
+          borderWidth: 1,
+          label: 'IFVG',
+          labelColor: item.labelColor || (item.bias === 'BULLISH'
+            ? 'rgba(76, 175, 80, 0.95)'
+            : 'rgba(255, 112, 67, 0.95)'),
+        }));
+      });
+    }
+
     // --- EQH/EQL lines ---
     if (visibility.eqhEql && data.eqhEql?.length > 0) {
       // Limit to prevent clutter - show most recent

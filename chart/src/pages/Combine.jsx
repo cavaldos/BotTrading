@@ -12,6 +12,7 @@ const DEFAULT_VISIBILITY = {
   choch: true,
   orderBlocks: true,
   fvg: false,
+  ifvg: false,
   eqhEql: false,
   imbalance: false,
   breakerBlocks: true,

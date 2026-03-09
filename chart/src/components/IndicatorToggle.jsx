@@ -32,6 +32,13 @@ const INDICATOR_CONFIG = [
     type: 'rect',
   },
   {
+    key: 'ifvg',
+    label: 'IFVG',
+    description: 'Inverse fair value gaps',
+    color: 'rgba(189, 189, 189, 0.8)',
+    type: 'rect',
+  },
+  {
     key: 'eqhEql',
     label: 'EQH/EQL',
     description: 'Equal Highs/Lows',

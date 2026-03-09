@@ -8,7 +8,7 @@ Main entry point that:
 
 Output JSON structure:
 {
-    candles, volume, bos, choch, orderBlocks, fvg, eqhEql,
+    candles, volume, bos, choch, orderBlocks, fvg, ifvg, eqhEql,
     imbalance, breakerBlocks, mitigationBlocks, retracement, swing, gannSwing, metadata
 }
 
@@ -37,6 +37,7 @@ from src.indicators.BOS import detect_bos, to_json as bos_to_json
 from src.indicators.CHOCH import detect_choch, to_json as choch_to_json
 from src.indicators.order_block import detect_order_blocks, to_json as ob_to_json
 from src.indicators.FVG import detect_fvg, to_json as fvg_to_json
+from src.indicators.ifvg import detect_ifvg, to_json as ifvg_to_json
 from src.indicators.eqh_eql import detect_eqh_eql, to_json as eqhl_to_json
 from src.indicators.imbalance import detect_imbalance, to_json as imbalance_to_json
 from src.indicators.breaker_block import detect_breaker_blocks, to_json as breaker_to_json
@@ -109,19 +110,24 @@ def load_data(data_file: str) -> pd.DataFrame:
 
 def datetime_to_timestamp(dt) -> int:
     """Convert datetime to Unix timestamp (seconds)."""
+    if pd.isna(dt):
+        return 0
     if isinstance(dt, pd.Timestamp):
         return int(dt.timestamp())
     elif isinstance(dt, datetime):
         return int(dt.timestamp())
     elif isinstance(dt, np.datetime64):
-        return int(pd.Timestamp(dt).timestamp())
+        ts = pd.Timestamp(dt)
+        if str(ts) == 'NaT':
+            return 0
+        return int(ts.value // 1_000_000_000)
     return int(dt)
 
 
 def export_candles(df: pd.DataFrame) -> List[dict]:
     """Export candlestick data in lightweight-charts format."""
     candles = []
-    times = df['Time'].values
+    times = np.asarray(df['Time'].to_numpy())
     opens = df['Open'].values
     highs = df['High'].values
     lows = df['Low'].values
@@ -129,7 +135,7 @@ def export_candles(df: pd.DataFrame) -> List[dict]:
 
     for i in range(len(df)):
         candles.append({
-            'time': int(pd.Timestamp(times[i]).timestamp()),
+            'time': datetime_to_timestamp(times[i]),
             'open': float(opens[i]),
             'high': float(highs[i]),
             'low': float(lows[i]),
@@ -141,7 +147,7 @@ def export_candles(df: pd.DataFrame) -> List[dict]:
 def export_volume(df: pd.DataFrame) -> List[dict]:
     """Export volume data in lightweight-charts histogram format."""
     volume = []
-    times = df['Time'].values
+    times = np.asarray(df['Time'].to_numpy())
     opens = df['Open'].values
     closes = df['Close'].values
     volumes = df['Volume'].values if 'Volume' in df.columns else np.zeros(len(df))
@@ -149,7 +155,7 @@ def export_volume(df: pd.DataFrame) -> List[dict]:
     for i in range(len(df)):
         is_bullish = closes[i] >= opens[i]
         volume.append({
-            'time': int(pd.Timestamp(times[i]).timestamp()),
+            'time': datetime_to_timestamp(times[i]),
             'value': float(volumes[i]),
             'color': COLORS['bullish_candle'] if is_bullish else COLORS['bearish_candle'],
         })
@@ -166,71 +172,78 @@ def run_all_indicators(df: pd.DataFrame) -> dict:
     Returns dict with all indicator results in JSON-serializable format.
     """
     results = {}
+    times = np.asarray(df['Time'].to_numpy())
 
     # 1. BOS (pass times for same timestamp conversion as candles → alignment)
     print("    BOS...", end='', flush=True)
     bos_list = detect_bos(df)
-    results['bos'] = bos_to_json(bos_list, times=df['Time'].values)
+    results['bos'] = bos_to_json(bos_list, times=times)
     print(f" {len(bos_list)} found")
 
     # 2. CHoCH (pass times for alignment with candles)
     print("    CHoCH...", end='', flush=True)
     choch_list = detect_choch(df)
-    results['choch'] = choch_to_json(choch_list, times=df['Time'].values)
+    results['choch'] = choch_to_json(choch_list, times=times)
     print(f" {len(choch_list)} found")
 
     # 3. Order Blocks
     print("    Order Blocks...", end='', flush=True)
     ob_list = detect_order_blocks(df)
-    results['orderBlocks'] = ob_to_json(ob_list, df)
+    results['orderBlocks'] = ob_to_json(ob_list, df=df)
     print(f" {len(ob_list)} found")
 
     # 4. FVG
     print("    FVG...", end='', flush=True)
     fvg_list = detect_fvg(df)
-    results['fvg'] = fvg_to_json(fvg_list, times=df['Time'].values)
+    results['fvg'] = fvg_to_json(fvg_list, times=times)
     print(f" {len(fvg_list)} found")
 
-    # 5. EQH/EQL
+    # 5. IFVG
+    print("    IFVG...", end='', flush=True)
+    ifvg_list = detect_ifvg(df)
+    results['ifvg'] = ifvg_to_json(ifvg_list, times=times)
+    print(f" {len(ifvg_list)} found")
+
+    # 6. EQH/EQL
     print("    EQH/EQL...", end='', flush=True)
     eqhl_list = detect_eqh_eql(df)
-    results['eqhEql'] = eqhl_to_json(eqhl_list, times=df['Time'].values)
+    results['eqhEql'] = eqhl_to_json(eqhl_list, times=times)
     print(f" {len(eqhl_list)} found")
 
-    # 6. Imbalance
+    # 7. Imbalance
     print("    Imbalance...", end='', flush=True)
     imb_list = detect_imbalance(df)
     results['imbalance'] = imbalance_to_json(imb_list)
     print(f" {len(imb_list)} found")
 
-    # 7. Breaker Blocks
+    # 8. Breaker Blocks
     print("    Breaker Blocks...", end='', flush=True)
     breaker_list = detect_breaker_blocks(df)
-    results['breakerBlocks'] = breaker_to_json(breaker_list, df)
+    results['breakerBlocks'] = breaker_to_json(breaker_list, df=df)
     print(f" {len(breaker_list)} found")
 
-    # 8. Mitigation Blocks
+    # 9. Mitigation Blocks
     print("    Mitigation Blocks...", end='', flush=True)
     mit_list = detect_mitigation_blocks(df)
-    results['mitigationBlocks'] = mitigation_to_json(mit_list, df)
+    results['mitigationBlocks'] = mitigation_to_json(mit_list, df=df)
     print(f" {len(mit_list)} found")
 
-    # 9. Retracement
+    # 10. Retracement
     print("    Retracement...", end='', flush=True)
     ret_list = detect_retracements(df)
-    results['retracement'] = retracement_to_json(ret_list, times=df['Time'].values)
+    results['retracement'] = retracement_to_json(ret_list, times=times)
     print(f" {len(ret_list)} found")
 
-    # 10. Swings (HH/HL/LH/LL)
+    # 11. Swings (HH/HL/LH/LL)
     print("    Swings...", end='', flush=True)
     swings = detect_swings(df)
-    results['swing'] = swing_to_json(swings, times=df['Time'].values)
+    results['swing'] = swing_to_json(swings, times=times)
     print(f" {len(swings)} found")
 
-    # 11. Gann Swings (leg-based HH/HL/LH/LL)
+    # 12. Gann Swings (leg-based HH/HL/LH/LL)
     print(f"    Gann Swing (len={GANN_SWING_LENGTH})...", end='', flush=True)
     gann_swings = detect_gann_swings(df, length=GANN_SWING_LENGTH)
-    results['gannSwing'] = gann_swing_to_json(gann_swings, times=list(df['Time'].values))
+    results['gannSwing'] = gann_swing_to_json(gann_swings, times=list(times))
     print(f" {len(gann_swings)} found")
 
     return results
@@ -281,6 +294,7 @@ def export_symbol(symbol_info: dict) -> dict:
             'choch': len(indicator_results['choch']),
             'orderBlocks': len(indicator_results['orderBlocks']),
             'fvg': len(indicator_results['fvg']),
+            'ifvg': len(indicator_results['ifvg']),
             'eqhEql': len(indicator_results['eqhEql']),
             'imbalance': len(indicator_results['imbalance']),
             'breakerBlocks': len(indicator_results['breakerBlocks']),
@@ -350,7 +364,7 @@ def main():
         total_indicators = sum(ind.values())
         print(f"  {sym['id']}: {sym['dataPoints']} candles, {total_indicators} indicator events")
         print(f"    BOS={ind['bos']}, CHoCH={ind['choch']}, OB={ind['orderBlocks']}, "
-              f"FVG={ind['fvg']}, EQH/EQL={ind['eqhEql']}")
+              f"FVG={ind['fvg']}, IFVG={ind['ifvg']}, EQH/EQL={ind['eqhEql']}")
         print(f"    Imbalance={ind['imbalance']}, Breaker={ind['breakerBlocks']}, "
               f"Mitigation={ind['mitigationBlocks']}, Retracement={ind['retracement']}")
         print(f"    Swing={ind.get('swing', 0)}, GannSwing={ind.get('gannSwing', 0)}")
