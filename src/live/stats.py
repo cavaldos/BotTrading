@@ -25,19 +25,16 @@ from src.config import load_live_config
 
 
 # Load config
-CONFIG = load_live_config(include_strategy=False)
+CONFIG = load_live_config(include_strategy=True)
 
 # Settings from config
 OUTPUT_FOLDER = CONFIG["output"]["folder"]
 LOG_FILE = CONFIG["output"]["log_file"]
 CURRENCIES = CONFIG["data"]["currencies"]
 
-# Timeframe settings
-TIMEFRAMES_CONFIG = CONFIG["timeframe"]
-if isinstance(TIMEFRAMES_CONFIG.get("value"), list):
-    TIMEFRAMES = TIMEFRAMES_CONFIG["value"]
-else:
-    TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
+# Timeframe settings - use signal_timeframe from strategy config
+STRATEGY = CONFIG.get("strategy", {})
+TIMEFRAMES = STRATEGY.get("signal_timeframe", ["5m"])
 
 
 # =============================================================================
@@ -78,6 +75,11 @@ def load_trades_from_csv(output_folder: str) -> list[dict]:
                 result = str(row.get('Result', '')).strip().upper()
                 trade_type = str(row.get('Type', '')).strip().upper()
                 
+                try:
+                    rr = float(row.get('RR', 0))
+                except (ValueError, TypeError):
+                    rr = 0.0
+                
                 trades.append({
                     'coin': coin,
                     'timeframe': timeframe,
@@ -85,6 +87,7 @@ def load_trades_from_csv(output_folder: str) -> list[dict]:
                     'type': trade_type,
                     'entry_time': row.get('Entry_Time', ''),
                     'entry_price': row.get('Entry_Price', 0),
+                    'rr': rr,
                 })
                 
         except Exception:
@@ -104,13 +107,16 @@ def calculate_statistics(trades: list[dict], coins: list[str], timeframes: list[
         'loss': 0,
         'open': 0,
         'passed': 0,
-        'win_rate': 0.0
+        'win_rate': 0.0,
+        'rr_values': [],
+        'avg_rr': 0.0,
     }))
     
     for trade in trades:
         coin = trade['coin']
         tf = trade['timeframe']
         result = trade['result']
+        rr = trade.get('rr', 0.0)
         
         if coin not in coins or tf not in timeframes:
             continue
@@ -125,8 +131,11 @@ def calculate_statistics(trades: list[dict], coins: list[str], timeframes: list[
             stats[coin][tf]['open'] += 1
         elif result == 'PASSED':
             stats[coin][tf]['passed'] += 1
+        
+        if rr > 0:
+            stats[coin][tf]['rr_values'].append(rr)
     
-    # Calculate win rate for each cell
+    # Calculate win rate and avg RR for each cell
     for coin in coins:
         for tf in timeframes:
             cell = stats[coin][tf]
@@ -135,6 +144,8 @@ def calculate_statistics(trades: list[dict], coins: list[str], timeframes: list[
                 cell['win_rate'] = (cell['win'] / closed_trades) * 100
             else:
                 cell['win_rate'] = 0.0
+            if cell['rr_values']:
+                cell['avg_rr'] = sum(cell['rr_values']) / len(cell['rr_values'])
     
     return stats
 
@@ -146,7 +157,6 @@ def calculate_statistics(trades: list[dict], coins: list[str], timeframes: list[
 def load_all_sent_orders(log_file: str) -> list[dict]:
     """
     Load tất cả các lệnh đã gửi Telegram từ sent_orders.json.
-    Parse key format: {SYMBOL_TIMEFRAME}|{TYPE}|{ENTRY_TIME}
     Returns: List of trade dictionaries với coin, timeframe, result info.
     """
     trades = []
@@ -161,26 +171,25 @@ def load_all_sent_orders(log_file: str) -> list[dict]:
             sent_orders = data.get("sent_orders", [])
             
             for order in sent_orders:
-                key = order.get("key", "")
+                coin = order.get("symbol", "")
+                timeframe = order.get("signal_timeframe", "")
+                trade_type = order.get("type", "")
+                entry_time = order.get("sent_at", "")
+                entry_price = order.get("entry_price", 0)
                 status = order.get("status", "")
                 
-                if not key:
+                if not coin or not timeframe:
                     continue
                 
-                # Parse key: "BNBUSDT_15m|LONG|2026-01-19 12:15:00"
-                parts = key.split('|')
-                if len(parts) != 3:
-                    continue
-                
-                symbol_timeframe = parts[0].split('_')
-                if len(symbol_timeframe) != 2:
-                    continue
-                
-                coin = symbol_timeframe[0]
-                timeframe = symbol_timeframe[1]
-                trade_type = parts[1]
-                entry_time = parts[2]
-                entry_price = order.get("entry_price", 0)
+                # Calculate RR from entry/sl/tp
+                try:
+                    ep = float(entry_price)
+                    sl = float(order.get("stop_loss", 0))
+                    tp = float(order.get("take_profit", 0))
+                    risk = abs(ep - sl)
+                    rr = abs(tp - ep) / risk if risk > 0 else 0.0
+                except (ValueError, TypeError, ZeroDivisionError):
+                    rr = 0.0
                 
                 # Map status to result format
                 result = str(status).strip().upper()
@@ -194,6 +203,7 @@ def load_all_sent_orders(log_file: str) -> list[dict]:
                     'type': trade_type,
                     'entry_time': entry_time,
                     'entry_price': entry_price,
+                    'rr': rr,
                 })
                 
     except Exception:
@@ -236,8 +246,10 @@ def format_cell(cell_stats: dict) -> str:
         f"{format_num(passed, 'cyan')}"
     )
     
-    # Line 2: Win Rate - always white
-    line2 = f"[white]{win_rate:.0f}%[/white]"
+    # Line 2: Win Rate + Avg RR
+    avg_rr = cell_stats['avg_rr']
+    rr_str = f" [magenta]RR:{avg_rr:.1f}[/magenta]" if avg_rr > 0 else ""
+    line2 = f"[white]{win_rate:.0f}%[/white]{rr_str}"
     
     return f"{line1}\n{line2}"
 
@@ -261,11 +273,16 @@ def format_summary_row(stats: dict, coins: list[str], timeframe: str) -> str:
         f"{format_num(total_passed, 'cyan')}"
     )
     
-    # Line 2: Win Rate - always white
+    # Line 2: Win Rate + Avg RR
     closed = total_win + total_loss
+    all_rr = []
+    for coin in coins:
+        all_rr.extend(stats[coin][timeframe]['rr_values'])
+    avg_rr = sum(all_rr) / len(all_rr) if all_rr else 0.0
+    rr_str = f" [magenta]RR:{avg_rr:.1f}[/magenta]" if avg_rr > 0 else ""
     if closed > 0:
         win_rate = (total_win / closed) * 100
-        line2 = f"[white]{win_rate:.0f}%[/white]"
+        line2 = f"[white]{win_rate:.0f}%[/white]{rr_str}"
     else:
         line2 = "[dim]-[/dim]"
     
@@ -291,11 +308,16 @@ def format_coin_summary(stats: dict, coin: str, timeframes: list[str]) -> str:
         f"{format_num(total_passed, 'cyan')}"
     )
     
-    # Line 2: Win Rate - always white
+    # Line 2: Win Rate + Avg RR
     closed = total_win + total_loss
+    all_rr = []
+    for tf in timeframes:
+        all_rr.extend(stats[coin][tf]['rr_values'])
+    avg_rr = sum(all_rr) / len(all_rr) if all_rr else 0.0
+    rr_str = f" [magenta]RR:{avg_rr:.1f}[/magenta]" if avg_rr > 0 else ""
     if closed > 0:
         win_rate = (total_win / closed) * 100
-        line2 = f"[white]{win_rate:.0f}%[/white]"
+        line2 = f"[white]{win_rate:.0f}%[/white]{rr_str}"
     else:
         line2 = "[dim]-[/dim]"
     
@@ -356,9 +378,12 @@ def create_all_trades_table(stats: dict, coins: list[str], timeframes: list[str]
     )
     
     closed = total_win + total_loss
+    all_rr = [rr for coin in coins for tf in timeframes for rr in stats[coin][tf]['rr_values']]
+    avg_rr = sum(all_rr) / len(all_rr) if all_rr else 0.0
+    rr_str = f" [magenta]RR:{avg_rr:.1f}[/magenta]" if avg_rr > 0 else ""
     if closed > 0:
         win_rate = (total_win / closed) * 100
-        line2 = f"[white]{win_rate:.0f}%[/white]"
+        line2 = f"[white]{win_rate:.0f}%[/white]{rr_str}"
     else:
         line2 = "[dim]-[/dim]"
     
@@ -428,9 +453,12 @@ def create_sent_orders_table(stats: dict, coins: list[str], timeframes: list[str
     )
     
     closed = total_win + total_loss
+    all_rr = [rr for coin in coins for tf in timeframes for rr in stats[coin][tf]['rr_values']]
+    avg_rr = sum(all_rr) / len(all_rr) if all_rr else 0.0
+    rr_str = f" [magenta]RR:{avg_rr:.1f}[/magenta]" if avg_rr > 0 else ""
     if closed > 0:
         win_rate = (total_win / closed) * 100
-        line2 = f"[white]{win_rate:.0f}%[/white]"
+        line2 = f"[white]{win_rate:.0f}%[/white]{rr_str}"
     else:
         line2 = "[dim]-[/dim]"
     

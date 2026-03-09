@@ -211,6 +211,7 @@ class Strategy(BaseStrategy):
         - Uses df (signal timeframe, e.g., 5m) for indicator calculation
         - Uses df_entry (entry timeframe, e.g., 1m) for precise entry detection
         - This prevents repainting by finding the FIRST entry-TF candle that touches OB
+          and passes the reversal filter on the entry timeframe candle itself
 
         SINGLE-TIMEFRAME MODE (when df_entry is None):
         - Uses df for both indicator calculation and entry
@@ -244,6 +245,21 @@ class Strategy(BaseStrategy):
 
         if n == 0:
             return []
+
+        entry_times = np.empty(0, dtype='datetime64[ns]')
+        entry_opens = np.empty(0, dtype=np.float64)
+        entry_highs = np.empty(0, dtype=np.float64)
+        entry_lows = np.empty(0, dtype=np.float64)
+        entry_closes = np.empty(0, dtype=np.float64)
+        if use_multi_tf and df_entry is not None:
+            entry_df = df_entry.copy()
+            entry_df['Time'] = pd.to_datetime(entry_df['Time'])
+            entry_df = entry_df.sort_values('Time').reset_index(drop=True)
+            entry_times = entry_df['Time'].to_numpy(dtype='datetime64[ns]')
+            entry_opens = entry_df['Open'].to_numpy(dtype=np.float64)
+            entry_highs = entry_df['High'].to_numpy(dtype=np.float64)
+            entry_lows = entry_df['Low'].to_numpy(dtype=np.float64)
+            entry_closes = entry_df['Close'].to_numpy(dtype=np.float64)
 
         # ========== 1. PRE-COMPUTE INDICATORS ==========
         mitigation_mode = 'CLOSE' if self.config.mitigation_mode == 'close' else 'HIGHLOW'
@@ -398,26 +414,18 @@ class Strategy(BaseStrategy):
                         )
                     )
 
-                    pattern_ok = self._is_reversal_candle(opens, closes, highs, lows, i, ob.bias)
-                    simple_reversal_ok = self.config.enable_simple_reversal and self._is_simple_reversal(
-                        opens, closes, highs, lows, i, ob.bias
-                    )
-                    reversal_ok = (
-                        (pattern_ok or simple_reversal_ok)
-                        if self.config.require_reversal_pattern
-                        else True
-                    )
-
-                    if liquidity_ok and reversal_ok:
+                    if liquidity_ok:
                         # MULTI-TIMEFRAME MODE: Find precise entry from entry-TF candles
                         if use_multi_tf and df_entry is not None:
                             signal_candle_close_time = current_time + timedelta(minutes=signal_tf_minutes)
 
-                            # Use base class multi-TF entry detection
-                            precise_entry = self._find_precise_entry(
-                                df_entry=df_entry,
+                            precise_entry = self._find_precise_entry_with_reversal(
+                                entry_times=entry_times,
+                                entry_opens=entry_opens,
+                                entry_highs=entry_highs,
+                                entry_lows=entry_lows,
+                                entry_closes=entry_closes,
                                 signal_candle_close_time=signal_candle_close_time,
-                                signal_tf_minutes=signal_tf_minutes,
                                 zone=ob,
                             )
                             if precise_entry:
@@ -433,6 +441,11 @@ class Strategy(BaseStrategy):
                                     signals.append(signal)
                                     ob.entry_triggered = True
                         else:
+                            reversal_ok = self._passes_reversal_filter(opens, closes, highs, lows, i, ob.bias)
+                            if not reversal_ok:
+                                remaining_obs.append(ob)
+                                continue
+
                             # SINGLE-TIMEFRAME MODE: Use base class signal creation
                             signal = self._create_signal(
                                 symbol=symbol,
@@ -515,6 +528,76 @@ class Strategy(BaseStrategy):
         wick_ok = (upper_wick / candle_range) >= wick_ratio
         displacement_ok = c_curr < c_prev
         return c_curr < o_curr and (wick_ok or displacement_ok)
+
+    def _passes_reversal_filter(
+        self,
+        opens: np.ndarray,
+        closes: np.ndarray,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        current_idx: int,
+        ob_bias: str,
+    ) -> bool:
+        if not self.config.require_reversal_pattern:
+            return True
+
+        pattern_ok = self._is_reversal_candle(opens, closes, highs, lows, current_idx, ob_bias)
+        simple_reversal_ok = self.config.enable_simple_reversal and self._is_simple_reversal(
+            opens, closes, highs, lows, current_idx, ob_bias
+        )
+        return pattern_ok or simple_reversal_ok
+
+    def _find_precise_entry_with_reversal(
+        self,
+        *,
+        entry_times: np.ndarray,
+        entry_opens: np.ndarray,
+        entry_highs: np.ndarray,
+        entry_lows: np.ndarray,
+        entry_closes: np.ndarray,
+        signal_candle_close_time: datetime,
+        zone: BaseZone,
+        max_bars_to_search: int = 60,
+    ) -> Optional[Tuple[datetime, float]]:
+        """
+        Find the first entry-timeframe candle that both touches the zone and
+        passes the reversal filter on the entry timeframe itself.
+        """
+        if len(entry_times) == 0:
+            return None
+
+        entry_tf_minutes = max(1, parse_timeframe_minutes(self.config.entry_timeframe))
+        window_start = np.datetime64(signal_candle_close_time, 'ns')
+        window_end = window_start + np.timedelta64(max_bars_to_search * entry_tf_minutes, 'm')
+
+        start_idx = int(np.searchsorted(entry_times, window_start, side='left'))
+        end_idx = int(np.searchsorted(entry_times, window_end, side='right'))
+        zone_tolerance = (zone.high - zone.low) * self.config.touch_tolerance_pct
+
+        for idx in range(start_idx, min(end_idx, len(entry_times))):
+            low_price = entry_lows[idx]
+            high_price = entry_highs[idx]
+            close_price = entry_closes[idx]
+
+            touches_zone = low_price <= (zone.high + zone_tolerance) and high_price >= (zone.low - zone_tolerance)
+            if not touches_zone:
+                continue
+
+            overlap_low = max(zone.low, low_price)
+            overlap_high = min(zone.high, high_price)
+            if overlap_low > overlap_high:
+                continue
+
+            if not self._passes_reversal_filter(entry_opens, entry_closes, entry_highs, entry_lows, idx, zone.bias):
+                continue
+
+            entry_time = self._parse_datetime(entry_times[idx])
+            if entry_time is None:
+                continue
+            entry_price = min(max(close_price, zone.low), zone.high)
+            return (entry_time, entry_price)
+
+        return None
 
     def _normalize_tp_mode(self) -> str:
         mode = str(self.config.tp_mode).strip().lower()

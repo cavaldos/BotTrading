@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from typing import Any, Mapping
+import warnings
 
 from src.strategy.smc_strategy import Config
 
@@ -43,4 +44,14 @@ def build_strategy_config(
 
     config_fields = {item.name for item in fields(Config)}
     filtered_values = {key: value for key, value in merged.items() if key in config_fields}
-    return Config(**filtered_values)
+    config = Config(**filtered_values)
+
+    pattern_ids = list(config.reversal_pattern_ids or [])
+    using_default_patterns = len(pattern_ids) == 1 and pattern_ids[0] == 0
+    if not config.require_reversal_pattern and not using_default_patterns:
+        warnings.warn(
+            "require_reversal_pattern=False disables reversal filtering, so reversal_pattern_ids and simple reversal settings will not affect entries until require_reversal_pattern=True.",
+            stacklevel=2,
+        )
+
+    return config
