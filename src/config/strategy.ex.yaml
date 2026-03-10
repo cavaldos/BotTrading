@@ -10,6 +10,7 @@ signal_timeframe: # default: ["5m"] (supports multiple signal timeframes)
   - "2m"
   - "3m"
   - "5m"
+slice_window: 1000 # default: 0 (0 = disabled, >0 = single-pass rolling active window on signal timeframe)
 
 # Structure Detection
 swing_length: 11 # default: 10

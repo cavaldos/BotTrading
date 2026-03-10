@@ -38,6 +38,7 @@ class BaseConfig:
     Only contains fields that are GENERIC to any trading strategy:
     - System paths
     - Multi-timeframe settings (anti-repainting)
+    - Signal-timeframe rolling slice window
     - Zone mitigation / entry detection
     - Risk management (SL/TP calculation)
 
@@ -51,6 +52,7 @@ class BaseConfig:
     # Multi-timeframe settings (anti-repainting)
     signal_timeframe: str = "5m"    # Timeframe for indicator calculation
     entry_timeframe: str = "1m"     # Timeframe for precise entry detection
+    slice_window: int = 0            # Single-pass rolling active window on signal timeframe (0 = disabled)
 
     # Zone mitigation mode: "close" or "high_low"
     mitigation_mode: str = "close"
@@ -74,6 +76,7 @@ class BaseConfig:
             "sl_multiplier": self.sl_multiplier,
             "signal_timeframe": self.signal_timeframe,
             "entry_timeframe": self.entry_timeframe,
+            "slice_window": self.slice_window,
         }
 
 
@@ -269,23 +272,26 @@ class BaseStrategy(ABC):
 
         df_entry = df_entry.copy()
         df_entry['Time'] = pd.to_datetime(df_entry['Time'])
+        df_entry = df_entry.sort_values(by='Time').reset_index(drop=True)
 
         # Search window: from signal_candle_close_time onwards (AFTER signal close)
         window_start = signal_candle_close_time
         window_end = signal_candle_close_time + timedelta(minutes=max_bars_to_search)
 
         mask = (df_entry['Time'] >= window_start) & (df_entry['Time'] <= window_end)
-        candles_in_window = df_entry[mask].sort_values('Time')
+        candles_in_window = df_entry.loc[mask]
 
         if candles_in_window.empty:
             return None
 
         # Iterate through entry-TF candles in chronological order
-        for _, candle in candles_in_window.iterrows():
-            close_price = candle['Close']
-            low_price = candle['Low']
-            high_price = candle['High']
-            candle_time = candle['Time']
+        for candle in candles_in_window.itertuples(index=False):
+            close_price = float(candle.Close)
+            low_price = float(candle.Low)
+            high_price = float(candle.High)
+            entry_time = self._parse_datetime(candle.Time)
+            if entry_time is None:
+                continue
 
             zone_tolerance = (zone.high - zone.low) * self.config.touch_tolerance_pct
 
@@ -296,8 +302,7 @@ class BaseStrategy(ABC):
                     overlap_high = min(zone.high, high_price)
                     if overlap_low <= overlap_high:
                         entry_price = min(max(close_price, zone.low), zone.high)
-                        entry_time = candle_time.to_pydatetime() if hasattr(candle_time, 'to_pydatetime') else candle_time
-                        return (entry_time, entry_price)
+                        return (entry_time, float(entry_price))
             else:
                 # For short entry: price touches bearish zone from below
                 if high_price >= (zone.low - zone_tolerance) and low_price <= (zone.high + zone_tolerance):
@@ -305,8 +310,7 @@ class BaseStrategy(ABC):
                     overlap_high = min(zone.high, high_price)
                     if overlap_low <= overlap_high:
                         entry_price = min(max(close_price, zone.low), zone.high)
-                        entry_time = candle_time.to_pydatetime() if hasattr(candle_time, 'to_pydatetime') else candle_time
-                        return (entry_time, entry_price)
+                        return (entry_time, float(entry_price))
 
         return None
 

@@ -74,7 +74,7 @@ class Config(BaseConfig):
 
     Inherits generic fields from BaseConfig:
     - data_folder, output_folder
-    - signal_timeframe, entry_timeframe
+    - signal_timeframe, entry_timeframe, slice_window
     - mitigation_mode, touch_tolerance_pct, touch_confirmation_bars, entry_on_candle_close
     - risk_reward_ratio, sl_buffer_pct, sl_multiplier, min_sl_pct, risk_per_trade
 
@@ -123,6 +123,7 @@ class Config(BaseConfig):
             "name": STRATEGY_NAME,
             "signal_timeframe": self.signal_timeframe,
             "entry_timeframe": self.entry_timeframe,
+            "slice_window": self.slice_window,
             "swing_length": self.swing_length,
             "internal_length": self.internal_length,
             "eqhl_length": self.eqhl_length,
@@ -220,6 +221,21 @@ class Strategy(BaseStrategy):
         self._tp_context: dict[str, Any] | None = None
 
     def generate_signals(self, df: pd.DataFrame, symbol: str, df_entry: pd.DataFrame | None = None) -> List[Signal]:
+        return self._generate_signals_core(df=df, symbol=symbol, df_entry=df_entry)
+
+    def _get_slice_window(self) -> int:
+        try:
+            return max(0, int(self.config.slice_window))
+        except (TypeError, ValueError):
+            return 0
+
+    def _generate_signals_core(
+        self,
+        *,
+        df: pd.DataFrame,
+        symbol: str,
+        df_entry: pd.DataFrame | None = None,
+    ) -> List[Signal]:
         """
         Generate trade signals based on SMC concepts.
 
@@ -232,6 +248,11 @@ class Strategy(BaseStrategy):
         SINGLE-TIMEFRAME MODE (when df_entry is None):
         - Uses df for both indicator calculation and entry
         - This is the legacy behavior
+
+        SLICE-WINDOW MODE (when slice_window > 0):
+        - Indicators/events are precomputed once on the full signal timeframe
+        - The causal runtime loop only keeps active state from the last N signal bars
+        - This avoids replaying the whole strategy for every rolling window
 
         EVENT-TIME GATED: Pre-computes indicators, but consumes them causally.
         Each event (OB, EQH/EQL) is only activated at the bar it becomes known.
@@ -263,6 +284,8 @@ class Strategy(BaseStrategy):
 
         if n == 0:
             return []
+
+        slice_window = self._get_slice_window()
 
         entry_times = np.empty(0, dtype='datetime64[ns]')
         entry_opens = np.empty(0, dtype=np.float64)
@@ -390,23 +413,34 @@ class Strategy(BaseStrategy):
         # ========== 3. CAUSAL BAR-BY-BAR LOOP ==========
         active_obs: List[StrategyOrderBlock] = []
         active_gap_zones: List[StrategyGapZone] = []
-        confirmed_swing_high_levels: List[float] = []
-        confirmed_swing_low_levels: List[float] = []
+        confirmed_swing_highs: List[Tuple[int, float]] = []
+        confirmed_swing_lows: List[Tuple[int, float]] = []
 
         for i in range(n):
             current_time = self._parse_datetime(times[i])
             if current_time is None:
                 continue
 
+            slice_start_index = max(0, i - slice_window + 1) if slice_window > 0 else 0
+
             # 3a. Activate OBs whose structure break happens at this bar
             for ob in obs_by_break.get(i, []):
                 active_obs.append(ob)
 
-            active_obs = self._prune_active_obs(active_obs)
+            active_obs = self._prune_active_obs(
+                active_obs,
+                min_break_index=slice_start_index if slice_window > 0 else None,
+            )
 
             # 3b. Activate FVG/IFVG zones that become known at this bar
             for gap_zone in gap_zones_by_index.get(i, []):
                 active_gap_zones.append(gap_zone)
+
+            if slice_window > 0:
+                active_gap_zones = [
+                    gap_zone for gap_zone in active_gap_zones
+                    if gap_zone.index >= slice_start_index
+                ]
 
             # 3c. Process EQH/EQL events confirmed at this bar → update has_liquidity
             for eqhl in eqhl_by_confirm.get(i, []):
@@ -425,9 +459,17 @@ class Strategy(BaseStrategy):
             # 3c.1 Activate confirmed swings for TP targets (causal, no look-ahead)
             for swing in swings_by_confirm.get(i, []):
                 if swing.is_high:
-                    confirmed_swing_high_levels.append(float(swing.price))
+                    confirmed_swing_highs.append((i, float(swing.price)))
                 else:
-                    confirmed_swing_low_levels.append(float(swing.price))
+                    confirmed_swing_lows.append((i, float(swing.price)))
+
+            if slice_window > 0:
+                confirmed_swing_highs = [
+                    item for item in confirmed_swing_highs if item[0] >= slice_start_index
+                ]
+                confirmed_swing_lows = [
+                    item for item in confirmed_swing_lows if item[0] >= slice_start_index
+                ]
 
             remaining_gap_zones = []
             for gap_zone in active_gap_zones:
@@ -442,8 +484,8 @@ class Strategy(BaseStrategy):
                 "current_low": float(lows[i]),
                 "current_close": float(closes[i]),
                 "active_obs": active_obs,
-                "confirmed_swing_high_levels": confirmed_swing_high_levels,
-                "confirmed_swing_low_levels": confirmed_swing_low_levels,
+                "confirmed_swing_high_levels": [price for _, price in confirmed_swing_highs],
+                "confirmed_swing_low_levels": [price for _, price in confirmed_swing_lows],
             }
 
             # 3d. Check mitigation & entry for each active OB
@@ -531,7 +573,7 @@ class Strategy(BaseStrategy):
             active_obs = remaining_obs
 
         # ========== 4. DEDUPLICATE SIGNALS ==========
-        deduped = self._deduplicate_signals(signals)
+        deduped = self._deduplicate_signals(cast(List[BaseSignal], signals))
         self._tp_context = None
 
         return cast(List[Signal], deduped)
@@ -585,7 +627,14 @@ class Strategy(BaseStrategy):
             return "none"
         return mode
 
-    def _prune_active_obs(self, active_obs: List[StrategyOrderBlock]) -> List[StrategyOrderBlock]:
+    def _prune_active_obs(
+        self,
+        active_obs: List[StrategyOrderBlock],
+        min_break_index: int | None = None,
+    ) -> List[StrategyOrderBlock]:
+        if min_break_index is not None:
+            active_obs = [ob for ob in active_obs if ob.break_index >= min_break_index]
+
         limit = max(1, int(self.config.max_active_obs_per_bias))
         if len(active_obs) <= limit:
             return active_obs
