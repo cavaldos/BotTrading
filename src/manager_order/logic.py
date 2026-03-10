@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -26,13 +26,7 @@ REQUIRED_TRADE_COLUMNS = {
 @dataclass
 class ManagerConfig:
     one_r_trigger: float = 1.0
-    enable_sideway: bool = False
-    sideway_window: int = 20
-    sideway_max_range_r: float = 1.2
-    sideway_touch_tolerance: float = 0.15
-    sideway_min_touches_per_side: int = 2
-    sideway_min_switches: int = 3
-    sideway_min_bars_after_entry: int = 8
+    sweep_exit_price_mode: Literal["close", "next_open"] = "next_open"
 
 
 @dataclass
@@ -132,38 +126,6 @@ def load_candle_data(data_file: Path) -> CandleData:
     )
 
 
-def sideway_detected(
-    highs: np.ndarray,
-    lows: np.ndarray,
-    closes: np.ndarray,
-    risk_r: float,
-    cfg: ManagerConfig,
-) -> bool:
-    box_high = float(np.max(highs))
-    box_low = float(np.min(lows))
-    box_range = box_high - box_low
-
-    if box_range <= 0:
-        return False
-
-    if risk_r > 0 and box_range > (cfg.sideway_max_range_r * risk_r):
-        return False
-
-    touch_band = max(box_range * cfg.sideway_touch_tolerance, 1e-12)
-    upper_touches = int(np.sum(highs >= (box_high - touch_band)))
-    lower_touches = int(np.sum(lows <= (box_low + touch_band)))
-
-    if upper_touches < cfg.sideway_min_touches_per_side:
-        return False
-    if lower_touches < cfg.sideway_min_touches_per_side:
-        return False
-
-    mid = (box_high + box_low) / 2.0
-    states = np.where(closes >= mid, 1, -1)
-    switches = int(np.sum(states[1:] != states[:-1]))
-    return switches >= cfg.sideway_min_switches
-
-
 def result_from_exit(trade_type: str, entry_price: float, exit_price: float) -> str:
     if abs(exit_price - entry_price) <= 1e-12:
         return "Open"
@@ -221,6 +183,21 @@ def _fallback_to_original(
     )
 
 
+def _resolve_sweep_exit(
+    candle_index: int,
+    end_idx: int,
+    times_ns: np.ndarray,
+    opens: np.ndarray,
+    signal_close: float,
+    cfg: ManagerConfig,
+) -> Tuple[pd.Timestamp, float]:
+    if cfg.sweep_exit_price_mode == "next_open":
+        next_idx = candle_index + 1
+        if next_idx <= end_idx:
+            return pd.Timestamp(times_ns[next_idx], unit="ns"), float(opens[next_idx])
+    return pd.Timestamp(times_ns[candle_index], unit="ns"), signal_close
+
+
 def replay_trade(row: pd.Series, candles: CandleData, cfg: ManagerConfig) -> ManagedTradeResult:
     trade_type = str(row.get("Type", "")).strip().upper()
     entry_price = to_float(row.get("Entry_Price"))
@@ -248,16 +225,17 @@ def replay_trade(row: pd.Series, candles: CandleData, cfg: ManagerConfig) -> Man
     times_ns = candles.times_ns
     n = len(times_ns)
     entry_ns = np.int64(entry_time.value)
-    entry_idx = int(np.searchsorted(times_ns, entry_ns, side="left"))
-
-    if entry_idx >= n:
+    if entry_ns > times_ns[-1]:
         return _fallback_to_original(original_exit_time, original_exit_price, original_result, "ENTRY_NOT_IN_CANDLES")
 
-    start_idx = entry_idx + 1
+    entry_idx = int(np.searchsorted(times_ns, entry_ns, side="right") - 1)
+    start_idx = max(0, entry_idx + 1)
+
     if start_idx >= n:
-        fallback_price = float(candles.closes[entry_idx])
+        fallback_idx = min(max(entry_idx, 0), n - 1)
+        fallback_price = float(candles.closes[fallback_idx])
         return _result(
-            exit_time=pd.Timestamp(times_ns[entry_idx], unit="ns"),
+            exit_time=pd.Timestamp(times_ns[fallback_idx], unit="ns"),
             exit_price=fallback_price,
             result=result_from_exit(trade_type, entry_price, fallback_price),
             reason="NO_FUTURE_CANDLES",
@@ -310,10 +288,18 @@ def replay_trade(row: pd.Series, candles: CandleData, cfg: ManagerConfig) -> Man
                 reached_one_r = True
 
             if reached_one_r and i > start_idx and close < open_price and low < float(lows[i - 1]):
+                exit_time, exit_price = _resolve_sweep_exit(
+                    candle_index=i,
+                    end_idx=end_idx,
+                    times_ns=times_ns,
+                    opens=opens,
+                    signal_close=close,
+                    cfg=cfg,
+                )
                 return _result(
-                    exit_time=pd.Timestamp(times_ns[i], unit="ns"),
-                    exit_price=close,
-                    result=result_from_exit(trade_type, entry_price, close),
+                    exit_time=exit_time,
+                    exit_price=exit_price,
+                    result=result_from_exit(trade_type, entry_price, exit_price),
                     reason="R1_SWEEP",
                     one_r_reached=True,
                 )
@@ -339,35 +325,20 @@ def replay_trade(row: pd.Series, candles: CandleData, cfg: ManagerConfig) -> Man
                 reached_one_r = True
 
             if reached_one_r and i > start_idx and close > open_price and high > float(highs[i - 1]):
+                exit_time, exit_price = _resolve_sweep_exit(
+                    candle_index=i,
+                    end_idx=end_idx,
+                    times_ns=times_ns,
+                    opens=opens,
+                    signal_close=close,
+                    cfg=cfg,
+                )
                 return _result(
-                    exit_time=pd.Timestamp(times_ns[i], unit="ns"),
-                    exit_price=close,
-                    result=result_from_exit(trade_type, entry_price, close),
+                    exit_time=exit_time,
+                    exit_price=exit_price,
+                    result=result_from_exit(trade_type, entry_price, exit_price),
                     reason="R1_SWEEP",
                     one_r_reached=True,
-                )
-
-        if cfg.enable_sideway:
-            bars_since_entry = i - start_idx + 1
-            if bars_since_entry < cfg.sideway_min_bars_after_entry:
-                continue
-            if bars_since_entry < cfg.sideway_window:
-                continue
-
-            window_start = i - cfg.sideway_window + 1
-            if sideway_detected(
-                highs=highs[window_start : i + 1],
-                lows=lows[window_start : i + 1],
-                closes=closes[window_start : i + 1],
-                risk_r=risk_r,
-                cfg=cfg,
-            ):
-                return _result(
-                    exit_time=pd.Timestamp(times_ns[i], unit="ns"),
-                    exit_price=close,
-                    result=result_from_exit(trade_type, entry_price, close),
-                    reason="SIDEWAY",
-                    one_r_reached=reached_one_r,
                 )
 
     if original_exit_time is not None and original_exit_price is not None:
@@ -489,11 +460,11 @@ def compute_trade_results_row(df: pd.DataFrame, symbol: str, sl_multiplier: floa
     sl_percent = ((entry_prices - stop_losses).abs() / entry_safe) * 100.0
     avg_sl_percent = round(numeric_mean(sl_percent), 2)
 
-    rr_source = df["RR"] if "RR" in df.columns else pd.Series(np.nan, index=df.index, dtype=np.float64)
-    rr_values = pd.to_numeric(rr_source, errors="coerce")
-    avg_rr = round(numeric_mean(rr_values), 2)
-    win_rr_sum = float(rr_values.where(managed_upper == "WIN", 0.0).sum(skipna=True))
-    roe = round(win_rr_sum - losses, 2)
+    managed_r_values = pd.to_numeric(df["Managed_R"], errors="coerce")
+    closed_mask = managed_upper.isin(["WIN", "LOSS"])
+    closed_managed_r = managed_r_values.where(closed_mask, np.nan)
+    avg_rr = round(numeric_mean(closed_managed_r), 2)
+    roe = round(float(np.nansum(closed_managed_r.to_numpy(dtype=np.float64))), 2)
 
     streak_results = [str(x).upper() for x in managed_results.tolist()]
     longest_win_streak, longest_loss_streak, avg_win_streak, avg_loss_streak = compute_streaks(streak_results)
@@ -522,8 +493,7 @@ def compute_managed_summary(df: pd.DataFrame, file_name: str) -> Dict[str, Any]:
         "file": file_name,
         "total_trades": int(len(df)),
         "managed_r1_sweep": int(reason_counts.get("R1_SWEEP", 0)),
-        "managed_sideway": int(reason_counts.get("SIDEWAY", 0)),
-        "managed_total": int(reason_counts.get("R1_SWEEP", 0) + reason_counts.get("SIDEWAY", 0)),
+        "managed_total": int(reason_counts.get("R1_SWEEP", 0)),
         "win_rate_original": round(win_rate(df["Result"].map(normalize_result)), 2),
         "win_rate_managed": round(win_rate(df["Managed_Result"].map(normalize_result)), 2),
         "avg_original_r": round(numeric_mean(df["Original_R"]), 4),

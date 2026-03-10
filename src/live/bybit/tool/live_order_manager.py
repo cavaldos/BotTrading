@@ -44,7 +44,7 @@ from src.manager_order.logic import CandleData, ManagerConfig, replay_trade
 
 
 MANAGED_EXIT_REASONS = {"R1_SWEEP"}
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 DEFAULT_SECOND_OFFSET = 2
 ONE_MINUTE_MS = 60_000
 
@@ -165,6 +165,11 @@ def parse_args() -> argparse.Namespace:
         help="JSONL event log file",
     )
     parser.add_argument(
+        "--positions-file",
+        default=str(log_root / "bybit_live_order_manager_positions.csv"),
+        help="Snapshot CSV for currently managed open positions",
+    )
+    parser.add_argument(
         "--lock-file",
         default=str(log_root / "bybit_live_order_manager.lock"),
         help="Single-instance lock file",
@@ -182,40 +187,13 @@ def parse_args() -> argparse.Namespace:
         help="Max paginated fetch_ohlcv batches per symbol",
     )
     parser.add_argument("--one-r-trigger", type=float, default=1.0, help="R threshold to activate sweep rule")
-    parser.add_argument("--sideway-window", type=int, default=20, help="Window size (bars) for sideway detection")
-    parser.add_argument("--sideway-max-range-r", type=float, default=1.2, help="Max sideway box range in R")
-    parser.add_argument(
-        "--sideway-touch-tolerance",
-        type=float,
-        default=0.15,
-        help="Touch zone as percent of sideway range",
-    )
-    parser.add_argument("--sideway-min-touches", type=int, default=2, help="Min upper/lower touches")
-    parser.add_argument(
-        "--sideway-min-switches",
-        type=int,
-        default=3,
-        help="Min close-side switches across midpoint",
-    )
-    parser.add_argument(
-        "--sideway-min-bars",
-        type=int,
-        default=8,
-        help="Min bars after entry before sideway check",
-    )
     return parser.parse_args()
 
 
 def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
         one_r_trigger=float(args.one_r_trigger),
-        enable_sideway=False,
-        sideway_window=max(2, int(args.sideway_window)),
-        sideway_max_range_r=max(0.0, float(args.sideway_max_range_r)),
-        sideway_touch_tolerance=max(0.0, float(args.sideway_touch_tolerance)),
-        sideway_min_touches_per_side=max(1, int(args.sideway_min_touches)),
-        sideway_min_switches=max(1, int(args.sideway_min_switches)),
-        sideway_min_bars_after_entry=max(1, int(args.sideway_min_bars)),
+        sweep_exit_price_mode="next_open",
     )
 
 
@@ -293,6 +271,8 @@ def load_state(state_path: Path) -> dict[str, Any]:
     except Exception:
         return state_template()
     if not isinstance(data, dict):
+        return state_template()
+    if int(data.get("schema_version", 0) or 0) != STATE_SCHEMA_VERSION:
         return state_template()
     positions = data.get("positions")
     if not isinstance(positions, dict):
@@ -403,7 +383,7 @@ def build_header_panel(runtime_state: RuntimeViewState, cfg: ManagerConfig) -> P
         "Runs / Errors",
         f"{runtime_state.run_count} / {runtime_state.error_count}",
         "Rules",
-        f"1R={cfg.one_r_trigger} | SW=off",
+        f"1R={cfg.one_r_trigger} | fill={cfg.sweep_exit_price_mode}",
     )
     return Panel(table, title="[bold cyan]Bybit Live Order Manager[/bold cyan]", border_style="cyan")
 
@@ -678,8 +658,7 @@ def sync_position_state(
 
     for position in positions:
         active_keys.add(position.key)
-        anchor_source = position.updated_time or position.created_time or cycle_time
-        anchor_source = floor_to_minute(anchor_source)
+        anchor_source = position.created_time or position.updated_time or cycle_time
         if anchor_source > cycle_floor:
             anchor_source = cycle_floor
 
@@ -704,7 +683,7 @@ def sync_position_state(
                 anchor_time = anchor_source
                 reference_entry_price = position.entry_price
             else:
-                anchor_time = floor_to_minute(stored_anchor)
+                anchor_time = stored_anchor
                 if anchor_time > cycle_floor:
                     anchor_time = cycle_floor
                 reference_entry_price = previous_entry
@@ -945,6 +924,44 @@ def close_position_market(exchange, position: PositionSnapshot) -> dict[str, Any
         }
 
 
+def save_positions_snapshot(
+    positions_path: Path,
+    cycle_label: str,
+    managed_positions: Iterable[ManagedPosition],
+    position_views: dict[str, PositionView],
+) -> None:
+    by_key = {managed.snapshot.key: managed for managed in managed_positions}
+    rows: list[dict[str, Any]] = []
+    for key in sorted(position_views.keys()):
+        view = position_views[key]
+        managed = by_key.get(key)
+        snapshot = managed.snapshot if managed is not None else None
+        rows.append(
+            {
+                "cycle_time": cycle_label,
+                "key": key,
+                "symbol": view.symbol,
+                "side": view.side,
+                "size": view.size,
+                "entry_price": view.entry_price,
+                "stop_loss": view.stop_loss,
+                "take_profit": view.take_profit,
+                "anchor_time": view.anchor_time,
+                "one_r_reached": bool(view.one_r_reached),
+                "last_reason": view.last_reason,
+                "managed_exit_price": view.exit_price,
+                "note": view.note,
+                "position_idx": snapshot.position_idx if snapshot is not None else None,
+                "mark_price": snapshot.mark_price if snapshot is not None else None,
+                "created_time": timestamp_to_string(snapshot.created_time) if snapshot is not None and snapshot.created_time is not None else "",
+                "updated_time": timestamp_to_string(snapshot.updated_time) if snapshot is not None and snapshot.updated_time is not None else "",
+            }
+        )
+
+    positions_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(positions_path, index=False)
+
+
 def next_run_at(second_offset: int) -> datetime:
     now = datetime.now(timezone.utc)
     target = now.replace(second=0, microsecond=0) + timedelta(seconds=max(0, second_offset))
@@ -967,6 +984,7 @@ def run_cycle(
     state: dict[str, Any],
     state_path: Path,
     log_path: Path,
+    positions_path: Path,
     dry_run: bool,
     limit_per_request: int,
     max_batches: int,
@@ -1178,6 +1196,12 @@ def run_cycle(
             )
 
     save_state(state_path, state)
+    save_positions_snapshot(
+        positions_path=positions_path,
+        cycle_label=cycle_label,
+        managed_positions=managed_positions,
+        position_views=position_views,
+    )
     append_jsonl(
         log_path,
         {
@@ -1209,6 +1233,7 @@ def main() -> None:
     cfg = build_manager_config(args)
     state_path = Path(args.state_file)
     log_path = Path(args.log_file)
+    positions_path = Path(args.positions_file)
     lock_path = Path(args.lock_file)
 
     exchange = get_exchange()
@@ -1219,9 +1244,10 @@ def main() -> None:
     print("=" * 72)
     print(f"State file    : {state_path}")
     print(f"Log file      : {log_path}")
+    print(f"Positions file: {positions_path}")
     print(f"Dry run       : {bool(args.dry_run)}")
     print(f"Second offset : {int(args.second_offset)}")
-    print(f"Rules         : one_r={cfg.one_r_trigger}R, sideway=off")
+    print(f"Rules         : one_r={cfg.one_r_trigger}R, fill={cfg.sweep_exit_price_mode}")
 
     with SingleInstanceLock(lock_path):
         if args.once:
@@ -1231,6 +1257,7 @@ def main() -> None:
                 state=state,
                 state_path=state_path,
                 log_path=log_path,
+                positions_path=positions_path,
                 dry_run=bool(args.dry_run),
                 limit_per_request=int(args.limit_per_request),
                 max_batches=int(args.max_batches),
@@ -1266,6 +1293,7 @@ def main() -> None:
                         state=state,
                         state_path=state_path,
                         log_path=log_path,
+                        positions_path=positions_path,
                         dry_run=bool(args.dry_run),
                         limit_per_request=int(args.limit_per_request),
                         max_batches=int(args.max_batches),

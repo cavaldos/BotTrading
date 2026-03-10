@@ -41,12 +41,6 @@ def parse_args() -> argparse.Namespace:
         default="res/output_managed",
         help="Output folder for reports and managed trade data",
     )
-    parser.add_argument("--sideway-window", type=int, default=20, help="Window size (bars) for sideway detection")
-    parser.add_argument("--sideway-max-range-r", type=float, default=1.2, help="Max sideway box range in R")
-    parser.add_argument("--sideway-touch-tolerance", type=float, default=0.15, help="Touch zone as percent of sideway range")
-    parser.add_argument("--sideway-min-touches", type=int, default=2, help="Min upper/lower touches")
-    parser.add_argument("--sideway-min-switches", type=int, default=3, help="Min close-side switches across midpoint")
-    parser.add_argument("--sideway-min-bars", type=int, default=8, help="Min bars after entry before sideway check")
     parser.add_argument("--one-r-trigger", type=float, default=1.0, help="R threshold to activate sweep rule")
     return parser.parse_args()
 
@@ -54,13 +48,7 @@ def parse_args() -> argparse.Namespace:
 def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
         one_r_trigger=float(args.one_r_trigger),
-        enable_sideway=False,
-        sideway_window=max(2, int(args.sideway_window)),
-        sideway_max_range_r=max(0.0, float(args.sideway_max_range_r)),
-        sideway_touch_tolerance=max(0.0, float(args.sideway_touch_tolerance)),
-        sideway_min_touches_per_side=max(1, int(args.sideway_min_touches)),
-        sideway_min_switches=max(1, int(args.sideway_min_switches)),
-        sideway_min_bars_after_entry=max(1, int(args.sideway_min_bars)),
+        sweep_exit_price_mode="next_open",
     )
 
 
@@ -249,7 +237,7 @@ def main() -> None:
     print(f"Managed data  : {managed_data_folder}")
     print("Rules:")
     print(f"  - R1 sweep trigger: {cfg.one_r_trigger}R")
-    print("  - Sideway: disabled")
+    print(f"  - Sweep fill mode : {cfg.sweep_exit_price_mode}")
     print("-" * 72)
 
     candle_cache: Dict[str, CandleData] = {}
@@ -276,7 +264,6 @@ def main() -> None:
             f"{trade_file.name:<24} "
             f"trades={summary['total_trades']:<4} "
             f"R1={summary['managed_r1_sweep']:<4} "
-            f"SW={summary['managed_sideway']:<4} "
             f"WR {summary['win_rate_original']:>5.1f}% -> {summary['win_rate_managed']:>5.1f}%"
         )
 
@@ -300,7 +287,7 @@ def main() -> None:
         print("-" * 72)
         print(
             f"ALL FILES: trades={global_summary['total_trades']}, "
-            f"R1={global_summary['managed_r1_sweep']}, SIDEWAY={global_summary['managed_sideway']}, "
+            f"R1={global_summary['managed_r1_sweep']}, "
             f"WR {global_summary['win_rate_original']:.2f}% -> {global_summary['win_rate_managed']:.2f}%"
         )
 
