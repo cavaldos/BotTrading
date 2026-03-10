@@ -1,10 +1,9 @@
 """Standalone Bybit live order manager.
 
 Runs once per minute on closed 1m candles, reads only exchange state,
-and applies the same extra exit rules as the backtest order manager:
+and applies the same extra exit rule as the backtest order manager:
 
 - R1 sweep exit
-- Sideway box exit
 
 This tool manages active Bybit positions only. It does not read local
 sent-order logs and it does not integrate into the live dashboard.
@@ -44,7 +43,7 @@ from src.live.bybit.exchange import format_symbol, get_exchange
 from src.manager_order.logic import CandleData, ManagerConfig, replay_trade
 
 
-MANAGED_EXIT_REASONS = {"R1_SWEEP", "SIDEWAY"}
+MANAGED_EXIT_REASONS = {"R1_SWEEP"}
 STATE_SCHEMA_VERSION = 1
 DEFAULT_SECOND_OFFSET = 2
 ONE_MINUTE_MS = 60_000
@@ -210,6 +209,7 @@ def parse_args() -> argparse.Namespace:
 def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
         one_r_trigger=float(args.one_r_trigger),
+        enable_sideway=False,
         sideway_window=max(2, int(args.sideway_window)),
         sideway_max_range_r=max(0.0, float(args.sideway_max_range_r)),
         sideway_touch_tolerance=max(0.0, float(args.sideway_touch_tolerance)),
@@ -371,7 +371,7 @@ def status_style(status: str) -> str:
         return "bold green"
     if status.startswith("DRY"):
         return "bold cyan"
-    if status in {"R1_SWEEP", "SIDEWAY"}:
+    if status == "R1_SWEEP":
         return "bold cyan"
     if status in {"TP_SEEN", "SL_SEEN"}:
         return "bold yellow"
@@ -403,7 +403,7 @@ def build_header_panel(runtime_state: RuntimeViewState, cfg: ManagerConfig) -> P
         "Runs / Errors",
         f"{runtime_state.run_count} / {runtime_state.error_count}",
         "Rules",
-        f"1R={cfg.one_r_trigger} | SW={cfg.sideway_window}",
+        f"1R={cfg.one_r_trigger} | SW=off",
     )
     return Panel(table, title="[bold cyan]Bybit Live Order Manager[/bold cyan]", border_style="cyan")
 
@@ -1221,7 +1221,7 @@ def main() -> None:
     print(f"Log file      : {log_path}")
     print(f"Dry run       : {bool(args.dry_run)}")
     print(f"Second offset : {int(args.second_offset)}")
-    print(f"Rules         : one_r={cfg.one_r_trigger}R, sideway_window={cfg.sideway_window}")
+    print(f"Rules         : one_r={cfg.one_r_trigger}R, sideway=off")
 
     with SingleInstanceLock(lock_path):
         if args.once:

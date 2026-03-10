@@ -36,7 +36,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Order manager replay on historical trade files")
     parser.add_argument("--output-folder", default=default_output_folder, help="Folder containing *_trades.csv")
     parser.add_argument("--data-folder", default=default_data_folder, help="Folder containing <SYMBOL>_1m.csv")
-    parser.add_argument("--result-folder", default="res/output_managed", help="Output folder for managed CSV")
+    parser.add_argument(
+        "--result-folder",
+        default="res/output_managed",
+        help="Output folder for reports and managed trade data",
+    )
     parser.add_argument("--sideway-window", type=int, default=20, help="Window size (bars) for sideway detection")
     parser.add_argument("--sideway-max-range-r", type=float, default=1.2, help="Max sideway box range in R")
     parser.add_argument("--sideway-touch-tolerance", type=float, default=0.15, help="Touch zone as percent of sideway range")
@@ -50,6 +54,7 @@ def parse_args() -> argparse.Namespace:
 def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
         one_r_trigger=float(args.one_r_trigger),
+        enable_sideway=False,
         sideway_window=max(2, int(args.sideway_window)),
         sideway_max_range_r=max(0.0, float(args.sideway_max_range_r)),
         sideway_touch_tolerance=max(0.0, float(args.sideway_touch_tolerance)),
@@ -226,7 +231,9 @@ def main() -> None:
     output_folder = Path(args.output_folder)
     data_folder = Path(args.data_folder)
     result_folder = Path(args.result_folder)
+    managed_data_folder = result_folder / "data"
     result_folder.mkdir(parents=True, exist_ok=True)
+    managed_data_folder.mkdir(parents=True, exist_ok=True)
 
     trade_files = list_trade_files(output_folder)
     if not trade_files:
@@ -239,14 +246,10 @@ def main() -> None:
     print(f"Trades folder : {output_folder}")
     print(f"Data folder   : {data_folder}")
     print(f"Result folder : {result_folder}")
+    print(f"Managed data  : {managed_data_folder}")
     print("Rules:")
     print(f"  - R1 sweep trigger: {cfg.one_r_trigger}R")
-    print(
-        "  - Sideway: "
-        f"window={cfg.sideway_window}, max_range={cfg.sideway_max_range_r}R, "
-        f"touch_tol={cfg.sideway_touch_tolerance}, min_touches={cfg.sideway_min_touches_per_side}, "
-        f"min_switches={cfg.sideway_min_switches}"
-    )
+    print("  - Sideway: disabled")
     print("-" * 72)
 
     candle_cache: Dict[str, CandleData] = {}
@@ -259,7 +262,7 @@ def main() -> None:
         if combined_df is None:
             continue
 
-        out_file = result_folder / f"{trade_file.stem}_managed.csv"
+        out_file = managed_data_folder / f"{trade_file.stem}_managed.csv"
         combined_df.to_csv(out_file, index=False)
         all_rows.append(combined_df)
 
@@ -306,6 +309,7 @@ def main() -> None:
 
     print("=" * 72)
     print(f"Saved managed files to: {result_folder}")
+    print(f"Managed trade data: {managed_data_folder}")
     print(f"Summary: {summary_file}")
     print(f"Markdown report: {markdown_file}")
 

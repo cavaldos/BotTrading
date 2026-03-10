@@ -26,6 +26,7 @@ REQUIRED_TRADE_COLUMNS = {
 @dataclass
 class ManagerConfig:
     one_r_trigger: float = 1.0
+    enable_sideway: bool = False
     sideway_window: int = 20
     sideway_max_range_r: float = 1.2
     sideway_touch_tolerance: float = 0.15
@@ -346,27 +347,28 @@ def replay_trade(row: pd.Series, candles: CandleData, cfg: ManagerConfig) -> Man
                     one_r_reached=True,
                 )
 
-        bars_since_entry = i - start_idx + 1
-        if bars_since_entry < cfg.sideway_min_bars_after_entry:
-            continue
-        if bars_since_entry < cfg.sideway_window:
-            continue
+        if cfg.enable_sideway:
+            bars_since_entry = i - start_idx + 1
+            if bars_since_entry < cfg.sideway_min_bars_after_entry:
+                continue
+            if bars_since_entry < cfg.sideway_window:
+                continue
 
-        window_start = i - cfg.sideway_window + 1
-        if sideway_detected(
-            highs=highs[window_start : i + 1],
-            lows=lows[window_start : i + 1],
-            closes=closes[window_start : i + 1],
-            risk_r=risk_r,
-            cfg=cfg,
-        ):
-            return _result(
-                exit_time=pd.Timestamp(times_ns[i], unit="ns"),
-                exit_price=close,
-                result=result_from_exit(trade_type, entry_price, close),
-                reason="SIDEWAY",
-                one_r_reached=reached_one_r,
-            )
+            window_start = i - cfg.sideway_window + 1
+            if sideway_detected(
+                highs=highs[window_start : i + 1],
+                lows=lows[window_start : i + 1],
+                closes=closes[window_start : i + 1],
+                risk_r=risk_r,
+                cfg=cfg,
+            ):
+                return _result(
+                    exit_time=pd.Timestamp(times_ns[i], unit="ns"),
+                    exit_price=close,
+                    result=result_from_exit(trade_type, entry_price, close),
+                    reason="SIDEWAY",
+                    one_r_reached=reached_one_r,
+                )
 
     if original_exit_time is not None and original_exit_price is not None:
         return _result(
