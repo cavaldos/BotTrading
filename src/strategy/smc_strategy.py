@@ -60,6 +60,7 @@ from src.indicators.eqh_eql import detect_eqh_eql, EqualHL as IndicatorEqualHL
 from src.indicators.FVG import detect_fvg, FairValueGap
 from src.indicators.ifvg import detect_ifvg, InverseFairValueGap
 from src.indicators.swing import detect_swings, Swing as IndicatorSwing
+from src.indicators.adx import compute_adx_jit
 
 
 # ==================== STRATEGY NAME ====================
@@ -105,6 +106,11 @@ class Config(BaseConfig):
     # === REVERSAL PATTERNS ===
     reversal_pattern_ids: List[int] = field(default_factory=lambda: [0])
 
+    # === ADX STRENGTH FILTER ===
+    enable_adx_filter: bool = False         # When True, require ADX strength confirmation
+    adx_length: int = 14                    # ADX period on signal timeframe
+    adx_threshold: float = 20.0             # Minimum ADX to allow entries
+
     # === FLEXIBLE TAKE PROFIT ===
     # fixed_rr: TP from risk_reward_ratio only
     # opposite_ob: TP from opposite active OB only
@@ -149,6 +155,9 @@ class Config(BaseConfig):
             "tp_mode": self.tp_mode,
             "tp_no_target_policy": self.tp_no_target_policy,
             "tp_swing_length": self.tp_swing_length,
+            "enable_adx_filter": self.enable_adx_filter,
+            "adx_length": self.adx_length,
+            "adx_threshold": self.adx_threshold,
         }
 
 
@@ -354,6 +363,16 @@ class Strategy(BaseStrategy):
                 if 0 <= confirm_index < n:
                     swings_by_confirm.setdefault(confirm_index, []).append(swing)
 
+        # ADX strength filter: pre-compute ADX on signal timeframe
+        adx_values: np.ndarray | None = None
+        if self.config.enable_adx_filter:
+            adx_values, _, _ = compute_adx_jit(
+                highs,
+                lows,
+                closes,
+                max(1, int(self.config.adx_length)),
+            )
+
         # ========== 2. BUILD EVENT QUEUES (indexed by activation bar) ==========
 
         # OBs: filter by body_ratio, group by break_index (activation bar)
@@ -511,6 +530,17 @@ class Strategy(BaseStrategy):
                 entry_window_active = touch_recent if touch_window > 0 else touches_ob
 
                 if not ob.entry_triggered and entry_window_active:
+                    # ADX filter: require minimum trend strength on signal timeframe
+                    if self.config.enable_adx_filter:
+                        if adx_values is None:
+                            remaining_obs.append(ob)
+                            continue
+                        current_adx = adx_values[i]
+                        adx_threshold = max(0.0, float(self.config.adx_threshold))
+                        if (not np.isfinite(current_adx)) or current_adx < adx_threshold:
+                            remaining_obs.append(ob)
+                            continue
+
                     liquidity_ok = (
                         (not self.config.require_liquidity)
                         or (

@@ -32,7 +32,11 @@ require_reversal_pattern: true # default: true
 enable_simple_reversal: true # default: true
 simple_reversal_wick_ratio: 0.25 # default: 0.25
 
-gap_filter_mode: "ifvg" # default: "none" ("none" | "fvg" | "ifvg" | "both")
+enable_adx_filter: true # default: false (require ADX >= adx_threshold on signal timeframe)
+adx_length: 7 # tuned best in optimization sweep
+adx_threshold: 24.0 # tuned best in optimization sweep
+
+gap_filter_mode: "both" # default: "none" ("none" | "fvg" | "ifvg" | "both")
 fvg_atr_filter: true # default: true (legacy name, applies FVG/IFVG auto-threshold filter)
 
 touch_tolerance_pct: 0.02 # default: 0.0
