@@ -248,8 +248,10 @@ def _capture_print_to_errors(*args, **kwargs):
     if end:
         message += end
 
+    _NUMBA_IR_KEYWORDS = ("$", "label ", "const(", "cast(", "return_value", "return_const", "binop_", "compare_op", "arg(", "global(", "name=")
     for line in message.splitlines():
-        if line.strip():
+        stripped = line.strip()
+        if stripped and not any(kw in stripped for kw in _NUMBA_IR_KEYWORDS):
             state.add_error("PRT", line)
 
     # Preserve explicit output to custom file handles.
