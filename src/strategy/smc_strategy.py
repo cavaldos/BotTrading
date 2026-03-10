@@ -95,6 +95,7 @@ class Config(BaseConfig):
 
     # === ENTRY FILTERS ===
     require_liquidity: bool = True          # Require EQH/EQL liquidity event after OB break
+    require_opposite_liquidity_target: bool = True  # Require opposite-side target: OB or EQH/EQL or FVG/IFVG
     require_reversal_pattern: bool = True   # Require reversal pattern before entry
     enable_simple_reversal: bool = True     # Allow simpler rejection/displacement reversal
     simple_reversal_wick_ratio: float = 0.25  # Min wick/range ratio for simple reversal
@@ -116,6 +117,8 @@ class Config(BaseConfig):
     # opposite_ob: TP from opposite active OB only
     # opposite_swing: TP from opposite confirmed swing only
     # opposite_ob_or_swing: combine both target sources
+    # htf_liquidity: TP from opposite liquidity only (OB, EQH/EQL, FVG/IFVG)
+    # htf_liquidity_or_rr: same as htf_liquidity, fallback to fixed RR if no target
     tp_mode: str = "opposite_ob_or_swing"
     # skip: reject trade when no structural target exists
     # fixed_rr: fallback to classic RR TP when no structural target exists
@@ -138,6 +141,7 @@ class Config(BaseConfig):
             "ob_body_ratio": self.ob_body_ratio,
             "max_active_obs_per_bias": self.max_active_obs_per_bias,
             "require_liquidity": self.require_liquidity,
+            "require_opposite_liquidity_target": self.require_opposite_liquidity_target,
             "require_reversal_pattern": self.require_reversal_pattern,
             "enable_simple_reversal": self.enable_simple_reversal,
             "simple_reversal_wick_ratio": self.simple_reversal_wick_ratio,
@@ -434,6 +438,8 @@ class Strategy(BaseStrategy):
         active_gap_zones: List[StrategyGapZone] = []
         confirmed_swing_highs: List[Tuple[int, float]] = []
         confirmed_swing_lows: List[Tuple[int, float]] = []
+        confirmed_eqh_levels: List[Tuple[int, float]] = []
+        confirmed_eql_levels: List[Tuple[int, float]] = []
 
         for i in range(n):
             current_time = self._parse_datetime(times[i])
@@ -463,6 +469,11 @@ class Strategy(BaseStrategy):
 
             # 3c. Process EQH/EQL events confirmed at this bar → update has_liquidity
             for eqhl in eqhl_by_confirm.get(i, []):
+                if eqhl.type == 'EQH':
+                    confirmed_eqh_levels.append((i, float(eqhl.level)))
+                elif eqhl.type == 'EQL':
+                    confirmed_eql_levels.append((i, float(eqhl.level)))
+
                 for ob in active_obs:
                     if ob.has_liquidity:
                         continue
@@ -489,6 +500,12 @@ class Strategy(BaseStrategy):
                 confirmed_swing_lows = [
                     item for item in confirmed_swing_lows if item[0] >= slice_start_index
                 ]
+                confirmed_eqh_levels = [
+                    item for item in confirmed_eqh_levels if item[0] >= slice_start_index
+                ]
+                confirmed_eql_levels = [
+                    item for item in confirmed_eql_levels if item[0] >= slice_start_index
+                ]
 
             remaining_gap_zones = []
             for gap_zone in active_gap_zones:
@@ -503,8 +520,11 @@ class Strategy(BaseStrategy):
                 "current_low": float(lows[i]),
                 "current_close": float(closes[i]),
                 "active_obs": active_obs,
+                "active_gap_zones": active_gap_zones,
                 "confirmed_swing_high_levels": [price for _, price in confirmed_swing_highs],
                 "confirmed_swing_low_levels": [price for _, price in confirmed_swing_lows],
+                "confirmed_eqh_levels": confirmed_eqh_levels,
+                "confirmed_eql_levels": confirmed_eql_levels,
             }
 
             # 3d. Check mitigation & entry for each active OB
@@ -568,16 +588,30 @@ class Strategy(BaseStrategy):
                             )
                             if precise_entry:
                                 entry_time_1m, entry_price_1m = precise_entry
-                                # Use base class signal creation (multi-TF)
-                                signal = self._create_signal_from_entry(
-                                    symbol=symbol,
-                                    zone=ob,
-                                    entry_time=entry_time_1m,
-                                    entry_price=entry_price_1m,
+                                trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
+                                opposite_liquidity_ok = self._has_opposite_liquidity_target(
+                                    entry=float(entry_price_1m),
+                                    trade_type=trade_type,
+                                    current_index=i,
+                                    current_high=float(highs[i]),
+                                    current_low=float(lows[i]),
+                                    current_close=float(closes[i]),
+                                    active_obs=active_obs,
+                                    active_gap_zones=active_gap_zones,
+                                    confirmed_eqh_levels=confirmed_eqh_levels,
+                                    confirmed_eql_levels=confirmed_eql_levels,
                                 )
-                                if signal:
-                                    signals.append(signal)
-                                    ob.entry_triggered = True
+                                if opposite_liquidity_ok:
+                                    # Use base class signal creation (multi-TF)
+                                    signal = self._create_signal_from_entry(
+                                        symbol=symbol,
+                                        zone=ob,
+                                        entry_time=entry_time_1m,
+                                        entry_price=entry_price_1m,
+                                    )
+                                    if signal:
+                                        signals.append(signal)
+                                        ob.entry_triggered = True
                         else:
                             reversal_ok = self._passes_reversal_filter(opens, closes, highs, lows, i, ob.bias)
                             if not reversal_ok:
@@ -595,8 +629,21 @@ class Strategy(BaseStrategy):
                                 previous_close=closes[i - 1] if i > 0 else closes[i],
                             )
                             if signal:
-                                signals.append(signal)
-                                ob.entry_triggered = True
+                                opposite_liquidity_ok = self._has_opposite_liquidity_target(
+                                    entry=float(signal.entry_price),
+                                    trade_type=signal.trade_type,
+                                    current_index=i,
+                                    current_high=float(highs[i]),
+                                    current_low=float(lows[i]),
+                                    current_close=float(closes[i]),
+                                    active_obs=active_obs,
+                                    active_gap_zones=active_gap_zones,
+                                    confirmed_eqh_levels=confirmed_eqh_levels,
+                                    confirmed_eql_levels=confirmed_eql_levels,
+                                )
+                                if opposite_liquidity_ok:
+                                    signals.append(signal)
+                                    ob.entry_triggered = True
 
                 remaining_obs.append(ob)
 
@@ -705,6 +752,136 @@ class Strategy(BaseStrategy):
             return True
 
         return False
+
+    def _collect_opposite_liquidity_levels(
+        self,
+        *,
+        entry: float,
+        trade_type: str,
+        current_index: int,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        active_obs: List[StrategyOrderBlock],
+        active_gap_zones: List[StrategyGapZone],
+        confirmed_eqh_levels: List[Tuple[int, float]],
+        confirmed_eql_levels: List[Tuple[int, float]],
+    ) -> List[Tuple[float, int]]:
+        """
+        Collect opposite-side liquidity levels that can act as a destination.
+
+        source_priority:
+        - 0: opposite OB
+        - 1: EQH/EQL
+        - 2: FVG/IFVG
+        """
+        levels: List[Tuple[float, int]] = []
+
+        if trade_type == "LONG":
+            for target_ob in active_obs:
+                if target_ob.bias != "BEARISH":
+                    continue
+                if target_ob.break_index > current_index:
+                    continue
+                if self._zone_is_mitigated(target_ob, current_high, current_low, current_close):
+                    continue
+
+                level = float(target_ob.low)
+                if level <= entry:
+                    continue
+                # Must still be ahead of current bar (not already consumed)
+                if level <= current_high:
+                    continue
+                levels.append((level, 0))
+
+            for event_index, level in confirmed_eqh_levels:
+                if event_index >= current_index:
+                    continue
+                if level <= entry:
+                    continue
+                if level <= current_high:
+                    continue
+                levels.append((float(level), 1))
+
+            for gap_zone in active_gap_zones:
+                if gap_zone.bias != "BEARISH":
+                    continue
+                level = float(gap_zone.low)
+                if level <= entry:
+                    continue
+                if level <= current_high:
+                    continue
+                levels.append((level, 2))
+
+            return levels
+
+        for target_ob in active_obs:
+            if target_ob.bias != "BULLISH":
+                continue
+            if target_ob.break_index > current_index:
+                continue
+            if self._zone_is_mitigated(target_ob, current_high, current_low, current_close):
+                continue
+
+            level = float(target_ob.high)
+            if level >= entry:
+                continue
+            # Must still be ahead of current bar (not already consumed)
+            if level >= current_low:
+                continue
+            levels.append((level, 0))
+
+        for event_index, level in confirmed_eql_levels:
+            if event_index >= current_index:
+                continue
+            if level >= entry:
+                continue
+            if level >= current_low:
+                continue
+            levels.append((float(level), 1))
+
+        for gap_zone in active_gap_zones:
+            if gap_zone.bias != "BULLISH":
+                continue
+            level = float(gap_zone.high)
+            if level >= entry:
+                continue
+            if level >= current_low:
+                continue
+            levels.append((level, 2))
+
+        return levels
+
+    def _has_opposite_liquidity_target(
+        self,
+        *,
+        entry: float,
+        trade_type: str,
+        current_index: int,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        active_obs: List[StrategyOrderBlock],
+        active_gap_zones: List[StrategyGapZone],
+        confirmed_eqh_levels: List[Tuple[int, float]],
+        confirmed_eql_levels: List[Tuple[int, float]],
+    ) -> bool:
+        if not self.config.require_opposite_liquidity_target:
+            return True
+
+        candidates = self._collect_opposite_liquidity_levels(
+            entry=entry,
+            trade_type=trade_type,
+            current_index=current_index,
+            current_high=current_high,
+            current_low=current_low,
+            current_close=current_close,
+            active_obs=active_obs,
+            active_gap_zones=active_gap_zones,
+            confirmed_eqh_levels=confirmed_eqh_levels,
+            confirmed_eql_levels=confirmed_eql_levels,
+        )
+        return len(candidates) > 0
 
     def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
                             lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
@@ -828,6 +1005,8 @@ class Strategy(BaseStrategy):
             "opposite_ob",
             "opposite_swing",
             "opposite_ob_or_swing",
+            "htf_liquidity",
+            "htf_liquidity_or_rr",
         }
         if mode not in valid_modes:
             return "opposite_ob_or_swing"
@@ -905,6 +1084,40 @@ class Strategy(BaseStrategy):
 
         return candidates
 
+    def _collect_tp_candidates_from_opposite_liquidity(
+        self,
+        *,
+        entry: float,
+        risk: float,
+        trade_type: str,
+        current_index: int,
+        current_high: float,
+        current_low: float,
+        current_close: float,
+        active_obs: List[StrategyOrderBlock],
+        active_gap_zones: List[StrategyGapZone],
+        confirmed_eqh_levels: List[Tuple[int, float]],
+        confirmed_eql_levels: List[Tuple[int, float]],
+    ) -> List[Tuple[float, float, int]]:
+        candidates: List[Tuple[float, float, int]] = []
+        levels = self._collect_opposite_liquidity_levels(
+            entry=entry,
+            trade_type=trade_type,
+            current_index=current_index,
+            current_high=current_high,
+            current_low=current_low,
+            current_close=current_close,
+            active_obs=active_obs,
+            active_gap_zones=active_gap_zones,
+            confirmed_eqh_levels=confirmed_eqh_levels,
+            confirmed_eql_levels=confirmed_eql_levels,
+        )
+        for level, source_priority in levels:
+            rr = (level - entry) / risk if trade_type == "LONG" else (entry - level) / risk
+            if rr > 0:
+                candidates.append((float(level), float(rr), int(source_priority)))
+        return candidates
+
     def _select_take_profit_from_structure(
         self,
         *,
@@ -937,8 +1150,11 @@ class Strategy(BaseStrategy):
         current_close = float(context.get("current_close", entry))
 
         active_obs = cast(List[StrategyOrderBlock], context.get("active_obs", []))
+        active_gap_zones = cast(List[StrategyGapZone], context.get("active_gap_zones", []))
         confirmed_swing_high_levels = cast(List[float], context.get("confirmed_swing_high_levels", []))
         confirmed_swing_low_levels = cast(List[float], context.get("confirmed_swing_low_levels", []))
+        confirmed_eqh_levels = cast(List[Tuple[int, float]], context.get("confirmed_eqh_levels", []))
+        confirmed_eql_levels = cast(List[Tuple[int, float]], context.get("confirmed_eql_levels", []))
 
         tp_mode = self._normalize_tp_mode()
         candidates: List[Tuple[float, float, int]] = []
@@ -965,6 +1181,23 @@ class Strategy(BaseStrategy):
                     trade_type=trade_type,
                     confirmed_swing_high_levels=confirmed_swing_high_levels,
                     confirmed_swing_low_levels=confirmed_swing_low_levels,
+                )
+            )
+
+        if tp_mode in {"htf_liquidity", "htf_liquidity_or_rr"}:
+            candidates.extend(
+                self._collect_tp_candidates_from_opposite_liquidity(
+                    entry=entry,
+                    risk=risk,
+                    trade_type=trade_type,
+                    current_index=current_index,
+                    current_high=current_high,
+                    current_low=current_low,
+                    current_close=current_close,
+                    active_obs=active_obs,
+                    active_gap_zones=active_gap_zones,
+                    confirmed_eqh_levels=confirmed_eqh_levels,
+                    confirmed_eql_levels=confirmed_eql_levels,
                 )
             )
 
@@ -1035,6 +1268,9 @@ class Strategy(BaseStrategy):
                 return (stop_loss, structure_take_profit)
             if trade_type == "SHORT" and structure_take_profit < entry:
                 return (stop_loss, structure_take_profit)
+
+        if tp_mode == "htf_liquidity_or_rr":
+            return (stop_loss, rr_take_profit)
 
         if self._normalize_tp_no_target_policy() == "fixed_rr":
             return (stop_loss, rr_take_profit)

@@ -27,6 +27,7 @@ max_active_obs_per_bias: 15 # default: 10 (keep only the most recent bullish/bea
 
 # Entry Filters (optional HTF touch-bar filter)
 require_liquidity: true # default: true
+require_opposite_liquidity_target: true # default: true (needs opposite-side OB or EQH/EQL or FVG/IFVG)
 
 require_reversal_pattern: true # default: true
 enable_simple_reversal: true # default: true
