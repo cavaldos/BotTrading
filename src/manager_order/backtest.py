@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, cast
 
 import pandas as pd
 
@@ -42,6 +42,44 @@ def parse_args() -> argparse.Namespace:
         help="Output folder for reports and managed trade data",
     )
     parser.add_argument("--one-r-trigger", type=float, default=1.0, help="R threshold to activate sweep rule")
+    parser.add_argument(
+        "--adverse-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable adverse momentum management rule",
+    )
+    parser.add_argument(
+        "--adverse-action",
+        choices=["tp_adjust", "close"],
+        default="tp_adjust",
+        help="Action after adverse trigger",
+    )
+    parser.add_argument("--adverse-trigger-r", type=float, default=0.9, help="Adverse trigger threshold in R")
+    parser.add_argument("--adverse-tp-r", type=float, default=0.3, help="Adjusted TP distance from entry in R")
+    parser.add_argument(
+        "--adverse-body-ratio",
+        type=float,
+        default=0.7,
+        help="Minimum candle body/range ratio for adverse momentum",
+    )
+    parser.add_argument(
+        "--adverse-near-ratio",
+        type=float,
+        default=0.2,
+        help="How close close-price must be to candle extreme",
+    )
+    parser.add_argument(
+        "--adverse-require-break",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require break of previous candle extreme",
+    )
+    parser.add_argument(
+        "--adverse-require-near",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Require close near candle extreme",
+    )
     return parser.parse_args()
 
 
@@ -49,6 +87,14 @@ def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
         one_r_trigger=float(args.one_r_trigger),
         sweep_exit_price_mode="next_open",
+        adverse_enabled=bool(args.adverse_enabled),
+        adverse_action=cast(Literal["tp_adjust", "close"], args.adverse_action),
+        adverse_trigger_r=float(args.adverse_trigger_r),
+        adverse_tp_r=float(args.adverse_tp_r),
+        adverse_body_ratio=float(args.adverse_body_ratio),
+        adverse_near_ratio=float(args.adverse_near_ratio),
+        adverse_require_break=bool(args.adverse_require_break),
+        adverse_require_near=bool(args.adverse_require_near),
     )
 
 
@@ -238,6 +284,18 @@ def main() -> None:
     print("Rules:")
     print(f"  - R1 sweep trigger: {cfg.one_r_trigger}R")
     print(f"  - Sweep fill mode : {cfg.sweep_exit_price_mode}")
+    print(f"  - Adverse rule    : {'ON' if cfg.adverse_enabled else 'OFF'}")
+    if cfg.adverse_enabled:
+        print(
+            "  - Adverse config  : "
+            f"trigger={cfg.adverse_trigger_r}R, "
+            f"action={cfg.adverse_action}, "
+            f"tp={cfg.adverse_tp_r}R, "
+            f"body>={cfg.adverse_body_ratio}, "
+            f"near={cfg.adverse_near_ratio}, "
+            f"break={cfg.adverse_require_break}, "
+            f"near_check={cfg.adverse_require_near}"
+        )
     print("-" * 72)
 
     candle_cache: Dict[str, CandleData] = {}
@@ -264,6 +322,7 @@ def main() -> None:
             f"{trade_file.name:<24} "
             f"trades={summary['total_trades']:<4} "
             f"R1={summary['managed_r1_sweep']:<4} "
+            f"ADV={summary.get('managed_adverse_triggered', 0):<4} "
             f"WR {summary['win_rate_original']:>5.1f}% -> {summary['win_rate_managed']:>5.1f}%"
         )
 
@@ -288,6 +347,7 @@ def main() -> None:
         print(
             f"ALL FILES: trades={global_summary['total_trades']}, "
             f"R1={global_summary['managed_r1_sweep']}, "
+            f"ADV={global_summary.get('managed_adverse_triggered', 0)}, "
             f"WR {global_summary['win_rate_original']:.2f}% -> {global_summary['win_rate_managed']:.2f}%"
         )
 
