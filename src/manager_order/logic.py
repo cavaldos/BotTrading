@@ -25,8 +25,16 @@ REQUIRED_TRADE_COLUMNS = {
 
 @dataclass
 class ManagerConfig:
-    one_r_trigger: float = 1.0
+    one_r_trigger: float = 1.1
     sweep_exit_price_mode: Literal["close", "next_open"] = "next_open"
+    adverse_enabled: bool = True
+    adverse_action: Literal["tp_adjust", "close"] = "tp_adjust"
+    adverse_trigger_r: float = 0.8
+    adverse_tp_r: float = 0.3
+    adverse_body_ratio: float = 0.5
+    adverse_near_ratio: float = 0.2
+    adverse_require_break: bool = True
+    adverse_require_near: bool = True
 
 
 @dataclass

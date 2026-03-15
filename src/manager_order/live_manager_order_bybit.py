@@ -12,6 +12,9 @@ exchange-derived R multiples only:
 - Ratchet TP in steps as price nears the current exchange TP
   - At 90% of TP distance, move SL to 80% of TP distance
   - Extend TP by 20% of the original TP distance per step
+- Apply manager-order candle logic on closed 1m candles
+  - Close on R1 sweep signal (configurable, default 1.1R)
+  - On strong adverse momentum at -0.8R, adjust TP closer to entry (0.3R)
 
 This tool manages active Bybit positions only. It does not read local
 sent-order logs or strategy output files to calculate risk.
@@ -36,7 +39,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, cast
+from typing import Any, Dict, Iterable, Literal, Optional, cast
 
 import numpy as np
 import pandas as pd
@@ -48,10 +51,10 @@ from rich.text import Text
 
 from src.config import load_live_config
 from src.live.bybit.exchange import format_symbol, get_exchange, set_position_sl_tp
-from src.manager_order.logic import CandleData, ManagerConfig, replay_trade
+from src.manager_order.logic import CandleData, ManagerConfig
 
 
-MANAGED_EXIT_REASONS = {"R_LOSS_LIMIT", "TRAIL_ZERO_R_CLOSE"}
+MANAGED_EXIT_REASONS = {"R_LOSS_LIMIT", "TRAIL_ZERO_R_CLOSE", "R1_SWEEP", "ADVERSE_CLOSE"}
 STATE_SCHEMA_VERSION = 4
 DEFAULT_SECOND_OFFSET = 2
 ONE_MINUTE_MS = 60_000
@@ -165,6 +168,14 @@ class RuntimeViewState:
     error_count: int = 0
 
 
+@dataclass(frozen=True)
+class ManagerSignal:
+    one_r_reached: bool = False
+    close_reason: Optional[str] = None
+    adverse_tp_target: Optional[float] = None
+    signal_candle_ns: Optional[int] = None
+
+
 class SingleInstanceLock:
     def __init__(self, lock_path: Path):
         self.lock_path = lock_path
@@ -200,6 +211,7 @@ def parse_args() -> argparse.Namespace:
     strategy_cfg = live_cfg.get("strategy", {}) if isinstance(live_cfg.get("strategy"), dict) else {}
     default_repair_risk_usd = float(strategy_cfg.get("risk_per_trade", 1.0) or 1.0)
     default_repair_rr = float(strategy_cfg.get("risk_reward_ratio", 2.0) or 2.0)
+    default_manager_cfg = ManagerConfig()
 
     parser = argparse.ArgumentParser(description="Standalone Bybit live order manager")
     parser.add_argument("--once", action="store_true", help="Run one management cycle immediately and exit")
@@ -326,13 +338,75 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Close position when trailing is active and unrealized PnL falls back to 0R or below",
     )
+    parser.add_argument(
+        "--manager-one-r-trigger",
+        type=float,
+        default=float(default_manager_cfg.one_r_trigger),
+        help="1R threshold for sweep close signal",
+    )
+    parser.add_argument(
+        "--manager-adverse-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=bool(default_manager_cfg.adverse_enabled),
+        help="Enable adverse momentum management rule",
+    )
+    parser.add_argument(
+        "--manager-adverse-action",
+        choices=["tp_adjust", "close"],
+        default=str(default_manager_cfg.adverse_action),
+        help="Action when adverse momentum triggers",
+    )
+    parser.add_argument(
+        "--manager-adverse-trigger-r",
+        type=float,
+        default=float(default_manager_cfg.adverse_trigger_r),
+        help="Adverse trigger threshold in R",
+    )
+    parser.add_argument(
+        "--manager-adverse-tp-r",
+        type=float,
+        default=float(default_manager_cfg.adverse_tp_r),
+        help="Adjusted TP target in R from entry",
+    )
+    parser.add_argument(
+        "--manager-adverse-body-ratio",
+        type=float,
+        default=float(default_manager_cfg.adverse_body_ratio),
+        help="Minimum body/range ratio for adverse momentum candle",
+    )
+    parser.add_argument(
+        "--manager-adverse-near-ratio",
+        type=float,
+        default=float(default_manager_cfg.adverse_near_ratio),
+        help="How near close must be to candle extreme",
+    )
+    parser.add_argument(
+        "--manager-adverse-require-break",
+        action=argparse.BooleanOptionalAction,
+        default=bool(default_manager_cfg.adverse_require_break),
+        help="Require break of previous candle extreme for adverse signal",
+    )
+    parser.add_argument(
+        "--manager-adverse-require-near",
+        action=argparse.BooleanOptionalAction,
+        default=bool(default_manager_cfg.adverse_require_near),
+        help="Require close near candle extreme for adverse signal",
+    )
     return parser.parse_args()
 
 
 def build_manager_config(args: argparse.Namespace) -> ManagerConfig:
     return ManagerConfig(
-        one_r_trigger=1.0,
+        one_r_trigger=float(args.manager_one_r_trigger),
         sweep_exit_price_mode="next_open",
+        adverse_enabled=bool(args.manager_adverse_enabled),
+        adverse_action=cast(Literal["tp_adjust", "close"], args.manager_adverse_action),
+        adverse_trigger_r=float(args.manager_adverse_trigger_r),
+        adverse_tp_r=float(args.manager_adverse_tp_r),
+        adverse_body_ratio=float(args.manager_adverse_body_ratio),
+        adverse_near_ratio=float(args.manager_adverse_near_ratio),
+        adverse_require_break=bool(args.manager_adverse_require_break),
+        adverse_require_near=bool(args.manager_adverse_require_near),
     )
 
 
@@ -358,6 +432,169 @@ def parse_float_allow_zero(value: Any) -> Optional[float]:
     if math.isnan(parsed):
         return None
     return parsed
+
+
+def parse_optional_int(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_adverse_momentum_long(
+    index: int,
+    start_idx: int,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    cfg: ManagerConfig,
+) -> bool:
+    open_price = float(opens[index])
+    high = float(highs[index])
+    low = float(lows[index])
+    close = float(closes[index])
+
+    if close >= open_price:
+        return False
+
+    candle_range = max(high - low, 1e-12)
+    body_ratio = abs(close - open_price) / candle_range
+    if body_ratio < float(cfg.adverse_body_ratio):
+        return False
+
+    if bool(cfg.adverse_require_break) and index > start_idx and low >= float(lows[index - 1]):
+        return False
+
+    if bool(cfg.adverse_require_near) and close > low + (float(cfg.adverse_near_ratio) * candle_range):
+        return False
+
+    return True
+
+
+def is_adverse_momentum_short(
+    index: int,
+    start_idx: int,
+    opens: np.ndarray,
+    highs: np.ndarray,
+    lows: np.ndarray,
+    closes: np.ndarray,
+    cfg: ManagerConfig,
+) -> bool:
+    open_price = float(opens[index])
+    high = float(highs[index])
+    low = float(lows[index])
+    close = float(closes[index])
+
+    if close <= open_price:
+        return False
+
+    candle_range = max(high - low, 1e-12)
+    body_ratio = abs(close - open_price) / candle_range
+    if body_ratio < float(cfg.adverse_body_ratio):
+        return False
+
+    if bool(cfg.adverse_require_break) and index > start_idx and high <= float(highs[index - 1]):
+        return False
+
+    if bool(cfg.adverse_require_near) and close < high - (float(cfg.adverse_near_ratio) * candle_range):
+        return False
+
+    return True
+
+
+def evaluate_manager_signal(
+    managed_position: ManagedPosition,
+    candles: CandleData,
+    cfg: ManagerConfig,
+    adverse_tp_applied: bool,
+) -> ManagerSignal:
+    if candles.is_empty():
+        return ManagerSignal()
+
+    snapshot = managed_position.snapshot
+    entry_price = float(managed_position.reference_entry_price)
+    risk_distance = managed_position.risk_distance
+    if risk_distance is None or risk_distance <= 1e-12:
+        risk_distance = compute_risk_distance(entry_price, managed_position.original_stop_loss)
+    if risk_distance is None or risk_distance <= 1e-12:
+        return ManagerSignal(signal_candle_ns=int(candles.times_ns[-1]))
+
+    times_ns = candles.times_ns
+    start_ns = np.int64(managed_position.anchor_time.value)
+    start_idx = int(np.searchsorted(times_ns, start_ns, side="right"))
+    if start_idx >= len(times_ns):
+        return ManagerSignal(signal_candle_ns=int(times_ns[-1]))
+
+    last_idx = len(times_ns) - 1
+    signal_candle_ns = int(times_ns[last_idx])
+
+    highs = candles.highs
+    lows = candles.lows
+    opens = candles.opens
+    closes = candles.closes
+
+    if snapshot.trade_type == "LONG":
+        one_r_price = entry_price + (float(cfg.one_r_trigger) * float(risk_distance))
+        one_r_reached = bool(np.any(highs[start_idx : last_idx + 1] >= one_r_price))
+        if one_r_reached and last_idx > start_idx:
+            if float(closes[last_idx]) < float(opens[last_idx]) and float(lows[last_idx]) < float(lows[last_idx - 1]):
+                return ManagerSignal(one_r_reached=True, close_reason="R1_SWEEP", signal_candle_ns=signal_candle_ns)
+
+        if bool(cfg.adverse_enabled) and not adverse_tp_applied:
+            adverse_price = entry_price - (float(cfg.adverse_trigger_r) * float(risk_distance))
+            if float(lows[last_idx]) <= adverse_price and is_adverse_momentum_long(
+                index=last_idx,
+                start_idx=start_idx,
+                opens=opens,
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                cfg=cfg,
+            ):
+                if cfg.adverse_action == "close":
+                    return ManagerSignal(one_r_reached=one_r_reached, close_reason="ADVERSE_CLOSE", signal_candle_ns=signal_candle_ns)
+                target_tp = entry_price + (float(cfg.adverse_tp_r) * float(risk_distance))
+                return ManagerSignal(
+                    one_r_reached=one_r_reached,
+                    adverse_tp_target=target_tp,
+                    signal_candle_ns=signal_candle_ns,
+                )
+
+        return ManagerSignal(one_r_reached=one_r_reached, signal_candle_ns=signal_candle_ns)
+
+    if snapshot.trade_type == "SHORT":
+        one_r_price = entry_price - (float(cfg.one_r_trigger) * float(risk_distance))
+        one_r_reached = bool(np.any(lows[start_idx : last_idx + 1] <= one_r_price))
+        if one_r_reached and last_idx > start_idx:
+            if float(closes[last_idx]) > float(opens[last_idx]) and float(highs[last_idx]) > float(highs[last_idx - 1]):
+                return ManagerSignal(one_r_reached=True, close_reason="R1_SWEEP", signal_candle_ns=signal_candle_ns)
+
+        if bool(cfg.adverse_enabled) and not adverse_tp_applied:
+            adverse_price = entry_price + (float(cfg.adverse_trigger_r) * float(risk_distance))
+            if float(highs[last_idx]) >= adverse_price and is_adverse_momentum_short(
+                index=last_idx,
+                start_idx=start_idx,
+                opens=opens,
+                highs=highs,
+                lows=lows,
+                closes=closes,
+                cfg=cfg,
+            ):
+                if cfg.adverse_action == "close":
+                    return ManagerSignal(one_r_reached=one_r_reached, close_reason="ADVERSE_CLOSE", signal_candle_ns=signal_candle_ns)
+                target_tp = entry_price - (float(cfg.adverse_tp_r) * float(risk_distance))
+                return ManagerSignal(
+                    one_r_reached=one_r_reached,
+                    adverse_tp_target=target_tp,
+                    signal_candle_ns=signal_candle_ns,
+                )
+
+        return ManagerSignal(one_r_reached=one_r_reached, signal_candle_ns=signal_candle_ns)
+
+    return ManagerSignal(signal_candle_ns=signal_candle_ns)
 
 
 def parse_unrealized_pnl(position: dict[str, Any], info: dict[str, Any]) -> Optional[float]:
@@ -895,7 +1132,9 @@ def status_style(status: str) -> str:
         return "bold cyan"
     if status.startswith("TP_"):
         return "bold cyan"
-    if status in {"R_LOSS_LIMIT", "TRAIL_ZERO_R_CLOSE"}:
+    if status in {"R_LOSS_LIMIT", "TRAIL_ZERO_R_CLOSE", "R1_SWEEP", "ADVERSE_CLOSE"}:
+        return "bold cyan"
+    if status in {"ADVERSE_TP_ADJUSTED"}:
         return "bold cyan"
     if status in {"TP_SEEN", "SL_SEEN"}:
         return "bold yellow"
@@ -938,6 +1177,15 @@ def build_header_panel(runtime_state: RuntimeViewState, cfg: ManagerConfig) -> P
         (
             f"lock {runtime_state.trail_lock_r:.2f}R | gap {runtime_state.trail_gap_r:.2f}R"
             f" | close<=0R={runtime_state.trail_close_non_positive}"
+        ),
+    )
+    table.add_row(
+        "Manager",
+        f"R1 sweep @ {cfg.one_r_trigger:.2f}R",
+        "Adverse",
+        (
+            f"enabled={cfg.adverse_enabled}, action={cfg.adverse_action}, "
+            f"trigger={cfg.adverse_trigger_r:.2f}R, tp={cfg.adverse_tp_r:.2f}R"
         ),
     )
     table.add_row(
@@ -1397,6 +1645,9 @@ def sync_position_state(
             "last_sl_update": last_sl_update,
             "tp_ratchet_steps": int(tp_ratchet_steps),
             "last_tp_update": last_tp_update,
+            "one_r_reached": bool(parse_bool(stored.get("one_r_reached")) if isinstance(stored, dict) else False),
+            "adverse_tp_applied": bool(parse_bool(stored.get("adverse_tp_applied")) if isinstance(stored, dict) else False),
+            "last_signal_candle_ns": parse_optional_int(stored.get("last_signal_candle_ns")) if isinstance(stored, dict) else None,
         }
 
         managed_positions.append(
@@ -1778,6 +2029,27 @@ def run_cycle(
         runtime_state.tp_ratchet_max_steps = tp_ratchet_max_steps
         runtime_state.trail_close_non_positive = trail_close_non_positive
 
+    candle_cache: dict[str, CandleData] = {}
+    if managed_positions:
+        try:
+            candle_cache = build_candle_cache(
+                exchange=exchange,
+                managed_positions=managed_positions,
+                cycle_time=cycle_time,
+                limit_per_request=limit_per_request,
+                max_batches=max_batches,
+            )
+        except Exception as exc:
+            append_jsonl(
+                log_path,
+                {
+                    "event": "CANDLE_FETCH_FAILED",
+                    "cycle_time": cycle_label,
+                    "error": str(exc),
+                },
+            )
+            push_runtime_event(runtime_state, "FETCH_WARNING", f"Candle fetch failed: {exc}")
+
     position_views: dict[str, PositionView] = {}
 
     for managed_position in managed_positions:
@@ -1844,6 +2116,9 @@ def run_cycle(
             state_entry = {}
         stored_stop_loss = parse_optional_float(state_entry.get("stop_loss"))
         stored_take_profit = parse_optional_float(state_entry.get("take_profit"))
+        stored_one_r_reached = parse_bool(state_entry.get("one_r_reached"))
+        stored_adverse_tp_applied = parse_bool(state_entry.get("adverse_tp_applied"))
+        stored_last_signal_candle_ns = parse_optional_int(state_entry.get("last_signal_candle_ns"))
 
         risk_distance = managed_position.risk_distance
         if risk_distance is None:
@@ -2049,6 +2324,7 @@ def run_cycle(
         view.original_take_profit = original_take_profit
         view.tp_ratchet_steps = tp_ratchet_steps
         view.last_tp_update = last_tp_update
+        view.one_r_reached = stored_one_r_reached
 
         if pnl_usd is None:
             cycle_stats["skipped"] += 1
@@ -2069,6 +2345,9 @@ def run_cycle(
                     "last_sl_update": last_sl_update,
                     "tp_ratchet_steps": tp_ratchet_steps,
                     "last_tp_update": last_tp_update,
+                    "one_r_reached": stored_one_r_reached,
+                    "adverse_tp_applied": stored_adverse_tp_applied,
+                    "last_signal_candle_ns": state_entry.get("last_signal_candle_ns"),
                 }
             )
             state_positions[snapshot.key] = state_entry
@@ -2104,6 +2383,9 @@ def run_cycle(
                     "last_sl_update": last_sl_update,
                     "tp_ratchet_steps": tp_ratchet_steps,
                     "last_tp_update": last_tp_update,
+                    "one_r_reached": stored_one_r_reached,
+                    "adverse_tp_applied": stored_adverse_tp_applied,
+                    "last_signal_candle_ns": state_entry.get("last_signal_candle_ns"),
                 }
             )
             state_positions[snapshot.key] = state_entry
@@ -2123,6 +2405,105 @@ def run_cycle(
                 },
             )
             continue
+
+        manager_trigger_reason: Optional[str] = None
+        manager_tp_adjusted = False
+        manager_signal_note: Optional[str] = None
+        manager_candles = candle_cache.get(snapshot.symbol)
+        if manager_candles is not None and not manager_candles.is_empty():
+            signal_latest_ns = int(manager_candles.times_ns[-1])
+            should_evaluate_signal = stored_last_signal_candle_ns is None or signal_latest_ns > stored_last_signal_candle_ns
+            if should_evaluate_signal:
+                manager_signal = evaluate_manager_signal(
+                    managed_position=managed_position,
+                    candles=manager_candles,
+                    cfg=cfg,
+                    adverse_tp_applied=stored_adverse_tp_applied,
+                )
+                if manager_signal.signal_candle_ns is not None:
+                    state_entry["last_signal_candle_ns"] = int(manager_signal.signal_candle_ns)
+                if manager_signal.one_r_reached:
+                    stored_one_r_reached = True
+                    state_entry["one_r_reached"] = True
+
+                if manager_signal.adverse_tp_target is not None:
+                    desired_tp = clamp_take_profit_away_from_mark(
+                        snapshot.trade_type,
+                        manager_signal.adverse_tp_target,
+                        snapshot.mark_price,
+                        risk_distance,
+                    )
+                    should_adjust_tp = False
+                    if desired_tp is not None:
+                        if active_take_profit is None:
+                            should_adjust_tp = True
+                        elif snapshot.trade_type == "LONG":
+                            should_adjust_tp = float(desired_tp) < float(active_take_profit) - 1e-12
+                        else:
+                            should_adjust_tp = float(desired_tp) > float(active_take_profit) + 1e-12
+
+                    if should_adjust_tp and active_stop_loss is not None:
+                        if dry_run:
+                            adverse_update = {
+                                "success": True,
+                                "stop_loss": active_stop_loss,
+                                "take_profit": desired_tp,
+                                "result": {"dry_run": True},
+                            }
+                        else:
+                            adverse_update = apply_position_stop_loss(exchange, snapshot, active_stop_loss, desired_tp)
+
+                        if adverse_update.get("success"):
+                            updated_tp = parse_optional_float(adverse_update.get("take_profit"))
+                            if updated_tp is not None:
+                                active_take_profit = updated_tp
+                            stored_adverse_tp_applied = True
+                            state_entry["adverse_tp_applied"] = True
+                            last_tp_update = cycle_label
+                            manager_tp_adjusted = True
+                            manager_signal_note = f"adverse TP -> {format_number(active_take_profit)}"
+                            append_jsonl(
+                                log_path,
+                                {
+                                    "event": "ADVERSE_TP_ADJUSTED",
+                                    "cycle_time": cycle_label,
+                                    "key": snapshot.key,
+                                    "symbol": snapshot.symbol,
+                                    "side": snapshot.trade_type,
+                                    "entry_price": managed_position.reference_entry_price,
+                                    "mark_price": snapshot.mark_price,
+                                    "new_stop_loss": active_stop_loss,
+                                    "new_take_profit": active_take_profit,
+                                    "target_take_profit": desired_tp,
+                                    "adverse_trigger_r": cfg.adverse_trigger_r,
+                                    "adverse_tp_r": cfg.adverse_tp_r,
+                                    "dry_run": dry_run,
+                                },
+                            )
+                            push_runtime_event(runtime_state, "ADVERSE_TP", f"{snapshot.symbol} TP -> {format_number(active_take_profit)}")
+                        else:
+                            adverse_error = str(adverse_update.get("error") or "adverse tp update failed")
+                            note_parts.append(f"adverse tp error: {adverse_error}")
+                            append_jsonl(
+                                log_path,
+                                {
+                                    "event": "ADVERSE_TP_UPDATE_FAILED",
+                                    "cycle_time": cycle_label,
+                                    "key": snapshot.key,
+                                    "symbol": snapshot.symbol,
+                                    "side": snapshot.trade_type,
+                                    "attempted_take_profit": desired_tp,
+                                    "error": adverse_error,
+                                    "dry_run": dry_run,
+                                },
+                            )
+
+                if manager_signal.close_reason:
+                    manager_trigger_reason = str(manager_signal.close_reason)
+
+        view.one_r_reached = stored_one_r_reached
+        if manager_signal_note:
+            note_parts.append(manager_signal_note)
 
         trailing_sl_moved = False
         trailing_sl_failed = False
@@ -2451,12 +2832,18 @@ def run_cycle(
                 "last_sl_update": last_sl_update,
                 "tp_ratchet_steps": tp_ratchet_steps,
                 "last_tp_update": last_tp_update,
+                "one_r_reached": stored_one_r_reached,
+                "adverse_tp_applied": stored_adverse_tp_applied,
+                "last_signal_candle_ns": state_entry.get("last_signal_candle_ns"),
             }
         )
         state_positions[snapshot.key] = state_entry
 
         trigger_reason = ""
-        if trail_close_non_positive and trail_active and current_r <= 0:
+        if manager_trigger_reason:
+            trigger_reason = manager_trigger_reason
+            note_parts.append(f"manager signal: {manager_trigger_reason}")
+        elif trail_close_non_positive and trail_active and current_r <= 0:
             trigger_reason = "TRAIL_ZERO_R_CLOSE"
             note_parts.append(f"trail active and r {format_r_multiple(current_r)} <= +0.00R")
         elif current_r <= -loss_limit_r:
@@ -2472,6 +2859,8 @@ def run_cycle(
                 view.last_reason = "PROTECTION_REPAIRED"
             elif tp_ratchet_failed:
                 view.last_reason = "TP_RATCHET_FAILED"
+            elif manager_tp_adjusted:
+                view.last_reason = "ADVERSE_TP_ADJUSTED"
             elif tp_ratchet_moved:
                 view.last_reason = "TP_RATCHET_MOVED"
             elif trailing_sl_moved:
@@ -2532,6 +2921,15 @@ def run_cycle(
             "tp_ratchet_max_steps": tp_ratchet_max_steps,
             "tp_ratchet_steps": tp_ratchet_steps,
             "related_order_ids": [extract_order_id(order) for order in orders_to_cancel if extract_order_id(order)],
+            "manager_one_r_trigger": cfg.one_r_trigger,
+            "manager_adverse_enabled": cfg.adverse_enabled,
+            "manager_adverse_action": cfg.adverse_action,
+            "manager_adverse_trigger_r": cfg.adverse_trigger_r,
+            "manager_adverse_tp_r": cfg.adverse_tp_r,
+            "manager_adverse_body_ratio": cfg.adverse_body_ratio,
+            "manager_adverse_near_ratio": cfg.adverse_near_ratio,
+            "manager_adverse_require_break": cfg.adverse_require_break,
+            "manager_adverse_require_near": cfg.adverse_require_near,
             "dry_run": dry_run,
         }
 
@@ -2625,6 +3023,17 @@ def main() -> None:
     print(f"Second offset : {int(args.second_offset)}")
     print(
         f"Rules         : close <= -{float(args.loss_limit_r):.2f}R"
+    )
+    print(
+        "Manager rule  : "
+        f"R1 sweep={float(args.manager_one_r_trigger):.2f}R, "
+        f"adverse={bool(args.manager_adverse_enabled)}, "
+        f"action={str(args.manager_adverse_action)}, "
+        f"trigger={float(args.manager_adverse_trigger_r):.2f}R, "
+        f"tp={float(args.manager_adverse_tp_r):.2f}R, "
+        f"body>={float(args.manager_adverse_body_ratio):.2f}, "
+        f"break={bool(args.manager_adverse_require_break)}, "
+        f"near={bool(args.manager_adverse_require_near)}"
     )
     print(
         f"Trailing      : on >= {float(args.trail_activate_r):.2f}R, "
