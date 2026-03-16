@@ -397,8 +397,10 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # Add results grouped by timeframe
     for timeframe in sorted_timeframes:
         for summary in timeframe_groups[timeframe]:
-            # ROE = (Sum RR Wins) - Losses
-            roe = summary['total_rr_wins'] - summary['losses']
+            # ROE = (Sum RR Wins) - Losses - fee_per_trade_r per closed trade (trading fee)
+            closed_trades = summary['wins'] + summary['losses']
+            fee_r = config.fee_per_trade_r
+            roe = summary['total_rr_wins'] - summary['losses'] - (closed_trades * fee_r)
             row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
                 summary['symbol'],
                 summary['total_trades'],
@@ -418,8 +420,10 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
             lines.append(row)
     
     # Add overall summary
-    # ROE = (Total RR Wins) - Total Losses
-    overall_roe = total_rr_wins - total_losses
+    # ROE = (Total RR Wins) - Total Losses - fee_per_trade_r per closed trade (trading fee)
+    total_closed = total_wins + total_losses
+    fee_r = config.fee_per_trade_r
+    overall_roe = total_rr_wins - total_losses - (total_closed * fee_r)
     
     # Calculate overall streaks and average SL percent
     overall_longest_win_streak = 0
@@ -492,7 +496,7 @@ def print_quick_stats(summary: Dict) -> None:
     print(f"  - Avg Win Streak: {summary['avg_win_streak']}, Avg Loss Streak: {summary['avg_loss_streak']}")
 
 
-def print_final_summary(all_trades: List[Trade]) -> None:
+def print_final_summary(all_trades: List[Trade], config: Optional[Config] = None) -> None:
     """Print final summary after backtest completion"""
     print("\n" + "=" * 60)
     print("Analysis completed!")
@@ -507,7 +511,8 @@ def print_final_summary(all_trades: List[Trade]) -> None:
         print(f"Wins: {wins}, Losses: {losses}, Open: {open_trades}")
         print(f"Overall win rate: {round(overall_wr, 2)}%")
         total_rr_wins = sum(t.rr_ratio for t in all_trades if t.result == 'WIN' and t.rr_ratio is not None)
-        overall_roe = total_rr_wins - losses
+        fee_r = config.fee_per_trade_r if config else 0.5
+        overall_roe = total_rr_wins - losses - (closed_trades * fee_r)
         print(f"ROE (total symbols): {round(overall_roe, 2)}")
         
         # Calculate streaks

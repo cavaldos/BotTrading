@@ -68,6 +68,7 @@ class BaseConfig:
     sl_multiplier: float = 1.05
     min_sl_pct: float = 0.05
     risk_per_trade: float = 10.0
+    fee_per_trade_r: float = 0.5
 
     def get_strategy_info(self) -> Dict[str, Any]:
         return {

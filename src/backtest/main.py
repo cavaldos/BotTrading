@@ -235,7 +235,7 @@ def main():
     generate_text_report(all_summaries, primary_config, summary_path)
 
     # Print final summary
-    print_final_summary(all_trades)
+    print_final_summary(all_trades, primary_config)
 
 
 if __name__ == "__main__":

@@ -44,13 +44,15 @@ touch_tolerance_pct: 0.02 # default: 0.0
 touch_confirmation_bars: 0 # default: 0
 entry_on_candle_close: false # kept for compatibility (LTF midpoint entries are used)
 
+reversal_pattern_ids: [0] # default: [0]
+
 
 # Risk Management
 sl_buffer_pct: 0.1 # default: 0.1
 sl_multiplier: 1.1 # default: 1.05
 min_sl_pct: 0.2 # default: 0.05
 risk_per_trade: 1.0 # default: 10.0
-reversal_pattern_ids: [0] # default: [0]
+fee_per_trade_r: 0.5 # default: 0.5 (phí giao dịch tính bằng R, trừ cho mỗi lệnh đã đóng)
 
 
 # Flexible TP
