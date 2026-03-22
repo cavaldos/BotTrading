@@ -26,6 +26,7 @@ ob_body_ratio: 0.25 # default: 0.25
 max_active_obs_per_bias: 15 # default: 10 (keep only the most recent bullish/bearish OBs)
 merge_overlapping_obs: true # default: true (gop cac OB cung bias neu overlap va hinh thanh gan nhau)
 ob_merge_max_break_gap: 5 # default: 5 (so bar toi da giua cac structure break de duoc gop OB)
+entry_ob_level: 0.5 # default: 0.5 (entry level inside OB: 0.0=low, 0.5=midpoint, 1.0=high)
 
 # Entry Filters (optional HTF touch-bar filter)
 require_liquidity: true # default: true

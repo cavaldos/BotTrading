@@ -114,6 +114,7 @@ class Config(BaseConfig):
     max_active_obs_per_bias: int = 10  # Keep only the most recent bullish/bearish OBs
     merge_overlapping_obs: bool = True  # Merge same-bias OBs that overlap and form close together
     ob_merge_max_break_gap: int = 5     # Max break_index distance allowed when merging overlapping OBs
+    entry_ob_level: float = 0.5     # Entry level within OB zone (0.0=low, 0.5=midpoint, 1.0=high)
 
     # === ENTRY FILTERS ===
     require_liquidity: bool = True          # Require EQH/EQL liquidity event after OB break
@@ -164,6 +165,7 @@ class Config(BaseConfig):
             "max_active_obs_per_bias": self.max_active_obs_per_bias,
             "merge_overlapping_obs": self.merge_overlapping_obs,
             "ob_merge_max_break_gap": self.ob_merge_max_break_gap,
+            "entry_ob_level": self.entry_ob_level,
             "require_liquidity": self.require_liquidity,
             "require_opposite_liquidity_target": self.require_opposite_liquidity_target,
             "require_reversal_pattern": self.require_reversal_pattern,
@@ -838,7 +840,7 @@ class Strategy(BaseStrategy):
         return kept_obs
 
     def _get_ob_midpoint(self, zone: BaseZone) -> float:
-        return float(zone.low + ((zone.high - zone.low) * 0.5))
+        return float(zone.low + ((zone.high - zone.low) * self.config.entry_ob_level))
 
     def _select_entry_price(
         self,
