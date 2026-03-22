@@ -249,9 +249,11 @@ Let:
 1) Entry
 
 ```text
-body_low = min(current_open, current_close)
-entry    = min(ob.high, body_low)
+ob_midpoint = (ob.high + ob.low) / 2
+entry       = ob_midpoint
 ```
+
+Only enter if the current candle actually trades through `ob_midpoint`.
 
 2) Base stop and expansion
 
@@ -280,9 +282,11 @@ take_profit = entry + (actual_risk * risk_reward_ratio)
 1) Entry
 
 ```text
-body_high = max(current_open, current_close)
-entry     = max(ob.low, body_high)
+ob_midpoint = (ob.high + ob.low) / 2
+entry       = ob_midpoint
 ```
+
+Only enter if the current candle actually trades through `ob_midpoint`.
 
 2) Base stop and expansion
 

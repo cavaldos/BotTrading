@@ -15,17 +15,19 @@ LONG setup:
 2. Activate the OB when its break_index is reached.
 3. Optionally require a later EQH confirmation after the OB break
    (require_liquidity=True).
-4. Wait for price to touch the OB zone. Entry can happen on the touch bar or
-   within touch_confirmation_bars after the most recent touch.
+4. Wait for price to trade into the 50% level of the OB. Entry can happen on
+   the midpoint-touch bar or within touch_confirmation_bars after the most
+   recent qualifying touch.
 5. Optionally require matching bullish FVG/IFVG confluence.
 6. Optionally require a bullish reversal candlestick pattern or a simpler
    rejection/displacement reversal.
 7. Optionally require a valid opposite-side liquidity destination before entry.
 8. Enter LONG:
-   - single-timeframe mode: from the signal timeframe candle/zone overlap or
-     candle close, depending on configuration
-   - multi-timeframe mode: from the first entry-timeframe candle after the
-     signal bar closes that both touches the zone and passes the reversal filter
+   - single-timeframe mode: at the OB midpoint once the signal candle trades
+     through it
+   - multi-timeframe mode: at the OB midpoint on the first entry-timeframe
+     candle after the signal bar closes that trades through the midpoint and
+     passes the reversal filter
 9. SL is placed below the OB with buffer / multiplier logic and minimum-SL
    enforcement inherited from BaseStrategy.
 10. TP is configurable: fixed RR, opposite OB, opposite swing, or opposite HTF
@@ -36,6 +38,8 @@ SHORT setup: opposite of the above.
 Important behavior notes:
 - The strategy can trade both CHoCH-based and BOS-based OBs; CHoCH is not a
   mandatory prerequisite for every trade.
+- Same-bias OBs that overlap and form within a small break-index distance can
+  be merged into a single union zone, activated on the latest break.
 - Liquidity confirmation is tracked causally after the OB break; indicator
   precomputed mitigation flags are ignored and mitigation is evaluated bar by
   bar in the strategy loop.
@@ -108,6 +112,8 @@ class Config(BaseConfig):
     # === ORDER BLOCK ===
     ob_body_ratio: float = 0.35     # Candle body size / candle range must be > 35%
     max_active_obs_per_bias: int = 10  # Keep only the most recent bullish/bearish OBs
+    merge_overlapping_obs: bool = True  # Merge same-bias OBs that overlap and form close together
+    ob_merge_max_break_gap: int = 5     # Max break_index distance allowed when merging overlapping OBs
 
     # === ENTRY FILTERS ===
     require_liquidity: bool = True          # Require EQH/EQL liquidity event after OB break
@@ -156,6 +162,8 @@ class Config(BaseConfig):
             "ob_detection": "LuxAlgo extreme candle + trending candle filter",
             "ob_body_ratio": self.ob_body_ratio,
             "max_active_obs_per_bias": self.max_active_obs_per_bias,
+            "merge_overlapping_obs": self.merge_overlapping_obs,
+            "ob_merge_max_break_gap": self.ob_merge_max_break_gap,
             "require_liquidity": self.require_liquidity,
             "require_opposite_liquidity_target": self.require_opposite_liquidity_target,
             "require_reversal_pattern": self.require_reversal_pattern,
@@ -395,9 +403,10 @@ class Strategy(BaseStrategy):
 
         # ========== 2. BUILD EVENT QUEUES (indexed by activation bar) ==========
 
-        # OBs: filter by body_ratio, group by break_index (activation bar)
-        # IGNORE indicator's is_mitigated — we compute mitigation ourselves bar-by-bar
-        obs_by_break: dict[int, List[StrategyOrderBlock]] = {}
+        # OBs: filter by body_ratio, optionally merge overlapping zones,
+        # then group by break_index (activation bar)
+        # IGNORE indicator's is_mitigated - we compute mitigation ourselves bar-by-bar
+        strategy_obs: List[StrategyOrderBlock] = []
         for ob in ob_list:
             if not _check_trending_candle_jit(opens, closes, highs, lows,
                                               ob.index, self.config.ob_body_ratio):
@@ -417,7 +426,14 @@ class Strategy(BaseStrategy):
                 has_liquidity=False,
                 liquidity_confirmed_index=-1,
             )
-            obs_by_break.setdefault(ob.break_index, []).append(sob)
+
+            strategy_obs.append(sob)
+
+        strategy_obs = self._merge_overlapping_order_blocks(strategy_obs)
+
+        obs_by_break: dict[int, List[StrategyOrderBlock]] = {}
+        for ob in strategy_obs:
+            obs_by_break.setdefault(ob.break_index, []).append(ob)
 
         # EQH/EQL: group by confirmed_index (confirmation bar, NOT pivot bar)
         eqhl_by_confirm: dict[int, List[IndicatorEqualHL]] = {}
@@ -548,7 +564,8 @@ class Strategy(BaseStrategy):
             for ob in active_obs:
                 # Use base class zone mitigation check
                 if self._zone_is_mitigated(ob, highs[i], lows[i], closes[i]):
-                    continue
+                    ob.is_mitigated = True
+                    continue  # Skip OB entirely - do not process entry
 
                 # Use base class zone touch check
                 touches_ob = self._price_touches_zone(
@@ -564,6 +581,12 @@ class Strategy(BaseStrategy):
                 touch_window = max(0, self.config.touch_confirmation_bars)
                 touch_recent = ob.last_touch_index >= 0 and (i - ob.last_touch_index) <= touch_window
                 entry_window_active = touch_recent if touch_window > 0 else touches_ob
+
+                # SAFEGUARD: If OB was touched but also mitigated in same bar (pierce into zone) → skip entry
+                if entry_window_active and self._zone_is_mitigated(ob, highs[i], lows[i], closes[i]):
+                    ob.is_mitigated = True
+                    remaining_obs.append(ob)
+                    continue
 
                 if not ob.entry_triggered and entry_window_active:
                     # ADX filter: require minimum trend strength on signal timeframe
@@ -720,6 +743,75 @@ class Strategy(BaseStrategy):
             return "none"
         return mode
 
+    def _merge_overlapping_order_blocks(
+        self,
+        order_blocks: List[StrategyOrderBlock],
+    ) -> List[StrategyOrderBlock]:
+        if not self.config.merge_overlapping_obs or len(order_blocks) <= 1:
+            return sorted(
+                order_blocks,
+                key=lambda ob: (ob.break_index, ob.index, ob.low, ob.high),
+            )
+
+        merged_obs: List[StrategyOrderBlock] = []
+        for bias in ("BULLISH", "BEARISH"):
+            bias_obs = [ob for ob in order_blocks if ob.bias == bias]
+            if not bias_obs:
+                continue
+
+            bias_obs.sort(key=lambda ob: (ob.break_index, ob.index, ob.low, ob.high))
+            clusters: List[StrategyOrderBlock] = []
+
+            for ob in bias_obs:
+                clusters.append(ob)
+                while len(clusters) >= 2 and self._should_merge_order_blocks(clusters[-2], clusters[-1]):
+                    right = clusters.pop()
+                    left = clusters.pop()
+                    clusters.append(self._combine_order_blocks(left, right))
+
+            merged_obs.extend(clusters)
+
+        merged_obs.sort(key=lambda ob: (ob.break_index, ob.index, ob.low, ob.high))
+        return merged_obs
+
+    def _should_merge_order_blocks(
+        self,
+        left: StrategyOrderBlock,
+        right: StrategyOrderBlock,
+    ) -> bool:
+        if left.bias != right.bias:
+            return False
+
+        max_break_gap = max(0, int(self.config.ob_merge_max_break_gap))
+        if abs(int(right.break_index) - int(left.break_index)) > max_break_gap:
+            return False
+
+        return max(left.low, right.low) <= min(left.high, right.high)
+
+    def _combine_order_blocks(
+        self,
+        left: StrategyOrderBlock,
+        right: StrategyOrderBlock,
+    ) -> StrategyOrderBlock:
+        latest = right if right.break_index >= left.break_index else left
+        structure_types = {left.structure_type, right.structure_type}
+        structure_type = 'CHoCH' if 'CHoCH' in structure_types else latest.structure_type
+
+        return StrategyOrderBlock(
+            high=max(float(left.high), float(right.high)),
+            low=min(float(left.low), float(right.low)),
+            time=latest.time,
+            bias=latest.bias,
+            index=int(latest.index),
+            structure_type=structure_type,
+            break_index=max(int(left.break_index), int(right.break_index)),
+            is_mitigated=False,
+            has_liquidity=False,
+            liquidity_confirmed_index=-1,
+            entry_triggered=False,
+            last_touch_index=-1,
+        )
+
     def _prune_active_obs(
         self,
         active_obs: List[StrategyOrderBlock],
@@ -744,6 +836,24 @@ class Strategy(BaseStrategy):
 
         kept_obs.reverse()
         return kept_obs
+
+    def _get_ob_midpoint(self, zone: BaseZone) -> float:
+        return float(zone.low + ((zone.high - zone.low) * 0.5))
+
+    def _select_entry_price(
+        self,
+        zone: BaseZone,
+        current_high: float,
+        current_low: float,
+        previous_close: float,
+    ) -> Optional[float]:
+        del previous_close
+        midpoint = self._get_ob_midpoint(zone)
+        if not np.isfinite(midpoint):
+            return None
+        if current_low <= midpoint <= current_high:
+            return midpoint
+        return None
 
     def _passes_gap_filter(
         self,
@@ -975,8 +1085,8 @@ class Strategy(BaseStrategy):
         max_bars_to_search: int = 60,
     ) -> Optional[Tuple[datetime, float]]:
         """
-        Find the first entry-timeframe candle that both touches the zone and
-        passes the reversal filter on the entry timeframe itself.
+        Find the first entry-timeframe candle that trades through the OB
+        midpoint and passes the reversal filter on the entry timeframe itself.
         """
         if len(entry_times) == 0:
             return None
@@ -988,14 +1098,19 @@ class Strategy(BaseStrategy):
         start_idx = int(np.searchsorted(entry_times, window_start, side='left'))
         end_idx = int(np.searchsorted(entry_times, window_end, side='right'))
         zone_tolerance = (zone.high - zone.low) * self.config.touch_tolerance_pct
+        midpoint_entry = self._get_ob_midpoint(zone)
+        if not np.isfinite(midpoint_entry):
+            return None
 
         for idx in range(start_idx, min(end_idx, len(entry_times))):
             low_price = entry_lows[idx]
             high_price = entry_highs[idx]
-            close_price = entry_closes[idx]
 
             touches_zone = low_price <= (zone.high + zone_tolerance) and high_price >= (zone.low - zone_tolerance)
             if not touches_zone:
+                continue
+
+            if not (low_price <= midpoint_entry <= high_price):
                 continue
 
             overlap_low = max(zone.low, low_price)
@@ -1009,8 +1124,7 @@ class Strategy(BaseStrategy):
             entry_time = self._parse_datetime(entry_times[idx])
             if entry_time is None:
                 continue
-            entry_price = min(max(close_price, zone.low), zone.high)
-            return (entry_time, entry_price)
+            return (entry_time, midpoint_entry)
 
         return None
 
