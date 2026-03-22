@@ -1,30 +1,46 @@
 """
-SMC Strategy - Order Block + CHoCH + Liquidity
-=====================================================
+SMC Strategy - Structure + Order Block + Liquidity
+==================================================
 Smart Money Concepts trading strategy based on:
-- Market Structure (BOS/CHoCH)
-- Order Blocks (OB) - specifically CHoCH Order Blocks
-- Equal Highs/Lows (EQH/EQL) - Liquidity zones
+- Market structure events (CHoCH and BOS)
+- Order Blocks (OB), classified by the structure break that activated them
+- Equal Highs/Lows (EQH/EQL) as post-break liquidity confirmation
+- Optional FVG / IFVG confluence
+- Optional reversal-pattern and ADX filters
 
-Entry Logic:
------------
-LONG Setup:
-1. CHoCH Bullish detected (trend reversal from bearish to bullish)
-2. Identify Order Block that created the CHoCH
-3. After CHoCH, EQH must form while waiting for price to return to OB
-4. Price touches OB zone -> Entry LONG
-5. SL: Below OB with buffer (avoid stop hunt)
-6. TP: Flexible target from market structure (opposite OB or opposite swing high).
-   If no target exists, strategy can skip trade or fallback to fixed RR (configurable).
+Actual entry flow implemented by this module:
+---------------------------------------------
+LONG setup:
+1. Detect bullish OBs from structure breaks and classify them as CHoCH or BOS.
+2. Activate the OB when its break_index is reached.
+3. Optionally require a later EQH confirmation after the OB break
+   (require_liquidity=True).
+4. Wait for price to touch the OB zone. Entry can happen on the touch bar or
+   within touch_confirmation_bars after the most recent touch.
+5. Optionally require matching bullish FVG/IFVG confluence.
+6. Optionally require a bullish reversal candlestick pattern or a simpler
+   rejection/displacement reversal.
+7. Optionally require a valid opposite-side liquidity destination before entry.
+8. Enter LONG:
+   - single-timeframe mode: from the signal timeframe candle/zone overlap or
+     candle close, depending on configuration
+   - multi-timeframe mode: from the first entry-timeframe candle after the
+     signal bar closes that both touches the zone and passes the reversal filter
+9. SL is placed below the OB with buffer / multiplier logic and minimum-SL
+   enforcement inherited from BaseStrategy.
+10. TP is configurable: fixed RR, opposite OB, opposite swing, or opposite HTF
+    liquidity, with optional fallback to fixed RR.
 
-SHORT Setup: (opposite)
-1. CHoCH Bearish detected
-2. Identify Order Block that created the CHoCH
-3. After CHoCH, EQL must form while waiting for price to return to OB
-4. Price touches OB zone -> Entry SHORT
-5. SL: Above OB with buffer
-6. TP: Flexible target from market structure (opposite OB or opposite swing low).
-   If no target exists, strategy can skip trade or fallback to fixed RR (configurable).
+SHORT setup: opposite of the above.
+
+Important behavior notes:
+- The strategy can trade both CHoCH-based and BOS-based OBs; CHoCH is not a
+  mandatory prerequisite for every trade.
+- Liquidity confirmation is tracked causally after the OB break; indicator
+  precomputed mitigation flags are ignored and mitigation is evaluated bar by
+  bar in the strategy loop.
+- In multi-timeframe mode, structure is detected on the signal timeframe while
+  entry timing is refined on the entry timeframe.
 
 INTERFACE CONTRACT (must export for main.py):
 - Config: dataclass with strategy configuration
@@ -32,7 +48,7 @@ INTERFACE CONTRACT (must export for main.py):
 - Strategy: class with generate_signals(df, symbol) -> List[Signal] method
 
 Uses indicator modules from src/indicators for OB, CHoCH, BOS, EQH/EQL,
-and optional FVG/IFVG confluence detection.
+swings, and optional FVG/IFVG confluence detection.
 """
 
 from datetime import datetime, timedelta
