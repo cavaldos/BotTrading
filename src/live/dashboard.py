@@ -297,6 +297,8 @@ def load_trades_for_sent_orders(output_folder: str, log_file: str) -> list:
             "Entry_Price": str(order.get("entry_price", "-")),
             "Stop_Loss": order.get("stop_loss"),
             "Take_Profit": order.get("take_profit"),
+            "RR": order.get("rr"),
+            "Risk_Boost_Multiplier": order.get("risk_boost_multiplier", 1.0),
             "Signal_Timeframe": str(order.get("signal_timeframe", "")).strip(),
             "Result": status
         })
@@ -318,6 +320,7 @@ def generate_orders_panel(trades: list) -> Panel:
     table.add_column("Type", style="dim", width=5)
     table.add_column("Entry Price", style="green", width=11)
     table.add_column("RR", style="magenta", width=6)
+    table.add_column("RBM", style="yellow", width=6)
     table.add_column("Result", style="dim", width=8)
     
     for trade in recent_trades:
@@ -362,23 +365,33 @@ def generate_orders_panel(trades: list) -> Panel:
             entry_price_str = entry_price
 
         rr_value = "-"
+        stored_rr = trade.get("RR")
         try:
-            entry_float = float(entry_price)
-            sl_float = float(stop_loss)
-            tp_float = float(take_profit)
-            if order_type == "LONG":
-                risk = entry_float - sl_float
-                reward = tp_float - entry_float
-            elif order_type == "SHORT":
-                risk = sl_float - entry_float
-                reward = entry_float - tp_float
+            if stored_rr is not None and str(stored_rr).strip() != "":
+                rr_value = f"{float(stored_rr):.2f}"
             else:
-                risk = 0
-                reward = 0
-            if risk > 0 and reward > 0:
-                rr_value = f"{reward / risk:.2f}"
+                entry_float = float(entry_price)
+                sl_float = float(stop_loss)
+                tp_float = float(take_profit)
+                if order_type == "LONG":
+                    risk = entry_float - sl_float
+                    reward = tp_float - entry_float
+                elif order_type == "SHORT":
+                    risk = sl_float - entry_float
+                    reward = entry_float - tp_float
+                else:
+                    risk = 0
+                    reward = 0
+                if risk > 0 and reward > 0:
+                    rr_value = f"{reward / risk:.2f}"
         except:
             rr_value = "-"
+
+        risk_boost_multiplier = "-"
+        try:
+            risk_boost_multiplier = f"{float(trade.get('Risk_Boost_Multiplier', 1.0)):.2f}"
+        except:
+            risk_boost_multiplier = "-"
         
         table.add_row(
             time_only,
@@ -386,6 +399,7 @@ def generate_orders_panel(trades: list) -> Panel:
             Text(order_type, style=type_style),
             Text(entry_price_str, style="green"),
             Text(rr_value, style="magenta"),
+            Text(risk_boost_multiplier, style="yellow"),
             Text(result, style=result_style)
         )
     

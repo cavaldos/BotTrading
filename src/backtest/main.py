@@ -158,6 +158,8 @@ def main():
     print("Configuration:")
     print(f"  - Risk/Reward Ratio: 1:{primary_config.risk_reward_ratio}")
     print(f"  - Risk per Trade: ${primary_config.risk_per_trade}")
+    if hasattr(primary_config, "flex_tp_risk_boost_factor"):
+        print(f"  - Flex TP Risk Boost Factor: {primary_config.flex_tp_risk_boost_factor}")
     print(f"  - Data Folder: {primary_config.data_folder}")
     print(f"  - Output Folder: {primary_config.output_folder}")
 

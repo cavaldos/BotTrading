@@ -63,3 +63,4 @@ fee_per_trade_r: 0.5 # default: 0.5 (phí giao dịch tính bằng R, trừ cho 
 tp_mode: "htf_liquidity_or_rr" # default: "htf_liquidity_or_rr" ("fixed_rr" | "opposite_ob" | "opposite_swing" | "opposite_ob_or_swing" | "htf_liquidity" | "htf_liquidity_or_rr")
 tp_no_target_policy: "fixed_rr" # default: "fixed_rr" ("skip" | "fixed_rr")
 tp_swing_length: 5 # default: 5
+flex_tp_risk_boost_factor: 0.0 # default: 0.0 (boost risk_per_trade when flex RR is above base RR)

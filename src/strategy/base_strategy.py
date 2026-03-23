@@ -107,6 +107,26 @@ class BaseSignal:
     stop_loss: float
     take_profit: float
     signal_timeframe: str = ""
+    rr_ratio: Optional[float] = None
+    flex_take_profit: Optional[float] = None
+    flex_rr_ratio: Optional[float] = None
+    base_risk_per_trade: Optional[float] = None
+    risk_per_trade: Optional[float] = None
+    risk_boost_multiplier: float = 1.0
+    tp_capped: bool = False
+
+
+@dataclass
+class TradePlan:
+    stop_loss: float
+    take_profit: float
+    rr_ratio: Optional[float] = None
+    flex_take_profit: Optional[float] = None
+    flex_rr_ratio: Optional[float] = None
+    base_risk_per_trade: Optional[float] = None
+    risk_per_trade: Optional[float] = None
+    risk_boost_multiplier: float = 1.0
+    tp_capped: bool = False
 
 
 # ==================== BASE STRATEGY ====================
@@ -172,6 +192,14 @@ class BaseStrategy(ABC):
             seen_keys.add(key)
             unique_signals.append(signal)
         return unique_signals
+
+    @staticmethod
+    def _compute_rr_ratio(entry: float, stop_loss: float, take_profit: float) -> Optional[float]:
+        risk = abs(entry - stop_loss)
+        reward = abs(take_profit - entry)
+        if risk <= 0 or reward <= 0:
+            return None
+        return reward / risk
 
     # ==================== ZONE METHODS ====================
 
@@ -317,14 +345,14 @@ class BaseStrategy(ABC):
 
     # ==================== SL/TP COMPUTATION ====================
 
-    def _compute_sl_tp(
+    def _build_trade_plan(
         self,
         entry: float,
         zone: BaseZone,
         trade_type: str,
         candle_high: Optional[float] = None,
         candle_low: Optional[float] = None,
-    ) -> Optional[Tuple[float, float]]:
+    ) -> Optional[TradePlan]:
         """
         Compute stop-loss and take-profit for a trade signal.
 
@@ -338,7 +366,7 @@ class BaseStrategy(ABC):
                        If None, uses zone boundary instead (multi-TF mode).
 
         Returns:
-            (stop_loss, take_profit) tuple, or None if SL position is invalid
+            TradePlan, or None if SL position is invalid
         """
         zone_range = zone.high - zone.low
         buffer = zone_range * self.config.sl_buffer_pct
@@ -387,7 +415,32 @@ class BaseStrategy(ABC):
             else:
                 take_profit = entry - (actual_risk * self.config.risk_reward_ratio)
 
-        return (stop_loss, take_profit)
+        return TradePlan(
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            rr_ratio=self._compute_rr_ratio(entry, stop_loss, take_profit),
+            base_risk_per_trade=self.config.risk_per_trade,
+            risk_per_trade=self.config.risk_per_trade,
+        )
+
+    def _compute_sl_tp(
+        self,
+        entry: float,
+        zone: BaseZone,
+        trade_type: str,
+        candle_high: Optional[float] = None,
+        candle_low: Optional[float] = None,
+    ) -> Optional[Tuple[float, float]]:
+        plan = self._build_trade_plan(
+            entry=entry,
+            zone=zone,
+            trade_type=trade_type,
+            candle_high=candle_high,
+            candle_low=candle_low,
+        )
+        if plan is None:
+            return None
+        return (plan.stop_loss, plan.take_profit)
 
     # ==================== SIGNAL CREATION ====================
 
@@ -426,23 +479,33 @@ class BaseStrategy(ABC):
         if entry is None:
             return None
 
-        result = self._compute_sl_tp(
+        trade_plan = self._build_trade_plan(
             entry, zone, trade_type,
             candle_high=current_high,
             candle_low=current_low,
         )
-        if result is None:
+        if trade_plan is None:
             return None
-        stop_loss, take_profit = result
 
         return BaseSignal(
             symbol=symbol,
             trade_type=trade_type,
             entry_time=entry_time,
             entry_price=round_price(entry),
-            stop_loss=round_price(stop_loss),
-            take_profit=round_price(take_profit),
+            stop_loss=round_price(trade_plan.stop_loss),
+            take_profit=round_price(trade_plan.take_profit),
             signal_timeframe=self.config.signal_timeframe,
+            rr_ratio=trade_plan.rr_ratio,
+            flex_take_profit=(
+                round_price(trade_plan.flex_take_profit)
+                if trade_plan.flex_take_profit is not None
+                else None
+            ),
+            flex_rr_ratio=trade_plan.flex_rr_ratio,
+            base_risk_per_trade=trade_plan.base_risk_per_trade,
+            risk_per_trade=trade_plan.risk_per_trade,
+            risk_boost_multiplier=trade_plan.risk_boost_multiplier,
+            tp_capped=trade_plan.tp_capped,
         )
 
     def _create_signal_from_entry(
@@ -465,17 +528,27 @@ class BaseStrategy(ABC):
         trade_type = 'LONG' if zone.bias == 'BULLISH' else 'SHORT'
 
         # Multi-TF mode: no candle_high/candle_low → uses zone boundaries for SL
-        result = self._compute_sl_tp(entry_price, zone, trade_type)
-        if result is None:
+        trade_plan = self._build_trade_plan(entry_price, zone, trade_type)
+        if trade_plan is None:
             return None
-        stop_loss, take_profit = result
 
         return BaseSignal(
             symbol=symbol,
             trade_type=trade_type,
             entry_time=entry_time,
             entry_price=round_price(entry_price),
-            stop_loss=round_price(stop_loss),
-            take_profit=round_price(take_profit),
+            stop_loss=round_price(trade_plan.stop_loss),
+            take_profit=round_price(trade_plan.take_profit),
             signal_timeframe=self.config.signal_timeframe,
+            rr_ratio=trade_plan.rr_ratio,
+            flex_take_profit=(
+                round_price(trade_plan.flex_take_profit)
+                if trade_plan.flex_take_profit is not None
+                else None
+            ),
+            flex_rr_ratio=trade_plan.flex_rr_ratio,
+            base_risk_per_trade=trade_plan.base_risk_per_trade,
+            risk_per_trade=trade_plan.risk_per_trade,
+            risk_boost_multiplier=trade_plan.risk_boost_multiplier,
+            tp_capped=trade_plan.tp_capped,
         )

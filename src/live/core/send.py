@@ -16,7 +16,7 @@ SENT_ORDERS_METADATA_KEY = "_metadata"
 from src.live.core.discord_notify import send_entry_discord
 
 # from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
-from .place_order import risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
+from .place_order import risk_per_trade as default_risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -129,6 +129,51 @@ def generate_legacy_order_key(row: pd.Series) -> str:
     trade_type = str(row['Type']).strip().upper()
     entry_time = str(row['Entry_Time']).strip()
     return f"{symbol}|{trade_type}|{entry_time}"
+
+
+def parse_optional_float(value: object) -> Optional[float]:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_optional_bool(value: object, default: bool = False) -> bool:
+    if value is None or pd.isna(value):
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {'true', '1', 'yes', 'y'}:
+        return True
+    if text in {'false', '0', 'no', 'n', ''}:
+        return False
+    return default
+
+
+def resolve_live_risk_fields(row: pd.Series) -> tuple[float, float, Optional[float]]:
+    base_risk_per_trade = parse_optional_float(row.get('Base_Risk_Per_Trade'))
+    effective_risk_per_trade = parse_optional_float(row.get('Risk_Per_Trade'))
+
+    if effective_risk_per_trade is None or effective_risk_per_trade <= 0:
+        if base_risk_per_trade is not None and base_risk_per_trade > 0:
+            effective_risk_per_trade = base_risk_per_trade
+        else:
+            effective_risk_per_trade = float(default_risk_per_trade)
+
+    risk_boost_multiplier = parse_optional_float(row.get('Risk_Boost_Multiplier'))
+    if risk_boost_multiplier is None or risk_boost_multiplier <= 0:
+        if base_risk_per_trade is not None and base_risk_per_trade > 0:
+            risk_boost_multiplier = effective_risk_per_trade / base_risk_per_trade
+        else:
+            risk_boost_multiplier = 1.0
+
+    return (effective_risk_per_trade, risk_boost_multiplier, base_risk_per_trade)
 
 
 def is_order_too_old(entry_time_str: str, max_age_minutes: int = MAX_ORDER_AGE_MINUTES) -> bool:
@@ -322,15 +367,19 @@ def check_and_send_open_orders(
         try:
             # Ghi nhận thời điểm bắt đầu xử lý order (signal detected)
             signal_timestamp = time.time()
-            
+            effective_risk_per_trade, risk_boost_multiplier, base_risk_per_trade = resolve_live_risk_fields(row)
+            take_profit = parse_optional_float(row.get('Take_Profit'))
+            actual_rr_ratio = parse_optional_float(row.get('RR'))
+            flex_rr_ratio = parse_optional_float(row.get('Flex_RR'))
+             
             order_result = place_order(
                 symbol=row['Symbol'],
                 order_type=row['Type'],
                 entry_price=float(row['Entry_Price']),
                 stop_loss=float(row['Stop_Loss']),
-                take_profit=float(row['Take_Profit']) if pd.notna(row.get('Take_Profit')) else None,
+                take_profit=take_profit,
                 entry_time=row['Entry_Time'],
-                risk_per_trade=risk_per_trade,
+                risk_per_trade=effective_risk_per_trade,
                 signal_timestamp=signal_timestamp,
             )
             bybit_msg = ""
@@ -348,11 +397,11 @@ def check_and_send_open_orders(
                 type=row['Type'],
                 entry=float(row['Entry_Price']),
                 stoploss=float(row['Stop_Loss']),
-                takeprofit=float(row['Take_Profit']),
+                takeprofit=float(take_profit) if take_profit is not None else float(row['Entry_Price']),
                 time=row['Entry_Time'],
                 name_coin=row['Symbol'],
                 result=combined_result,
-                risk_per_trade=risk_per_trade,
+                risk_per_trade=effective_risk_per_trade,
             )
             
             order_detail = {
@@ -363,7 +412,13 @@ def check_and_send_open_orders(
                 "signal_timeframe": str(row.get('Signal_Timeframe', '')).strip(),
                 "entry_price": float(row['Entry_Price']),
                 "stop_loss": float(row['Stop_Loss']),
-                "take_profit": float(row['Take_Profit']),
+                "take_profit": take_profit,
+                "rr": actual_rr_ratio,
+                "flex_rr": flex_rr_ratio,
+                "base_risk_per_trade": base_risk_per_trade,
+                "risk_per_trade": effective_risk_per_trade,
+                "risk_boost_multiplier": risk_boost_multiplier,
+                "tp_capped": parse_optional_bool(row.get('TP_Capped')),
                 "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "status": "OPEN",
             }

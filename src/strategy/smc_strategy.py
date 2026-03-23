@@ -7,6 +7,8 @@ Smart Money Concepts trading strategy based on:
 - Equal Highs/Lows (EQH/EQL) as post-break liquidity confirmation
 - Optional FVG / IFVG confluence
 - Optional reversal-pattern and ADX filters
+- Optional CHoCH safeguard that blocks entries when the actual entry candle is
+  against the trade and the selected same-bias gap confluence is IFVG
 
 Actual entry flow implemented by this module:
 ---------------------------------------------
@@ -22,22 +24,28 @@ LONG setup:
 6. Optionally require a bullish reversal candlestick pattern or a simpler
    rejection/displacement reversal.
 7. Optionally require a valid opposite-side liquidity destination before entry.
-8. Enter LONG:
+8. Optionally reject the setup if it is CHoCH-based, the actual entry candle is
+   bearish against the intended LONG, and the selected bullish gap confluence is
+   IFVG (block_choch_against_entry_mode="ifvg").
+9. Enter LONG:
    - single-timeframe mode: at the OB midpoint once the signal candle trades
      through it
    - multi-timeframe mode: at the OB midpoint on the first entry-timeframe
      candle after the signal bar closes that trades through the midpoint and
      passes the reversal filter
-9. SL is placed below the OB with buffer / multiplier logic and minimum-SL
-   enforcement inherited from BaseStrategy.
-10. TP is configurable: fixed RR, opposite OB, opposite swing, or opposite HTF
-    liquidity, with optional fallback to fixed RR.
+10. SL is placed below the OB with buffer / multiplier logic and minimum-SL
+    enforcement inherited from BaseStrategy.
+11. TP is configurable: fixed RR, opposite OB, opposite swing, or opposite HTF
+     liquidity, with optional fallback to fixed RR.
 
 SHORT setup: opposite of the above.
 
 Important behavior notes:
 - The strategy can trade both CHoCH-based and BOS-based OBs; CHoCH is not a
   mandatory prerequisite for every trade.
+- When the CHoCH safeguard is enabled, it only blocks CHoCH setups whose real
+  entry candle is against the trade and whose selected same-bias gap is IFVG;
+  BOS setups and CHoCH setups without that combination are still allowed.
 - Same-bias OBs that overlap and form within a small break-index distance can
   be merged into a single union zone, activated on the latest break.
 - Liquidity confirmation is tracked causally after the OB break; indicator
@@ -68,6 +76,7 @@ from src.strategy.base_strategy import (
     BaseSignal,
     BaseStrategy,
     BaseZone,
+    TradePlan,
     parse_timeframe_minutes,
 )
 from src.indicators.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
@@ -169,6 +178,9 @@ class Config(BaseConfig):
     tp_no_target_policy: str = "skip"
     # Swing length used to build opposite swing targets
     tp_swing_length: int = 5
+    # Extra risk multiplier per 1R above the configured base RR.
+    # effective_risk = risk_per_trade * (1 + factor * max(0, flex_rr - base_rr))
+    flex_tp_risk_boost_factor: float = 0.0
 
     def get_strategy_info(self) -> dict:
         """Return strategy configuration for reporting"""
@@ -207,6 +219,7 @@ class Config(BaseConfig):
             "tp_mode": self.tp_mode,
             "tp_no_target_policy": self.tp_no_target_policy,
             "tp_swing_length": self.tp_swing_length,
+            "flex_tp_risk_boost_factor": self.flex_tp_risk_boost_factor,
             "enable_adx_filter": self.enable_adx_filter,
             "adx_length": self.adx_length,
             "adx_threshold": self.adx_threshold,
@@ -1311,6 +1324,26 @@ class Strategy(BaseStrategy):
             return "skip"
         return policy
 
+    def _get_flex_tp_risk_boost_factor(self) -> float:
+        try:
+            factor = float(self.config.flex_tp_risk_boost_factor)
+        except (TypeError, ValueError):
+            return 0.0
+        if not np.isfinite(factor):
+            return 0.0
+        return max(0.0, factor)
+
+    def _compute_effective_risk_per_trade(self, flex_rr_ratio: Optional[float]) -> tuple[float, float]:
+        base_risk = max(0.0, float(self.config.risk_per_trade))
+        if flex_rr_ratio is None or not np.isfinite(flex_rr_ratio):
+            return (base_risk, 1.0)
+
+        base_rr = max(0.0, float(self.config.risk_reward_ratio))
+        extra_rr = max(0.0, float(flex_rr_ratio) - base_rr)
+        factor = self._get_flex_tp_risk_boost_factor()
+        risk_boost_multiplier = 1.0 + (extra_rr * factor)
+        return (base_risk * risk_boost_multiplier, risk_boost_multiplier)
+
     def _collect_tp_candidates_from_opposite_ob(
         self,
         *,
@@ -1417,7 +1450,7 @@ class Strategy(BaseStrategy):
         entry: float,
         stop_loss: float,
         trade_type: str,
-    ) -> Optional[float]:
+    ) -> Optional[Tuple[float, float]]:
         """
         Select TP from market-structure targets.
 
@@ -1511,14 +1544,104 @@ class Strategy(BaseStrategy):
                     above_anchor,
                     key=lambda candidate: (abs(candidate[1] - rr_anchor), candidate[2], -candidate[0]),
                 )
-            return float(best[0])
+            return (float(best[0]), float(best[1]))
 
         if trade_type == "LONG":
             best = max(candidates, key=lambda candidate: (candidate[1], -candidate[2], -candidate[0]))
         else:
             best = max(candidates, key=lambda candidate: (candidate[1], -candidate[2], candidate[0]))
 
-        return float(best[0])
+        return (float(best[0]), float(best[1]))
+
+    def _build_trade_plan(
+        self,
+        entry: float,
+        zone: BaseZone,
+        trade_type: str,
+        candle_high: Optional[float] = None,
+        candle_low: Optional[float] = None,
+    ) -> Optional[TradePlan]:
+        """
+        Compute SL/TP with flexible TP mode and per-signal risk sizing.
+
+        SL is inherited from BaseStrategy.
+        TP execution is capped at base RR when structure TP extends beyond it.
+        In that case, risk_per_trade is boosted from the selected structure RR.
+        """
+        base_plan = super()._build_trade_plan(
+            entry=entry,
+            zone=zone,
+            trade_type=trade_type,
+            candle_high=candle_high,
+            candle_low=candle_low,
+        )
+        if base_plan is None:
+            return None
+
+        tp_mode = self._normalize_tp_mode()
+        if tp_mode == "fixed_rr":
+            return base_plan
+
+        structure_take_profit = self._select_take_profit_from_structure(
+            entry=entry,
+            stop_loss=base_plan.stop_loss,
+            trade_type=trade_type,
+        )
+        if structure_take_profit is not None:
+            structure_tp, flex_rr_ratio = structure_take_profit
+            if trade_type == "LONG" and structure_tp > entry:
+                execution_take_profit = structure_tp
+                execution_rr_ratio = flex_rr_ratio
+                tp_capped = False
+                if base_plan.rr_ratio is not None and flex_rr_ratio > base_plan.rr_ratio:
+                    execution_take_profit = base_plan.take_profit
+                    execution_rr_ratio = base_plan.rr_ratio
+                    tp_capped = True
+
+                effective_risk_per_trade, risk_boost_multiplier = self._compute_effective_risk_per_trade(
+                    flex_rr_ratio,
+                )
+                return TradePlan(
+                    stop_loss=base_plan.stop_loss,
+                    take_profit=execution_take_profit,
+                    rr_ratio=execution_rr_ratio,
+                    flex_take_profit=structure_tp,
+                    flex_rr_ratio=flex_rr_ratio,
+                    base_risk_per_trade=base_plan.base_risk_per_trade,
+                    risk_per_trade=effective_risk_per_trade,
+                    risk_boost_multiplier=risk_boost_multiplier,
+                    tp_capped=tp_capped,
+                )
+            if trade_type == "SHORT" and structure_tp < entry:
+                execution_take_profit = structure_tp
+                execution_rr_ratio = flex_rr_ratio
+                tp_capped = False
+                if base_plan.rr_ratio is not None and flex_rr_ratio > base_plan.rr_ratio:
+                    execution_take_profit = base_plan.take_profit
+                    execution_rr_ratio = base_plan.rr_ratio
+                    tp_capped = True
+
+                effective_risk_per_trade, risk_boost_multiplier = self._compute_effective_risk_per_trade(
+                    flex_rr_ratio,
+                )
+                return TradePlan(
+                    stop_loss=base_plan.stop_loss,
+                    take_profit=execution_take_profit,
+                    rr_ratio=execution_rr_ratio,
+                    flex_take_profit=structure_tp,
+                    flex_rr_ratio=flex_rr_ratio,
+                    base_risk_per_trade=base_plan.base_risk_per_trade,
+                    risk_per_trade=effective_risk_per_trade,
+                    risk_boost_multiplier=risk_boost_multiplier,
+                    tp_capped=tp_capped,
+                )
+
+        if tp_mode == "htf_liquidity_or_rr":
+            return base_plan
+
+        if self._normalize_tp_no_target_policy() == "fixed_rr":
+            return base_plan
+        return None
 
     def _compute_sl_tp(
         self,
@@ -1528,43 +1651,13 @@ class Strategy(BaseStrategy):
         candle_high: Optional[float] = None,
         candle_low: Optional[float] = None,
     ) -> Optional[Tuple[float, float]]:
-        """
-        Compute SL/TP with flexible TP mode.
-
-        SL is inherited from BaseStrategy.
-        TP is selected by:
-        - fixed RR (tp_mode=fixed_rr), OR
-        - structure target (opposite OB/swing), with optional RR fallback policy.
-        """
-        base_result = super()._compute_sl_tp(
+        trade_plan = self._build_trade_plan(
             entry=entry,
             zone=zone,
             trade_type=trade_type,
             candle_high=candle_high,
             candle_low=candle_low,
         )
-        if base_result is None:
+        if trade_plan is None:
             return None
-
-        stop_loss, rr_take_profit = base_result
-        tp_mode = self._normalize_tp_mode()
-        if tp_mode == "fixed_rr":
-            return (stop_loss, rr_take_profit)
-
-        structure_take_profit = self._select_take_profit_from_structure(
-            entry=entry,
-            stop_loss=stop_loss,
-            trade_type=trade_type,
-        )
-        if structure_take_profit is not None:
-            if trade_type == "LONG" and structure_take_profit > entry:
-                return (stop_loss, structure_take_profit)
-            if trade_type == "SHORT" and structure_take_profit < entry:
-                return (stop_loss, structure_take_profit)
-
-        if tp_mode == "htf_liquidity_or_rr":
-            return (stop_loss, rr_take_profit)
-
-        if self._normalize_tp_no_target_policy() == "fixed_rr":
-            return (stop_loss, rr_take_profit)
-        return None
+        return (trade_plan.stop_loss, trade_plan.take_profit)
