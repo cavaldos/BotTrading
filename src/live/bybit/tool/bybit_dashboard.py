@@ -618,6 +618,33 @@ class BybitDashboard:
         all_records.sort(key=lambda x: int(x.get('updatedTime', 0) or x.get('createdTime', 0)), reverse=True)
         return all_records[:limit]
 
+    def _get_total_orders_placed(self) -> int:
+        """Get total orders placed in current session (open + closed since session start)"""
+        try:
+            # Get open orders
+            open_orders = self.exchange.fetch_open_orders() if self.exchange else []
+            open_count = len(open_orders)
+
+            # Get closed positions from P&L history, but only those after session start
+            records = self._get_closed_pnl_records(limit=100)
+
+            # Filter only records created after session started
+            session_start = self._initial_balance_time
+            closed_count = 0
+            if session_start:
+                session_start_ms = int(session_start.timestamp() * 1000)
+                for record in records:
+                    exit_time = int(record.get('updatedTime', 0) or record.get('createdTime', 0))
+                    if exit_time >= session_start_ms:
+                        closed_count += 1
+            else:
+                # If session time not set, count all
+                closed_count = len(records)
+
+            return open_count + closed_count
+        except Exception:
+            return 0
+
     def _create_orders_history_panel(self) -> Panel:
         """Create panel displaying closed PnL history (Realized P&L)"""
         try:
@@ -627,9 +654,10 @@ class BybitDashboard:
                     title="[bold green]📜 P&L History[/bold green]",
                     border_style="green"
                 )
-            
+
             records = self._get_closed_pnl_records(limit=25)
-            
+            total_orders_placed = self._get_total_orders_placed()
+
             pnl_table = Table(
                 show_header=True,
                 header_style="bold green",
@@ -643,11 +671,11 @@ class BybitDashboard:
             pnl_table.add_column("Qty", justify="right", width=12)
             pnl_table.add_column("Realized P&L", justify="right", width=14)
             pnl_table.add_column("Time", style="dim", width=18)
-            
+
             total_pnl = 0.0
             total_profit = 0.0
             total_loss = 0.0
-            
+
             if not records:
                 pnl_table.add_row(
                     "[dim]No P&L history[/dim]", "", "", "", "", "", ""
@@ -665,7 +693,7 @@ class BybitDashboard:
                         side = 'BUY'   # Đóng bằng SELL → Position gốc là LONG
                     else:
                         side = close_side
-                    
+
                     entry_price = float(record.get('avgEntryPrice', 0) or 0)
                     exit_price = float(record.get('avgExitPrice', 0) or 0)
                     qty = float(record.get('qty', 0) or 0)
@@ -675,14 +703,14 @@ class BybitDashboard:
                         total_profit += closed_pnl
                     else:
                         total_loss += closed_pnl
-                    
+
                     exit_time = int(record.get('updatedTime', 0) or record.get('createdTime', 0))
                     time_str = datetime.fromtimestamp(exit_time / 1000).strftime('%m-%d %H:%M') if exit_time else 'N/A'
-                    
+
                     side_color = "green" if side == "BUY" else "red"
                     pnl_color = "green" if closed_pnl >= 0 else "red"
                     pnl_symbol = "+" if closed_pnl >= 0 else ""
-                    
+
                     pnl_table.add_row(
                         symbol,
                         f"[{side_color}]{side}[/{side_color}]",
@@ -692,7 +720,7 @@ class BybitDashboard:
                         f"[{pnl_color}]{pnl_symbol}{closed_pnl:,.4f}[/{pnl_color}]",
                         time_str
                     )
-            
+
             total_color = "green" if total_pnl >= 0 else "red"
             total_symbol = "+" if total_pnl >= 0 else ""
             info_text = Text(
@@ -704,7 +732,7 @@ class BybitDashboard:
             info_text.append(f"Win: +${total_profit:,.2f}", style="green")
             info_text.append(f" | ", style="dim white")
             info_text.append(f"Loss: ${total_loss:,.2f}", style="red")
-            info_text.append(f" | Trades: {len(records)} | 🔄 {self.update_time.strftime('%H:%M:%S')}", style="dim white")
+            info_text.append(f" | Trades: {len(records)} | {total_orders_placed} | 🔄 {self.update_time.strftime('%H:%M:%S')}", style="dim white")
             
             group = Group(info_text, "", pnl_table)
             
