@@ -35,6 +35,7 @@ require_opposite_liquidity_target: true # default: true (needs opposite-side OB 
 require_reversal_pattern: true # default: true
 enable_simple_reversal: true # default: true
 simple_reversal_wick_ratio: 0.25 # default: 0.25
+block_choch_against_entry_mode: "ifvg" # default: "off" (block only when CHOCH + entry candle against trade + selected gap is IFVG)
 
 enable_adx_filter: true # default: false (require ADX >= adx_threshold on signal timeframe)
 adx_length: 7 # tuned best in optimization sweep

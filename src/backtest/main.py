@@ -12,6 +12,7 @@ To change strategy:
 2. Keep interface exports: Config, Strategy, Signal
 """
 
+import argparse
 from pathlib import Path
 from typing import cast
 
@@ -34,6 +35,7 @@ from src.backtest.statistics import (
 
 # Import config loader
 from src.config import load_backtest_config, load_strategy_config
+from src.config.load_config import load_yaml_config
 
 # Import utility functions
 from src.utils.remove_all_files import remove_all_files
@@ -95,29 +97,36 @@ def normalize_signal_timeframes(value) -> list[str]:
     return normalized or list(DEFAULT_SIGNAL_TIMEFRAMES)
 
 
-def get_report_folder() -> str:
-    """Get report folder from config"""
-    data_config = load_backtest_config(include_strategy=False)
-    return data_config.get('report_folder', DEFAULT_REPORT_FOLDER)
-
-
-def get_backtest_results_file() -> str:
-    """Get backtest results filename from config"""
-    data_config = load_backtest_config(include_strategy=False)
-    return data_config.get('backtest_results_file', DEFAULT_BACKTEST_RESULTS_FILE)
-
-
-# ==============================================================================
+# ============================================================================== 
 # MAIN EXECUTION
 # ==============================================================================
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the strategy backtester.")
+    parser.add_argument("--backtest-config", default=None, help="Path to backtest YAML config")
+    parser.add_argument("--strategy-config", default=None, help="Path to strategy YAML config")
+    return parser.parse_args()
+
+
 def main():
     """Main execution function"""
+    args = parse_args()
     print("=" * 60)
     print(f"Strategy Backtester - {STRATEGY_NAME}")
     print("=" * 60)
     data_config = load_backtest_config(include_strategy=False)
+    if args.backtest_config:
+        data_config.update(load_backtest_config(config_path=args.backtest_config, include_strategy=False))
+
     strategy_cfg = load_strategy_config()
+    if args.strategy_config:
+        strategy_cfg.update(load_yaml_config(config_path=args.strategy_config, default_name="strategy.yaml"))
+        strategy_cfg["signal_timeframe"] = normalize_signal_timeframes(
+            strategy_cfg.get("signal_timeframe", DEFAULT_SIGNAL_TIMEFRAMES)
+        )
+        strategy_cfg["entry_timeframe"] = str(
+            strategy_cfg.get("entry_timeframe", DEFAULT_ENTRY_TIMEFRAME)
+        ).strip() or DEFAULT_ENTRY_TIMEFRAME
     data_folder = str(data_config.get('folder_path', DEFAULT_DATA_FOLDER)).strip() or DEFAULT_DATA_FOLDER
     output_folder = str(data_config.get('output_folder', DEFAULT_OUTPUT_FOLDER)).strip() or DEFAULT_OUTPUT_FOLDER
 
@@ -226,11 +235,11 @@ def main():
     print("Generating summary report...")
 
     # Create report folder if needed
-    report_dir = Path(get_report_folder())
+    report_dir = Path(data_config.get('report_folder', DEFAULT_REPORT_FOLDER))
     report_dir.mkdir(parents=True, exist_ok=True)
 
     # Generate text summary
-    backtest_file = get_backtest_results_file()
+    backtest_file = str(data_config.get('backtest_results_file', DEFAULT_BACKTEST_RESULTS_FILE)).strip() or DEFAULT_BACKTEST_RESULTS_FILE
     summary_path = str(report_dir / f"{backtest_file}.md")
     generate_text_report(all_summaries, primary_config, summary_path)
 

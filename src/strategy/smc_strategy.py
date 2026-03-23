@@ -87,6 +87,26 @@ from src.indicators.adx import compute_adx_jit
 STRATEGY_NAME = "SMC"
 
 
+def classify_candle_color(open_price: float, close_price: float) -> str:
+    if not np.isfinite(open_price) or not np.isfinite(close_price):
+        return ""
+    if close_price > open_price:
+        return "GREEN"
+    if close_price < open_price:
+        return "RED"
+    return "DOJI"
+
+
+def candle_relation_to_trade(trade_type: str, candle_color: str) -> str:
+    if candle_color == "DOJI" or not candle_color:
+        return "NEUTRAL"
+    if trade_type == "LONG":
+        return "WITH_TRADE" if candle_color == "GREEN" else "AGAINST_TRADE"
+    if trade_type == "SHORT":
+        return "WITH_TRADE" if candle_color == "RED" else "AGAINST_TRADE"
+    return "UNKNOWN"
+
+
 # ==================== CONFIGURATION ====================
 @dataclass
 class Config(BaseConfig):
@@ -122,6 +142,7 @@ class Config(BaseConfig):
     require_reversal_pattern: bool = True   # Require reversal pattern before entry
     enable_simple_reversal: bool = True     # Allow simpler rejection/displacement reversal
     simple_reversal_wick_ratio: float = 0.25  # Min wick/range ratio for simple reversal
+    block_choch_against_entry_mode: str = "off"  # off | ifvg
 
     # === IMBALANCE FILTER ===
     gap_filter_mode: str = "none"   # none | fvg | ifvg | both
@@ -171,6 +192,7 @@ class Config(BaseConfig):
             "require_reversal_pattern": self.require_reversal_pattern,
             "enable_simple_reversal": self.enable_simple_reversal,
             "simple_reversal_wick_ratio": self.simple_reversal_wick_ratio,
+            "block_choch_against_entry_mode": self.block_choch_against_entry_mode,
             "gap_filter_mode": self.gap_filter_mode,
             "fvg_atr_filter": self.fvg_atr_filter,
             "touch_tolerance_pct": self.touch_tolerance_pct,
@@ -223,6 +245,20 @@ class Signal(BaseSignal):
     Only contains entry information - no exit data.
     """
     pass
+
+
+@dataclass
+class ReversalDecision:
+    passed: bool
+    source: str
+
+
+@dataclass
+class PreciseEntryResult:
+    entry_time: datetime
+    entry_price: float
+    entry_index: int
+    reversal_source: str
 
 
 # ==================== NUMBA JIT HELPER ====================
@@ -318,7 +354,7 @@ class Strategy(BaseStrategy):
         lows = df['Low'].values.astype(np.float64)
         closes = df['Close'].values.astype(np.float64)
         opens = df['Open'].values.astype(np.float64)
-        times = df['Time'].values
+        times = df['Time'].to_numpy(dtype='datetime64[ns]')
         n = len(df)
 
         if n == 0:
@@ -359,6 +395,14 @@ class Strategy(BaseStrategy):
             detect_swing=True,
             detect_internal=True,
         )
+
+        choch_lookup: dict[tuple[int, str], CHoCH] = {}
+        for choch in choch_list:
+            choch_lookup.setdefault((int(choch.break_index), choch.bias), choch)
+
+        bos_lookup: dict[tuple[int, str], BOS] = {}
+        for bos in bos_list:
+            bos_lookup.setdefault((int(bos.break_index), bos.bias), bos)
 
         ob_list = detect_order_blocks_indicator(
             df,
@@ -414,7 +458,7 @@ class Strategy(BaseStrategy):
                                               ob.index, self.config.ob_body_ratio):
                 continue
 
-            structure_type = self._classify_ob_structure(ob, choch_list, bos_list)
+            structure_type = self._classify_ob_structure(ob, choch_lookup, bos_lookup)
 
             sob = StrategyOrderBlock(
                 high=ob.high,
@@ -591,12 +635,15 @@ class Strategy(BaseStrategy):
                     continue
 
                 if not ob.entry_triggered and entry_window_active:
+                    current_adx: float | None = None
+                    adx_threshold: float | None = None
+
                     # ADX filter: require minimum trend strength on signal timeframe
                     if self.config.enable_adx_filter:
                         if adx_values is None:
                             remaining_obs.append(ob)
                             continue
-                        current_adx = adx_values[i]
+                        current_adx = float(adx_values[i])
                         adx_threshold = max(0.0, float(self.config.adx_threshold))
                         if (not np.isfinite(current_adx)) or current_adx < adx_threshold:
                             remaining_obs.append(ob)
@@ -628,10 +675,9 @@ class Strategy(BaseStrategy):
                                 zone=ob,
                             )
                             if precise_entry:
-                                entry_time_1m, entry_price_1m = precise_entry
                                 trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
                                 opposite_liquidity_ok = self._has_opposite_liquidity_target(
-                                    entry=float(entry_price_1m),
+                                    entry=float(precise_entry.entry_price),
                                     trade_type=trade_type,
                                     current_index=i,
                                     current_high=float(highs[i]),
@@ -647,15 +693,24 @@ class Strategy(BaseStrategy):
                                     signal = self._create_signal_from_entry(
                                         symbol=symbol,
                                         zone=ob,
-                                        entry_time=entry_time_1m,
-                                        entry_price=entry_price_1m,
+                                        entry_time=precise_entry.entry_time,
+                                        entry_price=precise_entry.entry_price,
                                     )
                                     if signal:
+                                        if self._should_block_choch_against_entry(
+                                            signal=signal,
+                                            ob=ob,
+                                            entry_candle_open=float(entry_opens[precise_entry.entry_index]),
+                                            entry_candle_close=float(entry_closes[precise_entry.entry_index]),
+                                            active_gap_zones=active_gap_zones,
+                                        ):
+                                            remaining_obs.append(ob)
+                                            continue
                                         signals.append(signal)
                                         ob.entry_triggered = True
                         else:
-                            reversal_ok = self._passes_reversal_filter(opens, closes, highs, lows, i, ob.bias)
-                            if not reversal_ok:
+                            reversal_decision = self._evaluate_reversal_filter(opens, closes, highs, lows, i, ob.bias)
+                            if not reversal_decision.passed:
                                 remaining_obs.append(ob)
                                 continue
 
@@ -670,6 +725,15 @@ class Strategy(BaseStrategy):
                                 previous_close=closes[i - 1] if i > 0 else closes[i],
                             )
                             if signal:
+                                if self._should_block_choch_against_entry(
+                                    signal=signal,
+                                    ob=ob,
+                                    entry_candle_open=float(opens[i]),
+                                    entry_candle_close=float(closes[i]),
+                                    active_gap_zones=active_gap_zones,
+                                ):
+                                    remaining_obs.append(ob)
+                                    continue
                                 opposite_liquidity_ok = self._has_opposite_liquidity_target(
                                     entry=float(signal.entry_price),
                                     trade_type=signal.trade_type,
@@ -698,16 +762,21 @@ class Strategy(BaseStrategy):
 
     # ==================== SMC-SPECIFIC HELPER METHODS ====================
 
-    def _classify_ob_structure(self, ob: IndicatorOrderBlock,
-                               choch_list: List[CHoCH],
-                               bos_list: List[BOS]) -> str:
-        """Classify whether an OB came from CHoCH or BOS by matching break_index."""
-        for c in choch_list:
-            if c.break_index == ob.break_index and c.bias == ob.bias:
-                return 'CHoCH'
-        for b in bos_list:
-            if b.break_index == ob.break_index and b.bias == ob.bias:
-                return 'BOS'
+    def _classify_ob_structure(
+        self,
+        ob: IndicatorOrderBlock,
+        choch_lookup: dict[tuple[int, str], CHoCH],
+        bos_lookup: dict[tuple[int, str], BOS],
+    ) -> str:
+        key = (int(ob.break_index), ob.bias)
+        choch = choch_lookup.get(key)
+        if choch is not None:
+            return 'CHoCH'
+
+        bos = bos_lookup.get(key)
+        if bos is not None:
+            return 'BOS'
+
         return 'BOS'
 
     def _create_gap_zone(
@@ -744,6 +813,45 @@ class Strategy(BaseStrategy):
         if mode not in {"none", "fvg", "ifvg", "both"}:
             return "none"
         return mode
+
+    def _normalize_choch_against_entry_mode(self) -> str:
+        mode = str(self.config.block_choch_against_entry_mode).strip().lower()
+        aliases = {
+            "none": "off",
+            "disabled": "off",
+            "false": "off",
+            "true": "ifvg",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"off", "ifvg"}:
+            return "off"
+        return mode
+
+    def _should_block_choch_against_entry(
+        self,
+        *,
+        signal: BaseSignal,
+        ob: StrategyOrderBlock,
+        entry_candle_open: float,
+        entry_candle_close: float,
+        active_gap_zones: List[StrategyGapZone],
+    ) -> bool:
+        mode = self._normalize_choch_against_entry_mode()
+        if mode == "off":
+            return False
+        if ob.structure_type != "CHoCH":
+            return False
+
+        entry_candle_color = classify_candle_color(entry_candle_open, entry_candle_close)
+        entry_relation = candle_relation_to_trade(signal.trade_type, entry_candle_color)
+        if entry_relation != "AGAINST_TRADE":
+            return False
+
+        if mode == "ifvg":
+            primary_gap_zone = self._select_primary_gap_zone(ob, active_gap_zones)
+            return primary_gap_zone is not None and primary_gap_zone.gap_type == "IFVG"
+
+        return False
 
     def _merge_overlapping_order_blocks(
         self,
@@ -880,6 +988,27 @@ class Strategy(BaseStrategy):
             return True
 
         return False
+
+    def _select_primary_gap_zone(
+        self,
+        ob: StrategyOrderBlock,
+        active_gap_zones: List[StrategyGapZone],
+    ) -> Optional[StrategyGapZone]:
+        same_bias_gap_zones = [gap_zone for gap_zone in active_gap_zones if gap_zone.bias == ob.bias]
+        if not same_bias_gap_zones:
+            return None
+
+        gap_filter_mode = self._normalize_gap_filter_mode()
+        if gap_filter_mode == "fvg":
+            preferred_types = {"FVG"}
+        elif gap_filter_mode == "ifvg":
+            preferred_types = {"IFVG"}
+        else:
+            preferred_types = {"FVG", "IFVG"}
+
+        preferred = [gap_zone for gap_zone in same_bias_gap_zones if gap_zone.gap_type in preferred_types]
+        candidates = preferred or same_bias_gap_zones
+        return max(candidates, key=lambda gap_zone: (gap_zone.index, gap_zone.source_index))
 
     def _collect_opposite_liquidity_levels(
         self,
@@ -1065,14 +1194,33 @@ class Strategy(BaseStrategy):
         current_idx: int,
         ob_bias: str,
     ) -> bool:
+        return self._evaluate_reversal_filter(
+            opens, closes, highs, lows, current_idx, ob_bias
+        ).passed
+
+    def _evaluate_reversal_filter(
+        self,
+        opens: np.ndarray,
+        closes: np.ndarray,
+        highs: np.ndarray,
+        lows: np.ndarray,
+        current_idx: int,
+        ob_bias: str,
+    ) -> ReversalDecision:
         if not self.config.require_reversal_pattern:
-            return True
+            return ReversalDecision(passed=True, source='DISABLED')
 
         pattern_ok = self._is_reversal_candle(opens, closes, highs, lows, current_idx, ob_bias)
+        if pattern_ok:
+            return ReversalDecision(passed=True, source='PATTERN')
+
         simple_reversal_ok = self.config.enable_simple_reversal and self._is_simple_reversal(
             opens, closes, highs, lows, current_idx, ob_bias
         )
-        return pattern_ok or simple_reversal_ok
+        if simple_reversal_ok:
+            return ReversalDecision(passed=True, source='SIMPLE')
+
+        return ReversalDecision(passed=False, source='NONE')
 
     def _find_precise_entry_with_reversal(
         self,
@@ -1085,7 +1233,7 @@ class Strategy(BaseStrategy):
         signal_candle_close_time: datetime,
         zone: BaseZone,
         max_bars_to_search: int = 60,
-    ) -> Optional[Tuple[datetime, float]]:
+    ) -> Optional[PreciseEntryResult]:
         """
         Find the first entry-timeframe candle that trades through the OB
         midpoint and passes the reversal filter on the entry timeframe itself.
@@ -1120,13 +1268,26 @@ class Strategy(BaseStrategy):
             if overlap_low > overlap_high:
                 continue
 
-            if not self._passes_reversal_filter(entry_opens, entry_closes, entry_highs, entry_lows, idx, zone.bias):
+            reversal_decision = self._evaluate_reversal_filter(
+                entry_opens,
+                entry_closes,
+                entry_highs,
+                entry_lows,
+                idx,
+                zone.bias,
+            )
+            if not reversal_decision.passed:
                 continue
 
             entry_time = self._parse_datetime(entry_times[idx])
             if entry_time is None:
                 continue
-            return (entry_time, midpoint_entry)
+            return PreciseEntryResult(
+                entry_time=entry_time,
+                entry_price=float(midpoint_entry),
+                entry_index=idx,
+                reversal_source=reversal_decision.source,
+            )
 
         return None
 
