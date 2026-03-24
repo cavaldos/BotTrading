@@ -224,10 +224,14 @@ def generate_errors_panel(state, state_lock) -> Panel:
     
     with state_lock:
         for error in state.error_logs:
+            count = int(error.get("count", 1) or 1)
+            message = error.get("message", "-")
+            if count > 1:
+                message = f"{message} [x{count}]"
             table.add_row(
                 error.get("time", "-"),
                 Text(error.get("timeframe", "-"), style="magenta"),
-                Text(error.get("message", "-"), style="red")
+                Text(message, style="red")
             )
     
     if not state.error_logs:

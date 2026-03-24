@@ -215,14 +215,24 @@ class AppState:
              self.logs.appendleft(f"[{timestamp}] [{process}] {message}")
 
      def add_error(self, timeframe: str, error_message: str):
-         """Add error with details to error_logs"""
-         timestamp = datetime.now().strftime("%H:%M:%S")
-         with state_lock:
-             self.error_logs.appendleft({
-                 "time": timestamp,
-                 "timeframe": timeframe,
-                 "message": str(error_message)[:100]  # Truncate long messages
-             })
+          """Add error with details to error_logs"""
+          timestamp = datetime.now().strftime("%H:%M:%S")
+          message = str(error_message).strip()[:100]
+          with state_lock:
+              for existing in list(self.error_logs):
+                  if existing.get("timeframe") == timeframe and existing.get("message") == message:
+                      existing["time"] = timestamp
+                      existing["count"] = int(existing.get("count", 1)) + 1
+                      self.error_logs.remove(existing)
+                      self.error_logs.appendleft(existing)
+                      return
+
+              self.error_logs.appendleft({
+                  "time": timestamp,
+                  "timeframe": timeframe,
+                  "message": message,
+                  "count": 1,
+              })
 
 
 state = AppState()
@@ -231,6 +241,111 @@ console = Console()
 
 _ORIGINAL_PRINT = builtins.print
 _PRINT_CAPTURE_ENABLED = False
+_PRINT_ERROR_KEYWORDS = (
+    "typingerror",
+    "loweringerror",
+    "failed in nopython mode",
+    "exception:",
+    "error:",
+    "runtimeerror",
+    "valueerror",
+    "keyerror",
+    "indexerror",
+    "attributeerror",
+    "typeerror",
+    "assertionerror",
+    "zerodivisionerror",
+)
+_NUMBA_IR_KEYWORDS = (
+    "$",
+    "label ",
+    "const(",
+    "cast(",
+    "return_value",
+    "return_const",
+    "binop_",
+    "compare_op",
+    "arg(",
+    "global(",
+    "name=",
+)
+
+
+def _is_truthy_env_value(value: str) -> bool:
+    return value.strip().lower() not in {"", "0", "false", "no", "off", "none"}
+
+
+def _collect_numba_debug_env_vars() -> dict[str, str]:
+    debug_tokens = ("DEBUG", "DUMP", "TRACE", "DEVELOPER", "FULL_TRACEBACK")
+    debug_vars: dict[str, str] = {}
+    for key, value in os.environ.items():
+        upper_key = key.upper()
+        if not upper_key.startswith("NUMBA_"):
+            continue
+        if not any(token in upper_key for token in debug_tokens):
+            continue
+        text_value = str(value)
+        if _is_truthy_env_value(text_value):
+            debug_vars[key] = text_value
+    return dict(sorted(debug_vars.items()))
+
+
+def _is_numba_diagnostic_line(stripped: str) -> bool:
+    lowered = stripped.lower()
+
+    if any(keyword in stripped for keyword in _NUMBA_IR_KEYWORDS):
+        return True
+    if lowered.startswith("#"):
+        return True
+    if lowered.startswith("traceback (most recent call last):"):
+        return True
+    if lowered.startswith("file \"") and ", line " in lowered:
+        return True
+    if lowered.startswith("during:"):
+        return True
+    if lowered.startswith("^"):
+        return True
+    if lowered.startswith("return ") and "data_closes[" in lowered:
+        return True
+    if lowered.startswith("del "):
+        return True
+    return False
+
+
+def _summarize_print_error(stripped: str) -> str:
+    lowered = stripped.lower()
+    if "typingerror" in lowered:
+        return "Numba TypingError detected"
+    if "loweringerror" in lowered:
+        return "Numba LoweringError detected"
+    if "failed in nopython mode" in lowered:
+        return "Numba failed in nopython mode"
+    return stripped
+
+
+def _classify_print_line(line: str) -> str | None:
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if _is_numba_diagnostic_line(stripped):
+        return None
+
+    lowered = stripped.lower()
+    if ":" in lowered:
+        prefix = lowered.split(":", 1)[0].strip()
+        if prefix.endswith("error") or prefix.endswith("exception"):
+            return _summarize_print_error(stripped)
+    if any(keyword in lowered for keyword in _PRINT_ERROR_KEYWORDS):
+        return _summarize_print_error(stripped)
+    return None
+
+
+def _log_numba_env_warnings() -> None:
+    debug_vars = _collect_numba_debug_env_vars()
+    if not debug_vars:
+        return
+    joined = ", ".join(f"{key}={value}" for key, value in debug_vars.items())
+    state.add_log("Main", f"Warning: active Numba debug env -> {joined}")
 
 
 def _capture_print_to_errors(*args, **kwargs):
@@ -248,11 +363,10 @@ def _capture_print_to_errors(*args, **kwargs):
     if end:
         message += end
 
-    _NUMBA_IR_KEYWORDS = ("$", "label ", "const(", "cast(", "return_value", "return_const", "binop_", "compare_op", "arg(", "global(", "name=")
     for line in message.splitlines():
-        stripped = line.strip()
-        if stripped and not any(kw in stripped for kw in _NUMBA_IR_KEYWORDS):
-            state.add_error("PRT", line)
+        error_message = _classify_print_line(line)
+        if error_message:
+            state.add_error("PRT", error_message)
 
     # Preserve explicit output to custom file handles.
     if file_obj not in (None, sys.stdout, sys.stderr):
@@ -533,6 +647,7 @@ def process_2_event_worker(event_queue: Queue[str]):
 
 def main():
     install_print_capture()
+    _log_numba_env_warnings()
 
     remove_all_files(OUTPUT_FOLDER)
     remove_all_files(DATA_FOLDER)
