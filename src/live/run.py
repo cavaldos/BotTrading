@@ -66,6 +66,12 @@ STRATEGY_CONFIG = load_strategy_config()
 if "exchange" in CONFIG:
     os.environ["EXCHANGE"] = str(CONFIG.get("exchange", "binance")).lower()
 
+exchange_name = os.environ.get("EXCHANGE")
+
+if exchange_name == "bybit":
+    bybit_market_category = str(CONFIG.get("data", {}).get("market_category", "linear")).strip().lower()
+    os.environ["BYBIT_MARKET_CATEGORY"] = bybit_market_category
+
 # Data settings
 DATA_FOLDER = CONFIG["data"]["folder"]
 CURRENCIES = CONFIG["data"]["currencies"]
@@ -432,6 +438,8 @@ def getdata(timeframe: str):
       
       # In strategy-timeframe mode, always fetch entry_timeframe data
       fetch_tf = ENTRY_TIMEFRAME if USE_STRATEGY_TIMEFRAMES else timeframe
+      use_closed_candles = WAIT_FOR_CLOSE and os.environ.get("EXCHANGE") in {"binance", "bybit"}
+      fetch_kwargs = {"closed_only": True} if use_closed_candles else {}
       
       # Check if data files exist (first run vs subsequent runs)
       has_data_files = any(
@@ -441,10 +449,21 @@ def getdata(timeframe: str):
       
       if not has_data_files:
           # First run: remove old data and fetch all candles (parallel)
-          fetch_and_save_candles_parallel(CURRENCIES, [fetch_tf], DATA_FOLDER, CANDLES_LIMIT)
+          fetch_and_save_candles_parallel(
+              CURRENCIES,
+              [fetch_tf],
+              DATA_FOLDER,
+              CANDLES_LIMIT,
+              **fetch_kwargs,
+          )
       else:
           # Subsequent runs: only append latest candle and remove second row (parallel)
-          append_latest_candle_parallel(CURRENCIES, [fetch_tf], DATA_FOLDER)
+          append_latest_candle_parallel(
+              CURRENCIES,
+              [fetch_tf],
+              DATA_FOLDER,
+              **fetch_kwargs,
+          )
 
 
 def run_cycle(timeframe: str):

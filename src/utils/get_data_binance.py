@@ -19,6 +19,15 @@ DEFAULT_CONFIG = {
     'mode': 'by_candles'
 }
 
+VALID_MARKET_TYPES = {'spot', 'future'}
+MARKET_TYPE_ALIASES = {
+    'futures': 'future',
+    'perpetual': 'future',
+    'usdm': 'future',
+    'usdt_perpetual': 'future',
+    'usdt-perpetual': 'future',
+}
+
 
 def _get_env_float(name, default):
     value = os.getenv(name)
@@ -40,6 +49,53 @@ def _get_env_int(name, default):
     except ValueError:
         print(f"Invalid {name}='{value}', using default {default}")
         return default
+
+
+def _normalize_market_type(value, default='future'):
+    text = str(value or '').strip().lower()
+    if not text:
+        return default
+
+    normalized = MARKET_TYPE_ALIASES.get(text, text)
+    if normalized not in VALID_MARKET_TYPES:
+        print(f"Invalid BINANCE_MARKET_TYPE='{value}', using default {default}")
+        return default
+    return normalized
+
+
+def _get_market_type(default='future'):
+    return _normalize_market_type(os.getenv('BINANCE_MARKET_TYPE', default), default=default)
+
+
+def _get_klines_url():
+    if _get_market_type() == 'future':
+        return 'https://fapi.binance.com/fapi/v1/klines'
+    return 'https://api.binance.com/api/v3/klines'
+
+
+def _timeframe_to_milliseconds(interval):
+    tf = str(interval).strip()
+    lower_tf = tf.lower()
+
+    if lower_tf.endswith('m'):
+        return int(lower_tf[:-1]) * 60 * 1000
+    if lower_tf.endswith('h'):
+        return int(lower_tf[:-1]) * 60 * 60 * 1000
+    if lower_tf.endswith('d'):
+        return int(lower_tf[:-1]) * 24 * 60 * 60 * 1000
+    if lower_tf.endswith('w'):
+        return int(lower_tf[:-1]) * 7 * 24 * 60 * 60 * 1000
+    if tf.endswith('M'):
+        return int(tf[:-1]) * 30 * 24 * 60 * 60 * 1000
+    raise ValueError(f"Invalid timeframe format: {interval}")
+
+
+def _get_last_closed_candle_end_time(interval, now=None):
+    now = now or datetime.now(timezone.utc)
+    interval_ms = _timeframe_to_milliseconds(interval)
+    now_ms = int(now.timestamp() * 1000)
+    current_candle_open_ms = (now_ms // interval_ms) * interval_ms
+    return current_candle_open_ms - 1
 
 
 HTTP_CONNECT_TIMEOUT = _get_env_float('HTTP_CONNECT_TIMEOUT', 5.0)
@@ -94,7 +150,7 @@ def _batch_timeout(total_tasks, max_workers):
 
 # Fetch candlestick data from Binance
 def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, limit=10000):
-    url = f'https://api.binance.com/api/v3/klines'
+    url = _get_klines_url()
     params = {
         'symbol': symbol,
         'interval': interval,
@@ -115,10 +171,10 @@ def get_binance_candles(symbol, interval='1h', start_time=None, end_time=None, l
     return candles if candles else []
 
 # Fetch latest candles (supports fetching multiple candles)
-def get_latest_candles(symbol, interval='1h', limit=100):
+def get_latest_candles(symbol, interval='1h', limit=100, end_time=None):
     # Binance API has a maximum limit of 1000 candles per request
     MAX_API_LIMIT = 1000
-    url = f'https://api.binance.com/api/v3/klines'
+    url = _get_klines_url()
     
     # If limit <= 1000, only one API request is needed
     if limit <= MAX_API_LIMIT:
@@ -127,6 +183,9 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             'interval': interval,
             'limit': limit
         }
+
+        if end_time is not None:
+            params['endTime'] = int(end_time)
         
         response = _http_get_with_retry(url, params, exchange_name='Binance')
         if response is None:
@@ -146,6 +205,9 @@ def get_latest_candles(symbol, interval='1h', limit=100):
             'interval': interval,
             'limit': MAX_API_LIMIT
         }
+
+        if end_time is not None:
+            params['endTime'] = int(end_time)
         
         response = _http_get_with_retry(url, params, exchange_name='Binance')
         if response is None:
@@ -289,12 +351,13 @@ def get_and_save_multiple_data(currencies, timeframes, start_date, folder_path):
             print(f"Downloading data for {currency} with timeframe {timeframe}...")
             get_and_save_data(currency, start_date, filename, time_interval=timeframe)
 
-def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
+def fetch_and_save_candles(currencies, timeframes, folder_path, limit, closed_only=False):
     for currency in currencies:
         for timeframe in timeframes:
             filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
+            end_time = _get_last_closed_candle_end_time(timeframe) if closed_only else None
             
-            latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit)
+            latest_candles = get_latest_candles(currency, interval=timeframe, limit=limit, end_time=end_time)
             
             if latest_candles:
                 save_to_csv(latest_candles, filename)
@@ -302,19 +365,20 @@ def fetch_and_save_candles(currencies, timeframes, folder_path, limit):
                 print(f"Failed to fetch data for {currency}_{timeframe}")
 
 
-def _fetch_single_currency(currency, timeframe, folder_path, limit):
+def _fetch_single_currency(currency, timeframe, folder_path, limit, closed_only=False):
     """Fetch and save candles for a single currency/timeframe pair (for parallel execution)"""
     filename = os.path.join(folder_path, f"{currency}_{timeframe}.csv")
-    candles = get_latest_candles(currency, interval=timeframe, limit=limit)
+    end_time = _get_last_closed_candle_end_time(timeframe) if closed_only else None
+    candles = get_latest_candles(currency, interval=timeframe, limit=limit, end_time=end_time)
     if candles:
         save_to_csv(candles, filename)
         return (currency, timeframe, True)
     return (currency, timeframe, False)
 
 
-def fetch_and_save_candles_parallel(currencies, timeframes, folder_path, limit, max_workers=5):
+def fetch_and_save_candles_parallel(currencies, timeframes, folder_path, limit, max_workers=5, closed_only=False):
     """Fetch and save candles for multiple currencies in parallel using ThreadPoolExecutor"""
-    tasks = [(c, tf, folder_path, limit) for c in currencies for tf in timeframes]
+    tasks = [(c, tf, folder_path, limit, closed_only) for c in currencies for tf in timeframes]
 
     if not tasks:
         return
@@ -351,7 +415,7 @@ def fetch_and_save_candles_parallel(currencies, timeframes, folder_path, limit, 
         executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
 
-def append_latest_candle(currencies, timeframes, folder_path):
+def append_latest_candle(currencies, timeframes, folder_path, closed_only=False):
     """Fetch only the latest candle and append to existing files, removing the second row.
     
     Uses atomic write to prevent race conditions when multiple threads
@@ -359,7 +423,7 @@ def append_latest_candle(currencies, timeframes, folder_path):
     """
     for currency in currencies:
         for timeframe in timeframes:
-            _append_single_candle(currency, timeframe, folder_path)
+            _append_single_candle(currency, timeframe, folder_path, closed_only=closed_only)
 
 
 def _extract_timestamp_from_line(line):
@@ -377,7 +441,7 @@ def _extract_timestamp_from_line(line):
     return None
 
 
-def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
+def _append_single_candle(currency, timeframe, folder_path, max_retries=3, closed_only=False):
     """Append or update latest candle for a single currency/timeframe pair.
     
     If the latest candle has the same timestamp as the last candle in the file,
@@ -397,7 +461,8 @@ def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
                 os.makedirs(folder_path, exist_ok=True)
             
             # Fetch only 1 latest candle
-            latest_candle = get_latest_candles(currency, interval=timeframe, limit=1)
+            end_time = _get_last_closed_candle_end_time(timeframe) if closed_only else None
+            latest_candle = get_latest_candles(currency, interval=timeframe, limit=1, end_time=end_time)
             
             if not latest_candle:
                 print(f"Failed to fetch latest candle for {currency}_{timeframe}")
@@ -488,9 +553,9 @@ def _append_single_candle(currency, timeframe, folder_path, max_retries=3):
     return False
 
 
-def append_latest_candle_parallel(currencies, timeframes, folder_path, max_workers=5):
+def append_latest_candle_parallel(currencies, timeframes, folder_path, max_workers=5, closed_only=False):
     """Append latest candle for multiple currencies in parallel using ThreadPoolExecutor"""
-    tasks = [(c, tf, folder_path) for c in currencies for tf in timeframes]
+    tasks = [(c, tf, folder_path, 3, closed_only) for c in currencies for tf in timeframes]
 
     if not tasks:
         return
