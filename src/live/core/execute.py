@@ -199,7 +199,12 @@ def execute(
                     converted_signal_df = convert_timeframe(df_entry, signal_tf)
                     if not isinstance(converted_signal_df, pd.DataFrame) or converted_signal_df.empty:
                         continue
-                    signal_df = cast(pd.DataFrame, converted_signal_df)
+                    signal_df = _drop_incomplete_candle(
+                        cast(pd.DataFrame, converted_signal_df),
+                        signal_tf,
+                    )
+                    if signal_df.empty:
+                        continue
                     signals = strategy.generate_signals(signal_df, base_symbol, df_entry=df_entry)
                 else:
                     signals = strategy.generate_signals(df_entry, base_symbol)
