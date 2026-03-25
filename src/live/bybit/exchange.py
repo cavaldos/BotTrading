@@ -488,8 +488,9 @@ def place_market_order_with_sl(
             'error': 'Không lấy được giá hiện tại từ sàn',
         }
     
-    # Sử dụng expected_entry từ signal để tính quantity
-    # Điều này đảm bảo risk = risk_per_trade khi SL được điều chỉnh đúng
+    # Sử dụng expected_entry từ signal để tính quantity.
+    # Lưu ý: market fill có thể lệch khỏi expected_entry, nên actual USD risk
+    # có thể chênh nhẹ so với risk_per_trade khi SL được giữ cố định theo signal.
     entry_for_calculation = expected_entry if expected_entry else current_price
     
     # Tính kích thước vị trí với expected entry từ signal

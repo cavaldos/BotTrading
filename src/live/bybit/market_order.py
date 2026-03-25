@@ -15,7 +15,6 @@ from src.live.bybit.exchange import (
     set_position_sl_tp,
 )
 from src.live.bybit.risk_calculator import (
-    adjust_levels_for_slippage_v2,
     clean_symbol,
 )
 from src.utils.rounding import round_price
@@ -115,24 +114,22 @@ def validate_and_place_order(
             position_info = result.get('position_info', {})
             current_quantity = position_info.get('quantity', 0)
 
-            rr_ratio_for_adjustment = risk_reward_ratio
-            if entry_price and stop_loss and take_profit:
-                risk_distance = abs(entry_price - stop_loss)
-                reward_distance = abs(take_profit - entry_price)
-                if risk_distance > 0 and reward_distance > 0:
-                    rr_ratio_for_adjustment = reward_distance / risk_distance
+            # Giữ nguyên các mức SL/TP đã tính toán từ signal, không re-anchor theo actual entry.
+            # Nếu market fill lệch giá thì RR thực tế có thể xấu đi, nhưng các mức giá bảo vệ
+            # trên sàn vẫn phải đúng theo kế hoạch ban đầu của trader.
+            sl_tp_adjustment = {
+                'mode': 'keep_original_levels',
+                'expected_entry': round_price(expected_entry_from_signal),
+                'actual_entry': round_price(actual_entry),
+                'expected_sl': round_price(original_stop_loss),
+                'adjusted_sl': round_price(original_stop_loss),
+                'expected_tp': round_price(original_take_profit),
+                'adjusted_tp': round_price(original_take_profit),
+                'side': side.upper(),
+            }
 
-            # Sử dụng expected_entry từ signal để tính slippage
-            sl_tp_adjustment = adjust_levels_for_slippage_v2(
-                expected_entry=expected_entry_from_signal,
-                actual_entry=actual_entry,
-                expected_sl=stop_loss,
-                side=side.lower(),
-                rr_ratio=rr_ratio_for_adjustment,
-            )
-
-            adjusted_sl = sl_tp_adjustment['adjusted_sl']
-            adjusted_tp = sl_tp_adjustment['adjusted_tp']
+            adjusted_sl = original_stop_loss
+            adjusted_tp = original_take_profit
 
             def to_price_precision(price: float) -> float:
                 try:
@@ -250,8 +247,29 @@ def format_market_order_message(order_result: dict) -> str:
     
     slippage_line = ""
     if slippage_pct != 0:
-        slippage_emoji = "⚠️" if abs(slippage_pct) > 0.3 else "ℹ️"
-        slippage_line = f"\n├─ Slippage: {slippage_emoji} {slippage_pct:+.3f}%"
+        slippage_emoji = "ℹ️"
+        slippage_label = "không xác định"
+
+        if side == 'BUY':
+            if entry_price < expected_entry:
+                slippage_emoji = "✅"
+                slippage_label = "có lợi"
+            elif entry_price > expected_entry:
+                slippage_emoji = "⚠️"
+                slippage_label = "bất lợi"
+            else:
+                slippage_label = "trung tính"
+        elif side == 'SELL':
+            if entry_price > expected_entry:
+                slippage_emoji = "✅"
+                slippage_label = "có lợi"
+            elif entry_price < expected_entry:
+                slippage_emoji = "⚠️"
+                slippage_label = "bất lợi"
+            else:
+                slippage_label = "trung tính"
+
+        slippage_line = f"\n├─ Slippage: {slippage_emoji} {slippage_pct:+.3f}% ({slippage_label})"
     
     actual_risk = order_result.get('actual_risk', 0)
     expected_profit = order_result.get('expected_profit', 0)
