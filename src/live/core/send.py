@@ -402,6 +402,7 @@ def check_and_send_open_orders(
                 name_coin=row['Symbol'],
                 result=combined_result,
                 risk_per_trade=effective_risk_per_trade,
+                signal_timeframe=str(row.get('Signal_Timeframe', '')).strip(),
             )
             
             order_detail = {

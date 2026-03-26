@@ -30,7 +30,17 @@ def send_custom_message(message: str, timeout: int = 5, retries: int = 3) -> Non
     # Silent mode - avoid dashboard flicker
 
 
-def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, result = None, risk_per_trade = 5):
+def send_entry_discord(
+    type,
+    entry,
+    stoploss,
+    takeprofit,
+    time,
+    name_coin,
+    result=None,
+    risk_per_trade=5,
+    signal_timeframe=None,
+):
     """Send trade entry notification to Discord.
     
     RR ratio được tính từ Entry/SL/TP thực tế đặt trên sàn.
@@ -56,8 +66,12 @@ def send_entry_discord(type, entry, stoploss, takeprofit, time, name_coin, resul
     rr_display = f"1:{actual_rr_ratio:.2f}"
 
     type_upper = type.upper()
+    timeframe_display = str(signal_timeframe).strip() if signal_timeframe not in (None, "") else ""
+    title_symbol = str(name_coin)
+    if timeframe_display and not title_symbol.endswith(f"_{timeframe_display}"):
+        title_symbol = f"{title_symbol}_{timeframe_display}"
 
-    message = f"""**{name_coin} | {type_upper}**
+    message = f"""**{title_symbol}| {type_upper}**
 ```
 Date: {date_str}
 Time: {time_gmt0} (GMT+0) / {time_gmt7} (GMT+7)
@@ -88,7 +102,7 @@ def send_message_to_discord(message: str):
 # Test
 if __name__ == "__main__":
     # Test gửi embed message
-    send_entry_discord('Long', 95916.4, 94500.34, 96228.52, '2021-10-10 10:10:10', 'BTC/USDT')
+    send_entry_discord('Long', 95916.4, 94500.34, 96228.52, '2021-10-10 10:10:10', 'BTC/USDT', signal_timeframe='5m')
     
     # Test gửi tin nhắn text
     # send_custom_message('Hello from Discord Bot!')
