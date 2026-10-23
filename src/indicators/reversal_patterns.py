@@ -3,18 +3,22 @@ Reversal Candle Patterns - Optimized Combined Version
 ======================================================
 Kết hợp các phiên bản tốt nhất từ backtest.
 
-Pattern Pair IDs:
-    0  = all (tất cả patterns)
-    1  = doji (CŨ - doji_ratio=0.3)
-    2  = hammer / hanging_man (CŨ)
-    3  = inverted_hammer / shooting_star (MỚI)
+Pattern Pair IDs (LONG / SHORT):
+    0  = all (tất cả patterns bên dưới)
+    1  = doji (body <= doji_ratio * range, mặc định 0.1)
+    2  = hammer (chỉ LONG - râu dưới dài = từ chối giá thấp tại vùng cầu)
+    3  = shooting_star (chỉ SHORT - râu trên dài = từ chối giá cao tại vùng cung)
     4  = bullish_engulfing / bearish_engulfing
     5  = [REMOVED - no signals]
     6  = bullish_harami / bearish_harami
-    7  = morning_star / evening_star (MỚI - fixed gap)
-    8  = tweezer_bottom / tweezer_top
+    7  = morning_star / evening_star (fixed gap)
+    8  = tweezer_bottom / tweezer_top (sai số tính theo biên độ nến)
     9  = three_outside_up / three_outside_down
     10 = bullish_belt_hold / bearish_belt_hold
+
+Hanging man (râu dưới dài cho SHORT) và inverted hammer (râu trên dài cho LONG)
+đã bị loại: tại vùng OB, hình dạng đó thể hiện lực ngược hướng lệnh chứ không
+phải sự từ chối giá.
 """
 
 import numpy as np
@@ -34,11 +38,14 @@ PATTERN_TWEEZER = 8
 PATTERN_THREE_OUTSIDE = 9
 PATTERN_BELT_HOLD = 10
 
+DEFAULT_DOJI_RATIO = 0.1
+DEFAULT_TWEEZER_TOLERANCE = 0.1  # max |low1 - low2| as a fraction of the average candle range
+
 PATTERN_PAIR_NAMES = {
     0: "all",
     1: "doji",
-    2: "hammer_hanging",
-    3: "inverted_shooting",
+    2: "hammer",
+    3: "shooting_star",
     4: "engulfing",
     # 5: removed
     6: "harami",
@@ -53,10 +60,12 @@ PATTERN_PAIR_NAMES = {
 
 @njit(cache=True)
 def _is_doji_jit(open_price: float, close_price: float, high: float, low: float, 
-                  doji_ratio: float = 0.3) -> bool:
+                  doji_ratio: float = 0.1) -> bool:
     """
-    Doji: Body cực nhỏ so với range.
-    DÙNG CODE CŨ: doji_ratio=0.3 cho kết quả tốt hơn (51.44% vs 48.17%)
+    Doji: Body cực nhỏ so với range (mặc định body <= 10% range).
+    Ngưỡng cũ 0.3 quá rộng: ~23% nến 1m được tính là doji và nó nuốt luôn
+    hammer/shooting star. Con số WR cũ (51.44%) đo trên backtest có lỗi khớp
+    lệnh nhìn trước tương lai, nên không còn dùng làm căn cứ.
     """
     candle_range = high - low
     if candle_range == 0:
@@ -279,41 +288,45 @@ def _is_bearish_harami_jit(prev_open: float, prev_close: float,
 @njit(cache=True)
 def _is_tweezer_bottom_jit(prev_open: float, prev_close: float, 
                             prev_high: float, prev_low: float,
-                            curr_open: float, curr_close: float, 
+                            curr_open: float, curr_close: float,
                             curr_high: float, curr_low: float,
-                            tolerance: float = 0.003) -> bool:
-    """Tweezer Bottom: Hai nến có Low gần bằng nhau."""
+                            tolerance: float = 0.1) -> bool:
+    """
+    Tweezer Bottom: nến giảm rồi nến tăng, hai Low gần bằng nhau.
+    Sai số tính theo biên độ nến trung bình (không theo % giá) để không
+    biến thành "nến đỏ rồi nến xanh" trên khung thời gian nhỏ.
+    """
     if prev_close >= prev_open:
         return False
-    
+
     if curr_close <= curr_open:
         return False
-    
-    avg_low = (prev_low + curr_low) / 2
-    if avg_low == 0:
+
+    avg_range = ((prev_high - prev_low) + (curr_high - curr_low)) / 2
+    if avg_range <= 0:
         return False
-    
-    return abs(prev_low - curr_low) / avg_low <= tolerance
+
+    return abs(prev_low - curr_low) <= tolerance * avg_range
 
 
 @njit(cache=True)
 def _is_tweezer_top_jit(prev_open: float, prev_close: float, 
                          prev_high: float, prev_low: float,
-                         curr_open: float, curr_close: float, 
+                         curr_open: float, curr_close: float,
                          curr_high: float, curr_low: float,
-                         tolerance: float = 0.003) -> bool:
-    """Tweezer Top: Hai nến có High gần bằng nhau."""
+                         tolerance: float = 0.1) -> bool:
+    """Tweezer Top: nến tăng rồi nến giảm, hai High gần bằng nhau (sai số theo biên độ nến)."""
     if prev_close <= prev_open:
         return False
-    
+
     if curr_close >= curr_open:
         return False
-    
-    avg_high = (prev_high + curr_high) / 2
-    if avg_high == 0:
+
+    avg_range = ((prev_high - prev_low) + (curr_high - curr_low)) / 2
+    if avg_range <= 0:
         return False
-    
-    return abs(prev_high - curr_high) / avg_high <= tolerance
+
+    return abs(prev_high - curr_high) <= tolerance * avg_range
 
 
 # ==================== THREE CANDLE PATTERNS ====================
@@ -466,233 +479,125 @@ def _is_three_outside_down_jit(opens: np.ndarray, closes: np.ndarray, idx: int) 
 # ==================== MAIN ENTRY POINTS ====================
 
 @njit(cache=True)
-def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray, 
-                                highs: np.ndarray, lows: np.ndarray,
-                                current_idx: int, is_bullish: bool) -> bool:
-    """
-    Check if current candle shows a reversal pattern.
-    ĐÃ LOẠI BỎ: Piercing Line / Dark Cloud Cover (ID 5) - không có tín hiệu
-    """
-    o_curr = opens[current_idx]
-    c_curr = closes[current_idx]
-    h_curr = highs[current_idx]
-    l_curr = lows[current_idx]
-    
-    # Doji (doji_ratio=0.3 từ code cũ)
-    if _is_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.3):
-        return True
-    
-    if is_bullish:
-        # ===== BULLISH REVERSAL PATTERNS =====
-        
-        # Single candle
-        if _is_hammer_jit(o_curr, c_curr, h_curr, l_curr):
+def _family_enabled(pattern_ids: np.ndarray, family_id: int) -> bool:
+    for i in range(len(pattern_ids)):
+        if pattern_ids[i] == PATTERN_ALL or pattern_ids[i] == family_id:
             return True
-        if _is_inverted_hammer_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        if _is_bullish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        
-        # Two candle patterns
-        if current_idx > 0:
-            o_prev = opens[current_idx - 1]
-            c_prev = closes[current_idx - 1]
-            h_prev = highs[current_idx - 1]
-            l_prev = lows[current_idx - 1]
-            
-            if _is_bullish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
-                return True
-            # REMOVED: _is_piercing_line_jit - no signals
-            if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev, 
-                                       o_curr, c_curr, h_curr, l_curr):
-                return True
-            if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev, 
-                                       o_curr, c_curr, h_curr, l_curr, 0.003):
-                return True
-        
-        # Three candle patterns
-        if current_idx > 1:
-            if _is_morning_star_jit(opens, closes, highs, lows, current_idx):
-                return True
-            if _is_three_outside_up_jit(opens, closes, current_idx):
-                return True
-    
-    else:
-        # ===== BEARISH REVERSAL PATTERNS =====
-        
-        # Single candle
-        if _is_shooting_star_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        if _is_hanging_man_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        if _is_bearish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
-            return True
-        
-        # Two candle patterns
-        if current_idx > 0:
-            o_prev = opens[current_idx - 1]
-            c_prev = closes[current_idx - 1]
-            h_prev = highs[current_idx - 1]
-            l_prev = lows[current_idx - 1]
-            
-            if _is_bearish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
-                return True
-            # REMOVED: _is_dark_cloud_cover_jit - no signals
-            if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev,
-                                       o_curr, c_curr, h_curr, l_curr):
-                return True
-            if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
-                                    o_curr, c_curr, h_curr, l_curr, 0.003):
-                return True
-        
-        # Three candle patterns
-        if current_idx > 1:
-            if _is_evening_star_jit(opens, closes, highs, lows, current_idx):
-                return True
-            if _is_three_outside_down_jit(opens, closes, current_idx):
-                return True
-    
     return False
 
 
 @njit(cache=True)
-def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray, 
-                              highs: np.ndarray, lows: np.ndarray,
-                              current_idx: int, is_bullish: bool,
-                              pattern_ids: np.ndarray) -> bool:
+def count_reversal_patterns_jit(opens: np.ndarray, closes: np.ndarray,
+                                highs: np.ndarray, lows: np.ndarray,
+                                current_idx: int, is_bullish: bool,
+                                pattern_ids: np.ndarray,
+                                doji_ratio: float = DEFAULT_DOJI_RATIO,
+                                tweezer_tolerance: float = DEFAULT_TWEEZER_TOLERANCE) -> int:
     """
-    Check reversal patterns theo mảng IDs được chỉ định.
-    
-    Pattern Pair IDs (đã tối ưu):
-        0  = all (tất cả patterns)
-        1  = doji (doji_ratio=0.3)
-        2  = hammer / hanging_man
-        3  = inverted_hammer / shooting_star (code mới)
-        4  = bullish_engulfing / bearish_engulfing
-        5  = [REMOVED - no signals]
-        6  = bullish_harami / bearish_harami
-        7  = morning_star / evening_star (code mới - fixed gap)
-        8  = tweezer_bottom / tweezer_top
-        9  = three_outside_up / three_outside_down
-        10 = bullish_belt_hold / bearish_belt_hold
+    Count how many enabled pattern families match the candle at current_idx.
+
+    pattern_ids containing 0 enables every family. Each family counts at most
+    once, so the result can be compared with a "min matches" threshold.
     """
-    # Check for "all" pattern
-    for i in range(len(pattern_ids)):
-        if pattern_ids[i] == 0:
-            return check_reversal_pattern_jit(opens, closes, highs, lows, 
-                                               current_idx, is_bullish)
-    
-    # Get current OHLC
     o_curr = opens[current_idx]
     c_curr = closes[current_idx]
     h_curr = highs[current_idx]
     l_curr = lows[current_idx]
-    
-    # Get previous OHLC if available
+
     has_prev = current_idx > 0
+    o_prev = c_prev = h_prev = l_prev = 0.0
     if has_prev:
         o_prev = opens[current_idx - 1]
         c_prev = closes[current_idx - 1]
         h_prev = highs[current_idx - 1]
         l_prev = lows[current_idx - 1]
+    has_two_prev = current_idx > 1
+
+    count = 0
+
+    # ID 1: Doji (neutral, valid for both sides)
+    if _family_enabled(pattern_ids, PATTERN_DOJI):
+        if _is_doji_jit(o_curr, c_curr, h_curr, l_curr, doji_ratio):
+            count += 1
+
+    if is_bullish:
+        # ID 2: Hammer (LONG only)
+        if _family_enabled(pattern_ids, PATTERN_HAMMER_HANGING):
+            if _is_hammer_jit(o_curr, c_curr, h_curr, l_curr):
+                count += 1
+        # ID 4: Engulfing
+        if has_prev and _family_enabled(pattern_ids, PATTERN_ENGULFING):
+            if _is_bullish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
+                count += 1
+        # ID 6: Harami
+        if has_prev and _family_enabled(pattern_ids, PATTERN_HARAMI):
+            if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev,
+                                      o_curr, c_curr, h_curr, l_curr):
+                count += 1
+        # ID 7: Morning star
+        if has_two_prev and _family_enabled(pattern_ids, PATTERN_STAR):
+            if _is_morning_star_jit(opens, closes, highs, lows, current_idx):
+                count += 1
+        # ID 8: Tweezer bottom
+        if has_prev and _family_enabled(pattern_ids, PATTERN_TWEEZER):
+            if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev,
+                                      o_curr, c_curr, h_curr, l_curr, tweezer_tolerance):
+                count += 1
+        # ID 9: Three outside up
+        if has_two_prev and _family_enabled(pattern_ids, PATTERN_THREE_OUTSIDE):
+            if _is_three_outside_up_jit(opens, closes, current_idx):
+                count += 1
+        # ID 10: Belt hold
+        if _family_enabled(pattern_ids, PATTERN_BELT_HOLD):
+            if _is_bullish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
+                count += 1
     else:
-        o_prev = c_prev = h_prev = l_prev = 0.0
-    
-    # Check each pattern ID
-    for i in range(len(pattern_ids)):
-        pid = pattern_ids[i]
-        
-        # ID 1: Doji (doji_ratio=0.3 từ code cũ)
-        if pid == 1:
-            if _is_doji_jit(o_curr, c_curr, h_curr, l_curr, 0.3):
-                return True
-        
-        # ID 2: Hammer / Hanging Man (code cũ)
-        elif pid == 2:
-            if is_bullish:
-                if _is_hammer_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-            else:
-                if _is_hanging_man_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-        
-        # ID 3: Inverted Hammer / Shooting Star (code mới)
-        elif pid == 3:
-            if is_bullish:
-                if _is_inverted_hammer_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-            else:
-                if _is_shooting_star_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-        
-        # ID 4: Engulfing patterns
-        elif pid == 4:
-            if has_prev:
-                if is_bullish:
-                    if _is_bullish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
-                        return True
-                else:
-                    if _is_bearish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
-                        return True
-        
-        # ID 5: REMOVED (Piercing Line / Dark Cloud Cover - no signals)
-        # elif pid == 5:
-        #     pass  # Skip - no signals in backtest
-        
-        # ID 6: Harami patterns
-        elif pid == 6:
-            if has_prev:
-                if is_bullish:
-                    if _is_bullish_harami_jit(o_prev, c_prev, h_prev, l_prev,
-                                               o_curr, c_curr, h_curr, l_curr):
-                        return True
-                else:
-                    if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev,
-                                               o_curr, c_curr, h_curr, l_curr):
-                        return True
-        
-        # ID 7: Star patterns (code mới - fixed gap)
-        elif pid == 7:
-            if current_idx > 1:
-                if is_bullish:
-                    if _is_morning_star_jit(opens, closes, highs, lows, current_idx):
-                        return True
-                else:
-                    if _is_evening_star_jit(opens, closes, highs, lows, current_idx):
-                        return True
-        
-        # ID 8: Tweezer patterns
-        elif pid == 8:
-            if has_prev:
-                if is_bullish:
-                    if _is_tweezer_bottom_jit(o_prev, c_prev, h_prev, l_prev,
-                                               o_curr, c_curr, h_curr, l_curr, 0.003):
-                        return True
-                else:
-                    if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
-                                            o_curr, c_curr, h_curr, l_curr, 0.003):
-                        return True
-        
-        # ID 9: Three Outside patterns
-        elif pid == 9:
-            if current_idx > 1:
-                if is_bullish:
-                    if _is_three_outside_up_jit(opens, closes, current_idx):
-                        return True
-                else:
-                    if _is_three_outside_down_jit(opens, closes, current_idx):
-                        return True
-        
-        # ID 10: Belt Hold patterns
-        elif pid == 10:
-            if is_bullish:
-                if _is_bullish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-            else:
-                if _is_bearish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
-                    return True
-    
-    return False
+        # ID 3: Shooting star (SHORT only)
+        if _family_enabled(pattern_ids, PATTERN_INVERTED_SHOOTING):
+            if _is_shooting_star_jit(o_curr, c_curr, h_curr, l_curr):
+                count += 1
+        if has_prev and _family_enabled(pattern_ids, PATTERN_ENGULFING):
+            if _is_bearish_engulfing_jit(o_prev, c_prev, o_curr, c_curr):
+                count += 1
+        if has_prev and _family_enabled(pattern_ids, PATTERN_HARAMI):
+            if _is_bearish_harami_jit(o_prev, c_prev, h_prev, l_prev,
+                                      o_curr, c_curr, h_curr, l_curr):
+                count += 1
+        if has_two_prev and _family_enabled(pattern_ids, PATTERN_STAR):
+            if _is_evening_star_jit(opens, closes, highs, lows, current_idx):
+                count += 1
+        if has_prev and _family_enabled(pattern_ids, PATTERN_TWEEZER):
+            if _is_tweezer_top_jit(o_prev, c_prev, h_prev, l_prev,
+                                   o_curr, c_curr, h_curr, l_curr, tweezer_tolerance):
+                count += 1
+        if has_two_prev and _family_enabled(pattern_ids, PATTERN_THREE_OUTSIDE):
+            if _is_three_outside_down_jit(opens, closes, current_idx):
+                count += 1
+        if _family_enabled(pattern_ids, PATTERN_BELT_HOLD):
+            if _is_bearish_belt_hold_jit(o_curr, c_curr, h_curr, l_curr):
+                count += 1
+
+    return count
+
+
+@njit(cache=True)
+def check_reversal_pattern_jit(opens: np.ndarray, closes: np.ndarray,
+                               highs: np.ndarray, lows: np.ndarray,
+                               current_idx: int, is_bullish: bool) -> bool:
+    """True if any pattern family matches (all families enabled, default thresholds)."""
+    all_ids = np.zeros(1, dtype=np.int64)
+    return count_reversal_patterns_jit(opens, closes, highs, lows, current_idx, is_bullish,
+                                       all_ids, DEFAULT_DOJI_RATIO, DEFAULT_TWEEZER_TOLERANCE) > 0
+
+
+@njit(cache=True)
+def check_pattern_by_ids_jit(opens: np.ndarray, closes: np.ndarray,
+                             highs: np.ndarray, lows: np.ndarray,
+                             current_idx: int, is_bullish: bool,
+                             pattern_ids: np.ndarray) -> bool:
+    """True if any of the selected pattern families matches (default thresholds)."""
+    return count_reversal_patterns_jit(opens, closes, highs, lows, current_idx, is_bullish,
+                                       pattern_ids, DEFAULT_DOJI_RATIO, DEFAULT_TWEEZER_TOLERANCE) > 0
 
 
 # ==================== UTILITY FUNCTIONS ====================

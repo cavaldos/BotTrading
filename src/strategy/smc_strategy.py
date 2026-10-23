@@ -17,22 +17,27 @@ LONG setup:
 2. Activate the OB when its break_index is reached.
 3. Optionally require a later EQH confirmation after the OB break
    (require_liquidity=True).
-4. Wait for price to trade into the 50% level of the OB. Entry can happen on
-   the midpoint-touch bar or within touch_confirmation_bars after the most
-   recent qualifying touch.
+4. Wait for price to trade into the OB entry level (entry_ob_level, 0.5 = 50%).
+   Entry can happen on the touch bar or within touch_confirmation_bars after
+   the most recent qualifying touch.
 5. Optionally require matching bullish FVG/IFVG confluence.
-6. Optionally require a bullish reversal candlestick pattern or a simpler
-   rejection/displacement reversal.
+6. Optionally require a bullish reversal candlestick pattern (at least
+   min_reversal_pattern_matches families) or a simpler rejection/displacement
+   reversal.
 7. Optionally require a valid opposite-side liquidity destination before entry.
 8. Optionally reject the setup if it is CHoCH-based, the actual entry candle is
    bearish against the intended LONG, and the selected bullish gap confluence is
    IFVG (block_choch_against_entry_mode="ifvg").
-9. Enter LONG:
-   - single-timeframe mode: at the OB midpoint once the signal candle trades
-     through it
-   - multi-timeframe mode: at the OB midpoint on the first entry-timeframe
-     candle after the signal bar closes that trades through the midpoint and
-     passes the reversal filter
+9. Enter LONG at the CLOSE of the confirmation candle (the reversal pattern is
+   only known once that candle closes, which is also when live sends a market
+   order):
+   - single-timeframe mode: the signal candle must trade through the entry
+     level and pass the reversal filter
+   - multi-timeframe mode: the first entry-timeframe candle after the signal
+     bar closes that trades through the entry level and passes the reversal
+     filter. The search stops as soon as an entry-TF candle mitigates the OB.
+   Signal entry_time is the OPEN time of the confirmation candle; the trade
+   simulator starts checking SL/TP from the next candle.
 10. SL is placed below the OB with buffer / multiplier logic and minimum-SL
     enforcement inherited from BaseStrategy.
 11. TP is configurable: fixed RR, opposite OB, opposite swing, or opposite HTF
@@ -79,7 +84,7 @@ from src.strategy.base_strategy import (
     TradePlan,
     parse_timeframe_minutes,
 )
-from src.indicators.reversal_patterns import check_reversal_pattern_jit, check_pattern_by_ids_jit
+from src.indicators.reversal_patterns import count_reversal_patterns_jit
 
 from src.indicators.CHOCH import detect_choch, CHoCH
 from src.indicators.BOS import detect_bos, BOS
@@ -90,6 +95,7 @@ from src.indicators.FVG import detect_fvg, FairValueGap
 from src.indicators.ifvg import detect_ifvg, InverseFairValueGap
 from src.indicators.swing import detect_swings, Swing as IndicatorSwing
 from src.indicators.adx import compute_adx_jit
+from src.utils.convertTF import convert_timeframe
 
 
 # ==================== STRATEGY NAME ====================
@@ -143,7 +149,7 @@ class Config(BaseConfig):
     max_active_obs_per_bias: int = 10  # Keep only the most recent bullish/bearish OBs
     merge_overlapping_obs: bool = True  # Merge same-bias OBs that overlap and form close together
     ob_merge_max_break_gap: int = 5     # Max break_index distance allowed when merging overlapping OBs
-    entry_ob_level: float = 0.5     # Entry level within OB zone (0.0=low, 0.5=midpoint, 1.0=high)
+    entry_ob_level: float = 0.5     # Level the confirmation candle must trade through (0.0=low, 0.5=midpoint, 1.0=high)
 
     # === ENTRY FILTERS ===
     require_liquidity: bool = True          # Require EQH/EQL liquidity event after OB break
@@ -159,6 +165,15 @@ class Config(BaseConfig):
 
     # === REVERSAL PATTERNS ===
     reversal_pattern_ids: List[int] = field(default_factory=lambda: [0])
+    min_reversal_pattern_matches: int = 1   # Pattern families that must match on the same candle
+    doji_body_ratio: float = 0.1            # Doji: body <= ratio * range
+    tweezer_tolerance_ratio: float = 0.1    # Tweezer: |low1-low2| <= ratio * avg candle range
+
+    # === HIGHER-TIMEFRAME TREND FILTER ===
+    # "" disables it. Otherwise LONG needs close > EMA and SHORT needs close < EMA
+    # on the last CLOSED candle of this timeframe at the moment of entry.
+    trend_filter_timeframe: str = ""
+    trend_filter_ema_length: int = 50
 
     # === ADX STRENGTH FILTER ===
     enable_adx_filter: bool = False         # When True, require ADX strength confirmation
@@ -216,10 +231,15 @@ class Config(BaseConfig):
             "risk_reward_ratio": self.risk_reward_ratio,
             "risk_per_trade": self.risk_per_trade,
             "reversal_pattern_ids": self.reversal_pattern_ids,
+            "min_reversal_pattern_matches": self.min_reversal_pattern_matches,
+            "doji_body_ratio": self.doji_body_ratio,
+            "tweezer_tolerance_ratio": self.tweezer_tolerance_ratio,
             "tp_mode": self.tp_mode,
             "tp_no_target_policy": self.tp_no_target_policy,
             "tp_swing_length": self.tp_swing_length,
             "flex_tp_risk_boost_factor": self.flex_tp_risk_boost_factor,
+            "trend_filter_timeframe": self.trend_filter_timeframe,
+            "trend_filter_ema_length": self.trend_filter_ema_length,
             "enable_adx_filter": self.enable_adx_filter,
             "adx_length": self.adx_length,
             "adx_threshold": self.adx_threshold,
@@ -389,6 +409,10 @@ class Strategy(BaseStrategy):
             entry_highs = entry_df['High'].to_numpy(dtype=np.float64)
             entry_lows = entry_df['Low'].to_numpy(dtype=np.float64)
             entry_closes = entry_df['Close'].to_numpy(dtype=np.float64)
+
+        trend_filter = self._build_trend_filter(entry_df if use_multi_tf and df_entry is not None else df)
+        entry_tf_minutes = max(1, parse_timeframe_minutes(self.config.entry_timeframe))
+        single_tf_minutes = max(1, parse_timeframe_minutes(self.config.signal_timeframe))
 
         # ========== 1. PRE-COMPUTE INDICATORS ==========
         mitigation_mode = 'CLOSE' if self.config.mitigation_mode == 'close' else 'HIGHLOW'
@@ -641,12 +665,6 @@ class Strategy(BaseStrategy):
                 touch_recent = ob.last_touch_index >= 0 and (i - ob.last_touch_index) <= touch_window
                 entry_window_active = touch_recent if touch_window > 0 else touches_ob
 
-                # SAFEGUARD: If OB was touched but also mitigated in same bar (pierce into zone) → skip entry
-                if entry_window_active and self._zone_is_mitigated(ob, highs[i], lows[i], closes[i]):
-                    ob.is_mitigated = True
-                    remaining_obs.append(ob)
-                    continue
-
                 if not ob.entry_triggered and entry_window_active:
                     current_adx: float | None = None
                     adx_threshold: float | None = None
@@ -689,6 +707,10 @@ class Strategy(BaseStrategy):
                             )
                             if precise_entry:
                                 trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
+                                decision_time = precise_entry.entry_time + timedelta(minutes=entry_tf_minutes)
+                                if not self._passes_trend_filter(trend_filter, trade_type, decision_time):
+                                    remaining_obs.append(ob)
+                                    continue
                                 opposite_liquidity_ok = self._has_opposite_liquidity_target(
                                     entry=float(precise_entry.entry_price),
                                     trade_type=trade_type,
@@ -727,15 +749,22 @@ class Strategy(BaseStrategy):
                                 remaining_obs.append(ob)
                                 continue
 
-                            # SINGLE-TIMEFRAME MODE: Use base class signal creation
-                            signal = self._create_signal(
+                            # SINGLE-TIMEFRAME MODE: the candle must trade through the
+                            # entry level; fill at its close (pattern is known only then).
+                            entry_level = self._get_ob_midpoint(ob)
+                            if not (np.isfinite(entry_level) and lows[i] <= entry_level <= highs[i]):
+                                remaining_obs.append(ob)
+                                continue
+                            trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
+                            decision_time = current_time + timedelta(minutes=single_tf_minutes)
+                            if not self._passes_trend_filter(trend_filter, trade_type, decision_time):
+                                remaining_obs.append(ob)
+                                continue
+                            signal = self._create_signal_from_entry(
                                 symbol=symbol,
                                 zone=ob,
                                 entry_time=current_time,
-                                current_high=highs[i],
-                                current_low=lows[i],
-                                current_close=closes[i],
-                                previous_close=closes[i - 1] if i > 0 else closes[i],
+                                entry_price=float(closes[i]),
                             )
                             if signal:
                                 if self._should_block_choch_against_entry(
@@ -774,6 +803,41 @@ class Strategy(BaseStrategy):
         return cast(List[Signal], deduped)
 
     # ==================== SMC-SPECIFIC HELPER METHODS ====================
+
+    def _build_trend_filter(self, source_df: pd.DataFrame) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """
+        Build (close_times, closes, ema) on trend_filter_timeframe from the finest
+        data available. Returns None when the filter is disabled.
+        """
+        tf = str(self.config.trend_filter_timeframe or "").strip()
+        if not tf or source_df is None or source_df.empty:
+            return None
+        ohlcv = source_df[['Time', 'Open', 'High', 'Low', 'Close']].copy()
+        ohlcv['Volume'] = source_df['Volume'] if 'Volume' in source_df.columns else 0.0
+        htf = convert_timeframe(ohlcv, tf)
+        length = max(1, int(self.config.trend_filter_ema_length))
+        closes = htf['Close'].to_numpy(dtype=np.float64)
+        ema = pd.Series(closes).ewm(span=length, adjust=False).mean().to_numpy()
+        ema[: length - 1] = np.nan  # not enough history yet
+        close_times = htf['Time'].to_numpy(dtype='datetime64[ns]') + np.timedelta64(parse_timeframe_minutes(tf), 'm')
+        return close_times, closes, ema
+
+    def _passes_trend_filter(
+        self,
+        trend_filter: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+        trade_type: str,
+        decision_time: datetime,
+    ) -> bool:
+        """Use only the last higher-timeframe candle closed at decision_time (no look-ahead)."""
+        if trend_filter is None:
+            return True
+        close_times, closes, ema = trend_filter
+        idx = int(np.searchsorted(close_times, np.datetime64(decision_time, 'ns'), side='right')) - 1
+        if idx < 0 or not np.isfinite(ema[idx]):
+            return False
+        if trade_type == 'LONG':
+            return bool(closes[idx] > ema[idx])
+        return bool(closes[idx] < ema[idx])
 
     def _classify_ob_structure(
         self,
@@ -963,21 +1027,6 @@ class Strategy(BaseStrategy):
     def _get_ob_midpoint(self, zone: BaseZone) -> float:
         return float(zone.low + ((zone.high - zone.low) * self.config.entry_ob_level))
 
-    def _select_entry_price(
-        self,
-        zone: BaseZone,
-        current_high: float,
-        current_low: float,
-        previous_close: float,
-    ) -> Optional[float]:
-        del previous_close
-        midpoint = self._get_ob_midpoint(zone)
-        if not np.isfinite(midpoint):
-            return None
-        if current_low <= midpoint <= current_high:
-            return midpoint
-        return None
-
     def _passes_gap_filter(
         self,
         ob: StrategyOrderBlock,
@@ -1155,13 +1204,15 @@ class Strategy(BaseStrategy):
 
     def _is_reversal_candle(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
                             lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
-        """Check if current candle is a reversal pattern."""
+        """Check if at least min_reversal_pattern_matches pattern families match."""
         is_bullish = (ob_bias == 'BULLISH')
-        pattern_ids = np.array(self.config.reversal_pattern_ids, dtype=np.int64)
-
-        if len(pattern_ids) == 1 and pattern_ids[0] == 0:
-            return check_reversal_pattern_jit(opens, closes, highs, lows, current_idx, is_bullish)
-        return check_pattern_by_ids_jit(opens, closes, highs, lows, current_idx, is_bullish, pattern_ids)
+        pattern_ids = np.array(self.config.reversal_pattern_ids or [0], dtype=np.int64)
+        min_matches = max(1, int(self.config.min_reversal_pattern_matches))
+        matches = count_reversal_patterns_jit(
+            opens, closes, highs, lows, current_idx, is_bullish, pattern_ids,
+            float(self.config.doji_body_ratio), float(self.config.tweezer_tolerance_ratio),
+        )
+        return matches >= min_matches
 
     def _is_simple_reversal(self, opens: np.ndarray, closes: np.ndarray, highs: np.ndarray,
                             lows: np.ndarray, current_idx: int, ob_bias: str) -> bool:
@@ -1169,8 +1220,12 @@ class Strategy(BaseStrategy):
         Lightweight reversal check to catch clean rejection setups that strict
         candlestick patterns can miss.
 
-        Bullish: bullish close + (meaningful lower wick OR stronger close than previous bar)
-        Bearish: bearish close + (meaningful upper wick OR weaker close than previous bar)
+        Bullish: bullish close + (meaningful lower wick OR close above previous high)
+        Bearish: bearish close + (meaningful upper wick OR close below previous low)
+
+        Displacement used to be "close > previous close", which almost every
+        green candle satisfies; it now requires closing beyond the previous
+        candle's extreme.
         """
         if current_idx <= 0:
             return False
@@ -1179,7 +1234,8 @@ class Strategy(BaseStrategy):
         c_curr = closes[current_idx]
         h_curr = highs[current_idx]
         l_curr = lows[current_idx]
-        c_prev = closes[current_idx - 1]
+        h_prev = highs[current_idx - 1]
+        l_prev = lows[current_idx - 1]
 
         candle_range = h_curr - l_curr
         if candle_range <= 0:
@@ -1190,12 +1246,12 @@ class Strategy(BaseStrategy):
         if ob_bias == 'BULLISH':
             lower_wick = min(o_curr, c_curr) - l_curr
             wick_ok = (lower_wick / candle_range) >= wick_ratio
-            displacement_ok = c_curr > c_prev
+            displacement_ok = c_curr > h_prev
             return c_curr > o_curr and (wick_ok or displacement_ok)
 
         upper_wick = h_curr - max(o_curr, c_curr)
         wick_ok = (upper_wick / candle_range) >= wick_ratio
-        displacement_ok = c_curr < c_prev
+        displacement_ok = c_curr < l_prev
         return c_curr < o_curr and (wick_ok or displacement_ok)
 
     def _passes_reversal_filter(
@@ -1248,8 +1304,13 @@ class Strategy(BaseStrategy):
         max_bars_to_search: int = 60,
     ) -> Optional[PreciseEntryResult]:
         """
-        Find the first entry-timeframe candle that trades through the OB
-        midpoint and passes the reversal filter on the entry timeframe itself.
+        Find the first entry-timeframe candle that trades through the OB entry
+        level and passes the reversal filter on the entry timeframe itself.
+
+        - Entry price is the CLOSE of that candle: the pattern is only confirmed
+          when the candle closes (live sends a market order at that moment).
+        - The search stops as soon as an entry-TF candle mitigates the OB, so a
+          zone that was already broken can never produce an entry later on.
         """
         if len(entry_times) == 0:
             return None
@@ -1261,19 +1322,22 @@ class Strategy(BaseStrategy):
         start_idx = int(np.searchsorted(entry_times, window_start, side='left'))
         end_idx = int(np.searchsorted(entry_times, window_end, side='right'))
         zone_tolerance = (zone.high - zone.low) * self.config.touch_tolerance_pct
-        midpoint_entry = self._get_ob_midpoint(zone)
-        if not np.isfinite(midpoint_entry):
+        entry_level = self._get_ob_midpoint(zone)
+        if not np.isfinite(entry_level):
             return None
 
         for idx in range(start_idx, min(end_idx, len(entry_times))):
             low_price = entry_lows[idx]
             high_price = entry_highs[idx]
 
+            if self._zone_is_mitigated(zone, high_price, low_price, entry_closes[idx]):
+                return None
+
             touches_zone = low_price <= (zone.high + zone_tolerance) and high_price >= (zone.low - zone_tolerance)
             if not touches_zone:
                 continue
 
-            if not (low_price <= midpoint_entry <= high_price):
+            if not (low_price <= entry_level <= high_price):
                 continue
 
             overlap_low = max(zone.low, low_price)
@@ -1297,7 +1361,7 @@ class Strategy(BaseStrategy):
                 continue
             return PreciseEntryResult(
                 entry_time=entry_time,
-                entry_price=float(midpoint_entry),
+                entry_price=float(entry_closes[idx]),
                 entry_index=idx,
                 reversal_source=reversal_decision.source,
             )

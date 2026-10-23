@@ -26,7 +26,7 @@ ob_body_ratio: 0.25 # default: 0.25
 max_active_obs_per_bias: 15 # default: 10 (keep only the most recent bullish/bearish OBs)
 merge_overlapping_obs: true # default: true (gop cac OB cung bias neu overlap va hinh thanh gan nhau)
 ob_merge_max_break_gap: 5 # default: 5 (so bar toi da giua cac structure break de duoc gop OB)
-entry_ob_level: 0.5 # default: 0.5 (entry level inside OB: 0.0=low, 0.5=midpoint, 1.0=high)
+entry_ob_level: 0.5 # default: 0.5 (level the confirmation candle must trade through: 0.0=low, 0.5=midpoint, 1.0=high)
 
 # Entry Filters (optional HTF touch-bar filter)
 require_liquidity: true # default: true
@@ -35,7 +35,13 @@ require_opposite_liquidity_target: true # default: true (needs opposite-side OB 
 require_reversal_pattern: true # default: true
 enable_simple_reversal: true # default: true
 simple_reversal_wick_ratio: 0.25 # default: 0.25
+min_reversal_pattern_matches: 1 # default: 1 (pattern families that must match on the same candle)
+doji_body_ratio: 0.1 # default: 0.1 (doji: body <= ratio * range)
+tweezer_tolerance_ratio: 0.1 # default: 0.1 (tweezer: |low1-low2| <= ratio * avg range)
 block_choch_against_entry_mode: "ifvg" # default: "off" (block only when CHOCH + entry candle against trade + selected gap is IFVG)
+
+trend_filter_timeframe: "" # default: "" (off). e.g. "15m": LONG only above EMA, SHORT only below EMA (last closed candle)
+trend_filter_ema_length: 50 # default: 50
 
 enable_adx_filter: true # default: false (require ADX >= adx_threshold on signal timeframe)
 adx_length: 7 # tuned best in optimization sweep
@@ -46,9 +52,9 @@ fvg_atr_filter: true # default: true (legacy name, applies FVG/IFVG auto-thresho
 
 touch_tolerance_pct: 0.02 # default: 0.0
 touch_confirmation_bars: 0 # default: 0
-entry_on_candle_close: false # kept for compatibility (LTF midpoint entries are used)
+entry_on_candle_close: false # unused by SMC: entries always fill at the close of the confirmation candle
 
-reversal_pattern_ids: [0] # default: [0]
+reversal_pattern_ids: [0] # default: [0] = all (see src/indicators/reversal_patterns.py)
 
 
 # Risk Management
