@@ -81,6 +81,12 @@ def _calculate_trade_pnl_r(rr_ratio: Optional[float], result: str, risk_multipli
     return None
 
 
+def _summary_gross_roe(summary: Dict) -> float:
+    if 'gross_pnl_r' in summary:
+        return float(summary['gross_pnl_r'])
+    return float(summary['total_rr_wins']) - float(summary['losses'])
+
+
 def _summary_roe(summary: Dict, fee_per_trade_r: float) -> float:
     if 'net_pnl_r' in summary:
         return float(summary['net_pnl_r'])
@@ -326,6 +332,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
             'total_rr': 0.0,
             'rr_count': 0,
             'net_pnl_r': 0.0,
+            'gross_pnl_r': 0.0,
             'avg_risk_per_trade': 0.0,
             'avg_risk_boost_multiplier': 1.0,
             'boosted_trades': 0,
@@ -363,6 +370,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
     risk_multipliers = []
     boosted_trades = 0
     net_pnl_r = 0.0
+    gross_pnl_r = 0.0
 
     for t in trades:
         effective_risk = t.risk_per_trade
@@ -387,6 +395,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
 
         if t.result != 'OPEN':
             net_pnl_r -= float(config.fee_per_trade_r) * risk_multiplier
+            gross_pnl_r += _calculate_trade_pnl_r(t.rr_ratio, t.result, risk_multiplier) or 0.0
     
     # Calculate streaks
     longest_win_streak = 0
@@ -437,6 +446,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
         'total_rr': total_rr,
         'rr_count': len(rr_values),
         'net_pnl_r': net_pnl_r,
+        'gross_pnl_r': gross_pnl_r,
         'avg_risk_per_trade': round(sum(risk_per_trade_values) / len(risk_per_trade_values), 4) if risk_per_trade_values else 0.0,
         'avg_risk_boost_multiplier': round(sum(risk_multipliers) / len(risk_multipliers), 4) if risk_multipliers else 1.0,
         'boosted_trades': boosted_trades,
@@ -499,17 +509,19 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
         f"- Base Risk/Trade: ${config.risk_per_trade}",
         f"- Flex TP Risk Boost Factor: {flex_tp_risk_boost_factor}",
-        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
-            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "%SL", "RR", "SLM", "ROE", "RBM", "W-S", "L-S", "W-AVG", "L-AVG"
+        f"- Fee/Trade: {config.fee_per_trade_r}R (ROE = after fees, ROE-NF = no fees, both in R)",
+        "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>8} | {:>8} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
+            "Symbol", "Total", "Wins", "Losses", "Open", "Win Rate", "%SL", "RR", "SLM", "ROE-NF", "ROE", "RBM", "W-S", "L-S", "W-AVG", "L-AVG"
         ),
-        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->8}|{:->6}|{:->7}|{:->8}|{:->7}|{:->6}|{:->6}|{:->7}|{:->7}|".format("", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
+        "|{:-<16}|{:->8}|{:->8}|{:->8}|{:->6}|{:->12}|{:->8}|{:->6}|{:->7}|{:->10}|{:->10}|{:->7}|{:->6}|{:->6}|{:->7}|{:->7}|".format("", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""),
     ]
     
     # Add results grouped by timeframe
     for timeframe in sorted_timeframes:
         for summary in timeframe_groups[timeframe]:
             roe = _summary_roe(summary, config.fee_per_trade_r)
-            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
+            gross_roe = _summary_gross_roe(summary)
+            row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>8} | {:>8} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
                 summary['symbol'],
                 summary['total_trades'],
                 summary['wins'],
@@ -519,6 +531,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
                 f"{summary['avg_sl_percent']}%",
                 f"{summary['avg_rr']}",
                 f"{sl_multiplier}",
+                f"{round(gross_roe, 2)}",
                 f"{round(roe, 2)}",
                 f"{summary['avg_risk_boost_multiplier']}",
                 summary['longest_win_streak'],
@@ -530,6 +543,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     
     # Add overall summary
     overall_roe = sum(_summary_roe(summary, config.fee_per_trade_r) for summary in all_summaries)
+    overall_gross_roe = sum(_summary_gross_roe(summary) for summary in all_summaries)
     
     # Calculate overall streaks and average SL percent
     overall_longest_win_streak = 0
@@ -550,7 +564,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     overall_avg_win_streak = sum(overall_avg_win_streaks) / len(overall_avg_win_streaks) if overall_avg_win_streaks else 0
     overall_avg_loss_streak = sum(overall_avg_loss_streaks) / len(overall_avg_loss_streaks) if overall_avg_loss_streaks else 0
     
-    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>6} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
+    total_row = "| {:<14} | {:>6} | {:>6} | {:>6} | {:>4} | {:>10} | {:>6} | {:>4} | {:>5} | {:>8} | {:>8} | {:>5} | {:>4} | {:>4} | {:>5} | {:>5} |".format(
         "**TOTAL**",
         total_trades,
         total_wins,
@@ -560,6 +574,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
         f"{round(overall_avg_sl_percent, 2)}%",
         f"{round(overall_avg_rr, 2)}",
         f"{sl_multiplier}",
+        f"{round(overall_gross_roe, 2)}",
         f"{round(overall_roe, 2)}",
         f"{round(overall_avg_risk_boost_multiplier, 4)}",
         overall_longest_win_streak,
@@ -624,6 +639,7 @@ def print_final_summary(all_trades: List[Trade], config: Optional[Config] = None
         print(f"Overall win rate: {round(overall_wr, 2)}%")
         fee_r = config.fee_per_trade_r if config else 0.5
         overall_roe = 0.0
+        overall_gross_roe = 0.0
         risk_values = []
         boosted_trades = 0
 
@@ -650,7 +666,19 @@ def print_final_summary(all_trades: List[Trade], config: Optional[Config] = None
             if trade.result != 'OPEN':
                 overall_roe -= fee_r * risk_multiplier
 
-        print(f"ROE (total symbols): {round(overall_roe, 2)}")
+        # overall_roe so far is gross + fee; rebuild the no-fee figure by adding fees back
+        closed_risk = sum(
+            _resolve_risk_multiplier(
+                base_risk_per_trade=t.base_risk_per_trade,
+                risk_per_trade=t.risk_per_trade,
+                risk_boost_multiplier=t.risk_boost_multiplier,
+            )
+            for t in all_trades if t.result != 'OPEN'
+        )
+        overall_gross_roe = overall_roe + fee_r * closed_risk
+
+        print(f"ROE no fee (total symbols): {round(overall_gross_roe, 2)}")
+        print(f"ROE with fee {fee_r}R/trade (total symbols): {round(overall_roe, 2)}")
         if risk_values:
             print(f"Average risk per trade: ${round(sum(risk_values) / len(risk_values), 4)}")
         print(f"Boosted trades: {boosted_trades}")
