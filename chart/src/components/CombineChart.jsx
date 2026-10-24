@@ -4,6 +4,7 @@ import { createSeriesMarkers } from 'lightweight-charts';
 import { createTradeZones, createOrderBlockRect, RectanglePrimitive } from '../plugins/RectanglePrimitive';
 import { createStructureLine, createEqhEqlLine, createSwingSegmentLine } from '../plugins/LinePrimitive';
 import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
+import { PrimitiveLayer } from '../plugins/PrimitiveLayer';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import {
   crosshairTimeAxisLabelStyle,
@@ -58,8 +59,8 @@ const CombineChart = forwardRef(function CombineChart({
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
   const markersRef = useRef(null);
-  const tradePrimitivesRef = useRef([]);
-  const indicatorPrimitivesRef = useRef([]);
+  const tradeLayerRef = useRef(null);
+  const indicatorLayerRef = useRef(null);
   const measurementRef = useRef(null);
   const measurementHandlerRef = useRef(null);
   const hasInitialFitRef = useRef(false);
@@ -136,6 +137,9 @@ const CombineChart = forwardRef(function CombineChart({
     if (!candles || candles.length < 2) return 900;
     return candles[1].time - candles[0].time;
   }, [candles]);
+
+  // Candle times let the primitive layers map shapes to bar indexes once
+  const candleTimes = useMemo(() => (candles || []).map(c => c.time), [candles]);
 
   const focusTrade = useCallback((trade, barsAround = 40) => {
     if (!trade || !chartRef.current || !candleSeriesRef.current) return;
@@ -396,6 +400,15 @@ const CombineChart = forwardRef(function CombineChart({
     measurementRef.current = measurementPrimitive;
     measurementHandlerRef.current = createMeasurementHandler(chart, candleSeries, measurementPrimitive);
 
+    // One layer each for trades and indicators instead of thousands of primitives
+    const tradeLayer = new PrimitiveLayer();
+    candleSeries.attachPrimitive(tradeLayer);
+    tradeLayerRef.current = tradeLayer;
+
+    const indicatorLayer = new PrimitiveLayer();
+    candleSeries.attachPrimitive(indicatorLayer);
+    indicatorLayerRef.current = indicatorLayer;
+
     const handleCrosshairMove = (param) => {
       updateCrosshairTimeLabel({
         chart,
@@ -526,49 +539,29 @@ const CombineChart = forwardRef(function CombineChart({
 
   // Update trade zones and order blocks
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
+    if (!tradeLayerRef.current) return;
 
-    tradePrimitivesRef.current.forEach(primitive => {
-      try {
-        candleSeriesRef.current.detachPrimitive(primitive);
-      } catch {
-        // Ignore if already detached
-      }
-    });
-    tradePrimitivesRef.current = [];
+    const primitives = [];
 
     if (trades?.length > 0) {
       trades.forEach((trade, index) => {
-        const zones = createTradeZones(trade, index + 1);
-        zones.forEach(zone => {
-          candleSeriesRef.current.attachPrimitive(zone);
-          tradePrimitivesRef.current.push(zone);
-        });
+        primitives.push(...createTradeZones(trade, index + 1));
       });
     }
 
     if (showOrderBlocks && orderBlocks?.length > 0) {
       const recentOBs = orderBlocks.slice(-30);
       recentOBs.forEach(ob => {
-        const obRect = createOrderBlockRect(ob, 150);
-        candleSeriesRef.current.attachPrimitive(obRect);
-        tradePrimitivesRef.current.push(obRect);
+        primitives.push(createOrderBlockRect(ob, 150));
       });
     }
-  }, [trades, orderBlocks, showOrderBlocks]);
+
+    tradeLayerRef.current.setPrimitives(primitives, candleTimes);
+  }, [trades, orderBlocks, showOrderBlocks, candleTimes]);
 
   // Update indicator primitives
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
-
-    indicatorPrimitivesRef.current.forEach(primitive => {
-      try {
-        candleSeriesRef.current.detachPrimitive(primitive);
-      } catch {
-        // Ignore if already detached
-      }
-    });
-    indicatorPrimitivesRef.current = [];
+    if (!indicatorLayerRef.current) return;
 
     const newPrimitives = [];
 
@@ -802,12 +795,8 @@ const CombineChart = forwardRef(function CombineChart({
       }
     }
 
-    newPrimitives.forEach(p => {
-      candleSeriesRef.current.attachPrimitive(p);
-    });
-    indicatorPrimitivesRef.current = newPrimitives;
-
-  }, [indicatorData, indicatorVisibility, barDuration]);
+    indicatorLayerRef.current.setPrimitives(newPrimitives, candleTimes);
+  }, [indicatorData, indicatorVisibility, barDuration, candles, candleTimes]);
 
   const handleToggleMeasurement = useCallback((toolType) => {
     if (measurementHandlerRef.current) {

@@ -1,7 +1,37 @@
 /**
  * Rectangle Primitive Plugin for Lightweight Charts
  * Draws filled rectangles on the chart (for Order Blocks and Trade Zones)
+ *
+ * Can be attached on its own, or drawn in bulk through PrimitiveLayer
+ * (preferred when there are many rectangles).
  */
+
+import { drawOutlinedText } from './canvasText';
+
+const MIN_WIDTH_PX = 40; // Minimum width in pixels so thin trades are still visible
+
+function fitLabelToWidth(ctx, text, maxWidth) {
+  if (!text || !Number.isFinite(maxWidth) || maxWidth <= 0) {
+    return text;
+  }
+
+  if (ctx.measureText(text).width <= maxWidth) {
+    return text;
+  }
+
+  const ellipsis = '...';
+  const ellipsisWidth = ctx.measureText(ellipsis).width;
+  if (ellipsisWidth > maxWidth) {
+    return '';
+  }
+
+  let result = text;
+  while (result.length > 0 && (ctx.measureText(result).width + ellipsisWidth) > maxWidth) {
+    result = result.slice(0, -1);
+  }
+
+  return result.length > 0 ? `${result}${ellipsis}` : '';
+}
 
 /**
  * Create a rectangle primitive that can be attached to a series
@@ -62,6 +92,69 @@ export class RectanglePrimitive {
   getSeries() {
     return this._series;
   }
+
+  getTimeSpan() {
+    return [this._options.startTime, this._options.endTime];
+  }
+
+  getZOrder() {
+    return 'bottom';
+  }
+
+  /**
+   * Draw in media coordinates. startX/endX are the x of startTime/endTime.
+   * frame: { series, width, height, showLabels }
+   */
+  drawShape(ctx, startX, endX, frame) {
+    const options = this._options;
+
+    // Convert price to y coordinates
+    const highY = frame.series.priceToCoordinate(options.highPrice);
+    const lowY = frame.series.priceToCoordinate(options.lowPrice);
+    if (highY === null || lowY === null) return;
+
+    const x = Math.min(startX, endX);
+    const y = Math.min(highY, lowY);
+    const width = Math.max(Math.abs(endX - startX), MIN_WIDTH_PX);
+    const height = Math.abs(lowY - highY);
+
+    const { width: paneWidth, height: paneHeight } = frame;
+    if (x > paneWidth || (x + width) < 0 || y > paneHeight || (y + height) < 0) {
+      return;
+    }
+
+    // Draw filled rectangle
+    ctx.fillStyle = options.fillColor;
+    ctx.fillRect(x, y, width, height);
+
+    // Draw border if specified
+    if (options.borderColor) {
+      ctx.strokeStyle = options.borderColor;
+      ctx.lineWidth = options.borderWidth;
+      ctx.strokeRect(x, y, width, height);
+    }
+
+    if (!options.label || !frame.showLabels) return;
+
+    const fontSize = 8;
+    const edgePadding = 4;
+    ctx.font = `bold ${fontSize}px Arial`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    const labelText = fitLabelToWidth(ctx, options.label, Math.max(0, paneWidth - (edgePadding * 2)));
+    if (!labelText) return;
+
+    const textWidth = ctx.measureText(labelText).width;
+
+    // Position label at the left side, vertically centered, kept inside the pane
+    const minX = edgePadding;
+    const maxX = paneWidth - edgePadding - textWidth;
+    const labelX = Math.min(Math.max(x + 5, minX), Math.max(minX, maxX));
+    const labelY = Math.min(Math.max(y + height / 2, fontSize + 2), paneHeight - 2);
+
+    drawOutlinedText(ctx, labelText, labelX, labelY, options.labelColor);
+  }
 }
 
 class RectanglePaneView {
@@ -85,29 +178,6 @@ class RectangleRenderer {
     this._source = source;
   }
 
-  _fitLabelToWidth(ctx, text, maxWidth) {
-    if (!text || !Number.isFinite(maxWidth) || maxWidth <= 0) {
-      return text;
-    }
-
-    if (ctx.measureText(text).width <= maxWidth) {
-      return text;
-    }
-
-    const ellipsis = '...';
-    const ellipsisWidth = ctx.measureText(ellipsis).width;
-    if (ellipsisWidth > maxWidth) {
-      return '';
-    }
-
-    let result = text;
-    while (result.length > 0 && (ctx.measureText(result).width + ellipsisWidth) > maxWidth) {
-      result = result.slice(0, -1);
-    }
-
-    return result.length > 0 ? `${result}${ellipsis}` : '';
-  }
-
   draw(target) {
     const options = this._source.getOptions();
     const chart = this._source.getChart();
@@ -116,101 +186,20 @@ class RectangleRenderer {
     if (!chart || !series) return;
 
     const timeScale = chart.timeScale();
-    
+
     // Convert time to x coordinates
     const startX = timeScale.timeToCoordinate(options.startTime);
     const endX = timeScale.timeToCoordinate(options.endTime);
-    
+
     if (startX === null || endX === null) return;
 
-    // Convert price to y coordinates
-    const highY = series.priceToCoordinate(options.highPrice);
-    const lowY = series.priceToCoordinate(options.lowPrice);
-
-    if (highY === null || lowY === null) return;
-
     target.useMediaCoordinateSpace(scope => {
-      const ctx = scope.context;
-      const paneWidth = Number.isFinite(ctx?.canvas?.width) ? ctx.canvas.width : null;
-      const paneHeight = Number.isFinite(ctx?.canvas?.height) ? ctx.canvas.height : null;
-
-      const x = Math.min(startX, endX);
-      const y = Math.min(highY, lowY);
-      const minWidth = 40; // Minimum width in pixels so thin trades are still visible
-      const width = Math.max(Math.abs(endX - startX), minWidth);
-      const height = Math.abs(lowY - highY);
-
-      // Draw filled rectangle
-      ctx.beginPath();
-      ctx.rect(x, y, width, height);
-      ctx.fillStyle = options.fillColor;
-      ctx.fill();
-
-      // Draw border if specified
-      if (options.borderColor) {
-        ctx.strokeStyle = options.borderColor;
-        ctx.lineWidth = options.borderWidth;
-        ctx.stroke();
-      }
-
-      // Draw label if specified
-      if (options.label) {
-        const fontSize = 8;
-        const edgePadding = 4;
-        ctx.font = `bold ${fontSize}px Arial`;
-        ctx.fillStyle = options.labelColor;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-
-        const isOutsidePane = paneWidth !== null && paneHeight !== null
-          ? (x > paneWidth || (x + width) < 0 || y > paneHeight || (y + height) < 0)
-          : false;
-
-        if (isOutsidePane) {
-          return;
-        }
-
-        const maxLabelWidth = paneWidth !== null
-          ? Math.max(0, paneWidth - (edgePadding * 2))
-          : Number.POSITIVE_INFINITY;
-
-        const labelText = this._fitLabelToWidth(ctx, options.label, maxLabelWidth);
-        if (!labelText) {
-          return;
-        }
-
-        const textWidth = ctx.measureText(labelText).width;
-
-        // Position label at the left side, vertically centered
-        let labelX = x + 5;
-        let labelY = y + height / 2;
-
-        if (paneWidth !== null) {
-          const minX = edgePadding;
-          const maxX = paneWidth - edgePadding - textWidth;
-          labelX = Math.min(Math.max(labelX, minX), Math.max(minX, maxX));
-        }
-
-        if (paneHeight !== null) {
-          const minY = fontSize + 2;
-          const maxY = paneHeight - 2;
-          labelY = Math.min(Math.max(labelY, minY), maxY);
-        }
-
-        // Draw text shadow for better visibility
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-        ctx.shadowBlur = 3;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-
-        ctx.fillText(labelText, labelX, labelY);
-
-        // Reset shadow
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-      }
+      this._source.drawShape(scope.context, startX, endX, {
+        series,
+        width: scope.mediaSize.width,
+        height: scope.mediaSize.height,
+        showLabels: true,
+      });
     });
   }
 }

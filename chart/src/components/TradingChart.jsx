@@ -2,6 +2,7 @@ import { useEffect, useRef, useMemo, useImperativeHandle, forwardRef, useState, 
 import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
 import { createSeriesMarkers } from 'lightweight-charts';
 import { createTradeZones, createOrderBlockRect } from '../plugins/RectanglePrimitive';
+import { PrimitiveLayer } from '../plugins/PrimitiveLayer';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import {
   crosshairTimeAxisLabelStyle,
@@ -64,7 +65,7 @@ const TradingChart = forwardRef(function TradingChart({
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
   const markersRef = useRef(null);
-  const primitivesRef = useRef([]);
+  const tradeLayerRef = useRef(null);
   const measurementRef = useRef(null);
   const measurementHandlerRef = useRef(null);
   const hasInitialFitRef = useRef(false);
@@ -142,6 +143,9 @@ const TradingChart = forwardRef(function TradingChart({
     if (!candles || candles.length < 2) return 900;
     return candles[1].time - candles[0].time;
   }, [candles]);
+
+  // Candle times let the primitive layer map shapes to bar indexes once
+  const candleTimes = useMemo(() => (candles || []).map(c => c.time), [candles]);
 
   const focusTrade = useCallback((trade, barsAround = 40) => {
     if (!trade || !chartRef.current || !candleSeriesRef.current) return;
@@ -448,6 +452,11 @@ const TradingChart = forwardRef(function TradingChart({
     measurementRef.current = measurementPrimitive;
     measurementHandlerRef.current = createMeasurementHandler(chart, candleSeries, measurementPrimitive);
 
+    // One layer for all trade zones / order blocks instead of thousands of primitives
+    const tradeLayer = new PrimitiveLayer();
+    candleSeries.attachPrimitive(tradeLayer);
+    tradeLayerRef.current = tradeLayer;
+
     const handleCrosshairMove = (param) => {
       updateCrosshairTimeLabel({
         chart,
@@ -584,26 +593,14 @@ const TradingChart = forwardRef(function TradingChart({
 
   // Update trade zones (rectangles) and order blocks
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
+    if (!tradeLayerRef.current) return;
 
-    // Remove old primitives
-    primitivesRef.current.forEach(primitive => {
-      try {
-        candleSeriesRef.current.detachPrimitive(primitive);
-      } catch {
-        // Ignore if already detached
-      }
-    });
-    primitivesRef.current = [];
+    const primitives = [];
 
     // Add trade zone rectangles
     if (trades?.length > 0) {
       trades.forEach((trade, index) => {
-        const zones = createTradeZones(trade, index + 1);
-        zones.forEach(zone => {
-          candleSeriesRef.current.attachPrimitive(zone);
-          primitivesRef.current.push(zone);
-        });
+        primitives.push(...createTradeZones(trade, index + 1));
       });
     }
 
@@ -612,12 +609,12 @@ const TradingChart = forwardRef(function TradingChart({
       // Only show recent order blocks to avoid clutter
       const recentOBs = orderBlocks.slice(-30);
       recentOBs.forEach(ob => {
-        const obRect = createOrderBlockRect(ob, 150); // 100 bars length for better visibility
-        candleSeriesRef.current.attachPrimitive(obRect);
-        primitivesRef.current.push(obRect);
+        primitives.push(createOrderBlockRect(ob, 150)); // 100 bars length for better visibility
       });
     }
-  }, [trades, orderBlocks, showOrderBlocks]);
+
+    tradeLayerRef.current.setPrimitives(primitives, candleTimes);
+  }, [trades, orderBlocks, showOrderBlocks, candleTimes]);
 
   // Toggle measurement mode
   const handleToggleMeasurement = useCallback((toolType) => {

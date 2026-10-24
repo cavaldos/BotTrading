@@ -1,7 +1,11 @@
 /**
  * Fibonacci Retracement Primitive Plugin for Lightweight Charts
  * Draws horizontal fib levels between swing high and swing low with labels
+ *
+ * Can be attached on its own, or drawn in bulk through PrimitiveLayer.
  */
+
+import { drawOutlinedText } from './canvasText';
 
 export class FibRetracementPrimitive {
   constructor(options) {
@@ -47,6 +51,67 @@ export class FibRetracementPrimitive {
   getSeries() {
     return this._series;
   }
+
+  getTimeSpan() {
+    return [this._options.swingHighTime, this._options.swingLowTime];
+  }
+
+  getZOrder() {
+    return 'bottom';
+  }
+
+  /**
+   * Draw in media coordinates. startX/endX are the x of swingHighTime/swingLowTime.
+   * frame: { series, width, height, showLabels }
+   */
+  drawShape(ctx, startX, endX, frame) {
+    const options = this._options;
+    if (!options.levels || options.levels.length === 0) return;
+
+    const leftX = Math.min(startX, endX);
+    const rightX = Math.max(startX, endX);
+    const width = rightX - leftX;
+
+    if (width < 5) return; // Too small to render
+
+    // Draw each level
+    for (let i = 0; i < options.levels.length; i++) {
+      const level = options.levels[i];
+      const y = frame.series.priceToCoordinate(level.price);
+      if (y === null) continue;
+
+      // Draw level line
+      ctx.strokeStyle = options.lineColor;
+      ctx.lineWidth = options.lineWidth;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(leftX, y);
+      ctx.lineTo(rightX, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Fill between this level and next level
+      if (i < options.levels.length - 1) {
+        const nextLevel = options.levels[i + 1];
+        const nextY = frame.series.priceToCoordinate(nextLevel.price);
+        if (nextY !== null) {
+          ctx.fillStyle = options.fillColor;
+          ctx.fillRect(leftX, Math.min(y, nextY), width, Math.abs(nextY - y));
+        }
+      }
+
+      if (!frame.showLabels) continue;
+
+      // Draw label on the right side
+      const fontSize = 10;
+      ctx.font = `${fontSize}px Arial`;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+
+      const labelText = `${level.label} (${level.price.toFixed(1)})`;
+      drawOutlinedText(ctx, labelText, rightX - 4, y - 2, options.labelColor);
+    }
+  }
 }
 
 class FibPaneView {
@@ -76,7 +141,6 @@ class FibRenderer {
     const series = this._source.getSeries();
 
     if (!chart || !series) return;
-    if (!options.levels || options.levels.length === 0) return;
 
     const timeScale = chart.timeScale();
 
@@ -85,61 +149,13 @@ class FibRenderer {
 
     if (startX === null || endX === null) return;
 
-    const leftX = Math.min(startX, endX);
-    const rightX = Math.max(startX, endX);
-    const width = rightX - leftX;
-
-    if (width < 5) return; // Too small to render
-
     target.useMediaCoordinateSpace(scope => {
-      const ctx = scope.context;
-
-      // Draw each level
-      for (let i = 0; i < options.levels.length; i++) {
-        const level = options.levels[i];
-        const y = series.priceToCoordinate(level.price);
-        if (y === null) continue;
-
-        // Draw level line
-        ctx.strokeStyle = options.lineColor;
-        ctx.lineWidth = options.lineWidth;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.moveTo(leftX, y);
-        ctx.lineTo(rightX, y);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Fill between this level and next level
-        if (i < options.levels.length - 1) {
-          const nextLevel = options.levels[i + 1];
-          const nextY = series.priceToCoordinate(nextLevel.price);
-          if (nextY !== null) {
-            ctx.fillStyle = options.fillColor;
-            ctx.fillRect(leftX, Math.min(y, nextY), width, Math.abs(nextY - y));
-          }
-        }
-
-        // Draw label on the right side
-        const fontSize = 10;
-        ctx.font = `${fontSize}px Arial`;
-        ctx.fillStyle = options.labelColor;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'middle';
-
-        ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-        ctx.shadowBlur = 3;
-        ctx.shadowOffsetX = 1;
-        ctx.shadowOffsetY = 1;
-
-        const labelText = `${level.label} (${level.price.toFixed(1)})`;
-        ctx.fillText(labelText, rightX - 4, y - 2);
-
-        ctx.shadowColor = 'transparent';
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetX = 0;
-        ctx.shadowOffsetY = 0;
-      }
+      this._source.drawShape(scope.context, startX, endX, {
+        series,
+        width: scope.mediaSize.width,
+        height: scope.mediaSize.height,
+        showLabels: true,
+      });
     });
   }
 }

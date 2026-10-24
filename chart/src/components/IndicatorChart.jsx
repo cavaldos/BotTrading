@@ -3,6 +3,7 @@ import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-cha
 import { RectanglePrimitive } from '../plugins/RectanglePrimitive';
 import { createStructureLine, createEqhEqlLine, createSwingSegmentLine } from '../plugins/LinePrimitive';
 import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
+import { PrimitiveLayer } from '../plugins/PrimitiveLayer';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import {
   crosshairTimeAxisLabelStyle,
@@ -27,7 +28,7 @@ const IndicatorChart = forwardRef(function IndicatorChart({
   const chartRef = useRef(null);
   const candleSeriesRef = useRef(null);
   const volumeSeriesRef = useRef(null);
-  const primitivesRef = useRef([]);
+  const indicatorLayerRef = useRef(null);
   const measurementRef = useRef(null);
   const measurementHandlerRef = useRef(null);
   const hasInitialFitRef = useRef(false);
@@ -80,6 +81,9 @@ const IndicatorChart = forwardRef(function IndicatorChart({
     if (!candles || candles.length < 2) return 900;
     return candles[1].time - candles[0].time;
   }, [candles]);
+
+  // Candle times let the primitive layer map shapes to bar indexes once
+  const candleTimes = useMemo(() => (candles || []).map(c => c.time), [candles]);
 
   // Expose methods via ref
   useImperativeHandle(ref, () => ({
@@ -239,6 +243,11 @@ const IndicatorChart = forwardRef(function IndicatorChart({
     measurementRef.current = measurementPrimitive;
     measurementHandlerRef.current = createMeasurementHandler(chart, candleSeries, measurementPrimitive);
 
+    // One layer for all indicators instead of thousands of primitives
+    const indicatorLayer = new PrimitiveLayer();
+    candleSeries.attachPrimitive(indicatorLayer);
+    indicatorLayerRef.current = indicatorLayer;
+
     const handleCrosshairMove = (param) => {
       updateCrosshairTimeLabel({
         chart,
@@ -334,17 +343,7 @@ const IndicatorChart = forwardRef(function IndicatorChart({
 
   // Update all indicator primitives
   useEffect(() => {
-    if (!candleSeriesRef.current) return;
-
-    // Remove old primitives
-    primitivesRef.current.forEach(primitive => {
-      try {
-        candleSeriesRef.current.detachPrimitive(primitive);
-      } catch {
-        // Ignore if already detached
-      }
-    });
-    primitivesRef.current = [];
+    if (!indicatorLayerRef.current) return;
 
     const newPrimitives = [];
 
@@ -583,13 +582,9 @@ const IndicatorChart = forwardRef(function IndicatorChart({
       }
     }
 
-    // Attach all primitives
-    newPrimitives.forEach(p => {
-      candleSeriesRef.current.attachPrimitive(p);
-    });
-    primitivesRef.current = newPrimitives;
-
-  }, [data, visibility, barDuration]);
+    // Draw all primitives through the layer
+    indicatorLayerRef.current.setPrimitives(newPrimitives, candleTimes);
+  }, [data, visibility, barDuration, candles, candleTimes]);
 
   // Toggle measurement mode
   const handleToggleMeasurement = useCallback((toolType) => {
