@@ -19,7 +19,13 @@ from src.utils.remove_all_files import remove_all_files
 from src.utils.get_data import (fetch_and_save_candles_parallel, append_latest_candle_parallel)
 from src.live.dashboard import create_dashboard, update_dashboard
 from src.live.core.execute import execute
-from src.live.core.send import check_and_send_open_orders
+from src.live.core.approval import ApprovalHub
+from src.live.core.discord_notify import send_custom_message
+from src.live.core.send import check_and_send_open_orders, expire_stale_pending, set_approval_hub, set_snapshot_worker
+from src.live.core.snapshot import SnapshotWorker, load_snapshot_config
+from src.live.core.telegram_approval import TelegramChannel, load_approval_config, send_telegram_text
+from src.live.web.orders import ManualOrderService, load_web_config
+from src.live.web.server import WebApiServer
 
 
 # =============================================================================
@@ -116,6 +122,16 @@ REFRESH_RATE = CONFIG["dashboard"]["refresh_rate"]
 MAX_LOGS = CONFIG["dashboard"]["max_logs"]
 
 RISK_REWARD_RATIO = float(STRATEGY_CONFIG.get("risk_reward_ratio", 2.0) or 2.0)
+
+# Chart snapshot settings (image attached to Discord entry messages)
+SNAPSHOT_CONFIG = load_snapshot_config(CONFIG)
+
+# Manual approval (web chart first, Telegram as fallback) before placing orders
+APPROVAL_CONFIG = load_approval_config(CONFIG)
+
+# Trading API for the web chart (approve signals, manual orders)
+WEB_CONFIG = load_web_config(CONFIG)
+DEFAULT_RISK_PER_TRADE = float(STRATEGY_CONFIG.get("risk_per_trade", 5) or 5)
 
 
 # =============================================================================
@@ -664,12 +680,130 @@ def process_2_event_worker(event_queue: Queue[str]):
 # MAIN
 # =============================================================================
 
+def start_snapshot_worker() -> SnapshotWorker | None:
+    """Start the chart snapshot worker; on failure keep sending text-only messages."""
+    if not SNAPSHOT_CONFIG.get("enabled"):
+        return None
+    try:
+        worker = SnapshotWorker(
+            SNAPSHOT_CONFIG,
+            data_folder=DATA_FOLDER,
+            entry_timeframe=ENTRY_TIMEFRAME or (TIMEFRAMES[0] if TIMEFRAMES else "1m"),
+            strategy_config=STRATEGY_CONFIG,
+            on_error=lambda msg: state.add_error("SNAP", msg),
+        ).start()
+    except Exception as e:
+        state.add_error("SNAP", f"Snapshot disabled: {e}")
+        return None
+    set_snapshot_worker(worker)
+    state.add_log("Main", "Chart snapshots enabled")
+    return worker
+
+
+class TradingServices:
+    """Approval hub, its Telegram channel and the web trading API (each optional)."""
+
+    def __init__(self):
+        self.hub: ApprovalHub | None = None
+        self.telegram: TelegramChannel | None = None
+        self.web: WebApiServer | None = None
+
+    def notify_manual_order(self, text: str) -> None:
+        """Announce web orders on Telegram + Discord (also an alert if someone else uses the web)."""
+        if self.telegram is not None:
+            self.telegram.notify(text)
+        else:
+            send_telegram_text(os.environ.get("TELEGRAM_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), text)
+        send_custom_message(f"```\n{text}\n```")
+
+    def start(self) -> "TradingServices":
+        """Raises when approval is on but no channel can show signals (never auto-trade instead)."""
+        expired = expire_stale_pending(LOG_FILE)
+        if expired:
+            state.add_log("Approval", f"Marked {expired} pending signal(s) from the last run as EXPIRED")
+
+        if APPROVAL_CONFIG.get("enabled"):
+            self.hub = ApprovalHub(
+                timeout_minutes=float(APPROVAL_CONFIG.get("timeout_minutes", 5)),
+                on_log=lambda msg: state.add_log("Approval", msg),
+                on_error=lambda msg: state.add_error("APR", msg),
+            ).start()
+            if APPROVAL_CONFIG.get("telegram", True):
+                try:
+                    self.telegram = TelegramChannel(
+                        token=os.environ.get("TELEGRAM_TOKEN", ""),
+                        chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
+                        hub=self.hub,
+                        allowed_user_ids=APPROVAL_CONFIG.get("allowed_user_ids") or [],
+                        on_log=lambda msg: state.add_log("Telegram", msg),
+                        on_error=lambda msg: state.add_error("TG", msg),
+                    ).start()
+                except Exception as e:
+                    state.add_error("TG", f"Telegram disabled: {e}")
+
+        if WEB_CONFIG.get("enabled"):
+            try:
+                max_risk = float(WEB_CONFIG.get("max_risk_per_trade") or 0) or DEFAULT_RISK_PER_TRADE * 2
+                orders = ManualOrderService(
+                    symbols=CURRENCIES,
+                    default_risk=DEFAULT_RISK_PER_TRADE,
+                    max_risk=max_risk,
+                    leverage=int(WEB_CONFIG.get("leverage", 20)),
+                    cooldown_seconds=float(WEB_CONFIG.get("order_cooldown_seconds", 3)),
+                    log_file=str(WEB_CONFIG.get("manual_orders_file")),
+                    notify=self.notify_manual_order,
+                )
+                self.web = WebApiServer(
+                    host=str(WEB_CONFIG.get("host", "127.0.0.1")),
+                    port=int(WEB_CONFIG.get("port", 8787)),
+                    token=os.environ.get("WEB_API_TOKEN", ""),
+                    orders=orders,
+                    hub=self.hub,
+                    on_log=lambda msg: state.add_log("Web", msg),
+                    on_error=lambda msg: state.add_error("WEB", msg),
+                )
+                orders.on_event = self.web.on_order_event
+                self.web.start()
+            except Exception as e:
+                self.web = None
+                state.add_error("WEB", f"Web API disabled: {e}")
+
+        if self.hub is not None and self.telegram is None and self.web is None:
+            self.hub.stop()
+            raise RuntimeError("approval.enabled is true but neither the web API nor Telegram could start")
+
+        set_approval_hub(self.hub)
+        if self.hub is not None:
+            channels = " + ".join(n for n, c in (("Web", self.web), ("Telegram", self.telegram)) if c is not None)
+            state.add_log("Main", f"Manual approval on {channels} ({self.hub.timeout_minutes:g} min timeout)")
+        return self
+
+    def stop(self) -> None:
+        set_approval_hub(None)
+        # Hub first: pending signals expire and the channels can still show it.
+        if self.hub is not None:
+            self.hub.stop()
+        if self.telegram is not None:
+            self.telegram.stop()
+        if self.web is not None:
+            self.web.stop()
+
+
 def main():
+    try:
+        services = TradingServices().start()
+    except Exception as e:
+        console.print(f"[bold red]{e}[/bold red]")
+        console.print("Check TELEGRAM_TOKEN / TELEGRAM_CHAT_ID / WEB_API_TOKEN in .env and the web/approval sections of live.yaml.")
+        sys.exit(1)
+
     install_print_capture()
     _log_numba_env_warnings()
 
     remove_all_files(OUTPUT_FOLDER)
     remove_all_files(DATA_FOLDER)
+
+    snapshot_worker = start_snapshot_worker()
 
     # Create threads for each timeframe
     tf_threads = []
@@ -726,6 +860,10 @@ def main():
         time.sleep(0.5)  # Brief wait for threads to respond
         console.print("[bold green]Application terminated.[/bold green]")
     finally:
+        if snapshot_worker is not None:
+            set_snapshot_worker(None)
+            snapshot_worker.stop()
+        services.stop()
         restore_print_capture()
 
 

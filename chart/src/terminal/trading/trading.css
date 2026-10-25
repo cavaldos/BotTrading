@@ -1,0 +1,283 @@
+/* Trade panel, signal cards and order ticket. Uses the terminal tokens (terminal.css). */
+
+.tv-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---- buttons ---------------------------------------------------------------------- */
+
+.tv-btn--buy,
+.tv-btn--sell {
+  justify-content: center;
+  color: #fff;
+  font-weight: 600;
+  transition-property: background-color, color, scale;
+}
+.tv-btn--buy { background: var(--tv-up); }
+.tv-btn--buy:hover { background: #07806c; }
+.tv-btn--sell { background: var(--tv-down); }
+.tv-btn--sell:hover { background: #d92d3b; }
+.tv-btn--buy:disabled,
+.tv-btn--sell:disabled { background: var(--tv-hover); color: var(--tv-faint); }
+.tv-btn--block { width: 100%; justify-content: center; }
+.tv-btn--xs { height: 24px; padding: 0 8px; font-size: 12px; }
+.tv-btn--primary:disabled { background: var(--tv-hover); color: var(--tv-faint); }
+
+/* ---- tags ------------------------------------------------------------------------- */
+
+.tv-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--tv-radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  justify-self: end;
+}
+.tv-tag--up { color: var(--tv-up); background: rgba(8, 153, 129, 0.16); }
+.tv-tag--down { color: var(--tv-down); background: rgba(242, 54, 69, 0.16); }
+.tv-tag--accent { color: #5b8bff; background: rgba(41, 98, 255, 0.18); }
+.tv-tag--warn { color: var(--tv-warn); background: rgba(255, 152, 0, 0.16); }
+.tv-tag--muted { color: var(--tv-muted); background: var(--tv-hover); }
+
+.tv-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--tv-accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Badge on the side-strip button */
+.tv-tool { position: relative; }
+.tv-strip-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--tv-down);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* ---- panel ------------------------------------------------------------------------ */
+
+.tv-trade { padding-bottom: 16px; }
+.tv-trade section { padding: 0 12px; }
+.tv-trade section + section { border-top: 1px solid var(--tv-border); margin-top: 8px; }
+
+.tv-trade-h {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--tv-muted);
+}
+
+.tv-trade .tv-empty { padding: 12px 0; text-align: left; }
+
+.tv-trade-conn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 1px solid var(--tv-border);
+  font-size: 12px;
+  color: var(--tv-muted);
+}
+.tv-trade-conn > span:nth-child(2) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-trade-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--tv-faint); }
+.tv-trade-conn.is-online .tv-trade-dot { background: var(--tv-up); }
+.tv-trade-conn.is-online { color: var(--tv-text); }
+.tv-trade-conn.is-offline .tv-trade-dot { background: var(--tv-warn); }
+.tv-trade-conn.is-connecting .tv-trade-dot { background: var(--tv-accent); }
+
+.tv-trade-login { display: grid; gap: 10px; padding: 16px 12px; }
+.tv-trade-login h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--tv-text-strong); }
+.tv-trade-login p { margin: 0; font-size: 12px; line-height: 1.5; }
+.tv-trade-login code { font-size: 11px; padding: 1px 4px; border-radius: 3px; background: var(--tv-hover); color: var(--tv-text); }
+.tv-trade-login .tv-btn { height: 34px; }
+
+.tv-trade-error,
+.tv-trade-warn {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.tv-trade-error { color: var(--tv-down); }
+.tv-trade-warn { color: var(--tv-warn); }
+
+.tv-trade-new { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tv-trade-new .tv-btn { height: 34px; }
+.tv-trade-hint { margin: 8px 0 0; font-size: 12px; line-height: 1.4; }
+
+.tv-trade-list { list-style: none; margin: 0; padding: 0 0 4px; }
+.tv-trade-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  font-size: 12px;
+}
+.tv-trade-row b { font-weight: 600; color: var(--tv-text-strong); overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- signal card ------------------------------------------------------------------ */
+
+.tv-sig {
+  margin-bottom: 10px;
+  padding: 10px;
+  border-radius: var(--tv-radius);
+  background: var(--tv-popup);
+  box-shadow: inset 3px 0 0 var(--tv-up), 0 0 0 1px var(--tv-border);
+}
+.tv-sig.is-short { box-shadow: inset 3px 0 0 var(--tv-down), 0 0 0 1px var(--tv-border); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .tv-sig { animation: tv-sig-in 200ms var(--tv-ease); }
+}
+@keyframes tv-sig-in {
+  from { opacity: 0; transform: translateY(6px); }
+}
+
+.tv-sig-head { display: flex; align-items: center; gap: 6px; padding-left: 4px; }
+.tv-sig-head b { font-size: 14px; font-weight: 600; color: var(--tv-text-strong); }
+.tv-sig-head > :last-child { margin-left: auto; }
+.tv-sig-timer { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.tv-sig-progress {
+  height: 2px;
+  margin: 8px 0 0 4px;
+  border-radius: 1px;
+  background: var(--tv-hover);
+  overflow: hidden;
+}
+.tv-sig-progress span {
+  display: block;
+  height: 100%;
+  background: var(--tv-accent);
+  transform-origin: left center;
+  transition: transform 1s linear;
+}
+
+.tv-sig-image {
+  display: block;
+  width: calc(100% - 4px);
+  margin: 8px 0 0 4px;
+  padding: 0;
+  border-radius: var(--tv-radius-sm);
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.tv-sig-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 7 / 4;
+  object-fit: cover;
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+  border-radius: var(--tv-radius-sm);
+}
+
+.tv-sig-levels {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 8px;
+  margin: 10px 0 0 4px;
+  font-size: 12px;
+}
+.tv-sig-levels div { min-width: 0; }
+.tv-sig-levels dt { color: var(--tv-muted); font-size: 11px; }
+.tv-sig-levels dd { margin: 0; color: var(--tv-text-strong); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.tv-sig-levels dd.tv-up { color: var(--tv-up); }
+.tv-sig-levels dd.tv-down { color: var(--tv-down); }
+
+.tv-sig-note { margin: 8px 0 0 4px; font-size: 12px; }
+
+.tv-sig-actions {
+  display: grid;
+  grid-template-columns: auto 1fr 1fr;
+  gap: 6px;
+  margin: 10px 0 0 4px;
+}
+.tv-sig-actions .tv-btn { height: 32px; justify-content: center; padding: 0 8px; }
+
+.tv-sig-viewer { padding: 12px; overflow: auto; }
+.tv-sig-viewer img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--tv-radius-sm);
+  outline: 1px solid oklch(1 0 0 / 0.1);
+  outline-offset: -1px;
+}
+
+.tv-dialog--lg { width: min(1100px, 100%); max-height: calc(100dvh - 32px); }
+
+/* ---- order ticket ----------------------------------------------------------------- */
+
+.tv-order { display: grid; gap: 2px; }
+.tv-order-type { justify-self: start; margin-bottom: 8px; }
+.tv-order-type button { height: 28px; padding: 0 14px; }
+.tv-order-market {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: var(--tv-radius-sm);
+  background: var(--tv-gutter);
+  color: var(--tv-muted);
+  font-variant-numeric: tabular-nums;
+}
+.tv-order .tv-field small { font-size: 11px; }
+.tv-order .tv-input { font-variant-numeric: tabular-nums; }
+
+.tv-order-summary {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: var(--tv-radius);
+  background: var(--tv-bg);
+  min-height: 72px;
+}
+.tv-order-summary > p:first-child { margin-top: 0; }
+
+.tv-order-stats { display: grid; gap: 6px; margin: 0; font-size: 13px; }
+.tv-order-stats div { display: flex; justify-content: space-between; gap: 12px; }
+.tv-order-stats dt { color: var(--tv-muted); }
+.tv-order-stats dd { margin: 0; color: var(--tv-text-strong); font-variant-numeric: tabular-nums; text-align: right; }
+.tv-order-stats dd.tv-up { color: var(--tv-up); }
+.tv-order-stats dd.tv-down { color: var(--tv-down); }
+.tv-order-stats.is-stale { opacity: 0.55; transition: opacity 150ms var(--tv-ease); }
+
+.tv-dialog-foot .tv-btn--buy,
+.tv-dialog-foot .tv-btn--sell { min-width: 120px; }
+
+/* Trade button in the drawing toolbar */
+.tv-draw-bar .tv-btn--trade { font-weight: 600; color: var(--tv-text-strong); background: var(--tv-accent); padding: 0 10px; }
+.tv-draw-bar .tv-btn--trade:hover { background: var(--tv-accent-hover); }

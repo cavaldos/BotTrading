@@ -9,6 +9,8 @@ services:
     # Enable TTY for Rich dashboard display
     tty: true
     stdin_open: true
+    # Shared memory for headless Chromium (chart snapshots)
+    shm_size: "512m"
     # Load environment variables from .env file
     env_file:
       - .env

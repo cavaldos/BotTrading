@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import threading
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -13,7 +14,48 @@ SKIPPED_ORDERS_FILE = "res/logs/skipped_orders.json"
 SENT_ORDERS_METADATA_KEY = "_metadata"
 
 
-from src.live.core.discord_notify import send_entry_discord
+from src.live.core.approval import Signal
+from src.live.core.discord_notify import (
+    entry_title,
+    send_custom_message,
+    send_entry_discord,
+)
+
+# Set by the live runner when chart snapshots are enabled (see src/live/core/snapshot.py)
+_snapshot_worker = None
+# Set by the live runner when `approval.enabled` (see src/live/core/approval.py).
+# When set, orders are placed only after a signal is approved on the web chart or Telegram.
+_approval_hub = None
+
+# Guards sent_orders.json: the order scan and the approval threads both write it.
+_SENT_ORDERS_LOCK = threading.RLock()
+
+# Statuses of signals that never became an order on the exchange (or are still waiting).
+NOT_PLACED_STATUSES = ('PENDING', 'REJECTED', 'EXPIRED', 'FAILED')
+
+
+def set_snapshot_worker(worker) -> None:
+    global _snapshot_worker
+    _snapshot_worker = worker
+
+
+def set_approval_hub(hub) -> None:
+    global _approval_hub
+    _approval_hub = hub
+
+
+def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
+    """Send the entry message; with a chart image when the snapshot worker is running.
+
+    `sender(message_kwargs, image)` delivers it; default: Discord entry message.
+    """
+    worker = _snapshot_worker
+    if worker is not None and worker.submit(row.to_dict(), message_kwargs, sender):
+        return
+    if sender is not None:
+        sender(message_kwargs, None)
+    else:
+        send_entry_discord(**message_kwargs)
 
 # from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
 from .place_order import risk_per_trade as default_risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
@@ -43,6 +85,43 @@ def save_sent_orders(log_file: Path, sent_orders: list) -> None:
     }
     with open(log_file, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def append_sent_order(log_file, order_detail: dict) -> None:
+    """Append one order to the saved list (re-read from disk first)."""
+    log_path = Path(log_file)
+    with _SENT_ORDERS_LOCK:
+        _, sent_orders = load_sent_orders(log_path)
+        sent_orders.append(order_detail)
+        save_sent_orders(log_path, sent_orders)
+
+
+def update_sent_order(log_file, order_key: str, **fields) -> bool:
+    """Update one saved order in place. Returns False when the key is not found."""
+    log_path = Path(log_file)
+    with _SENT_ORDERS_LOCK:
+        _, sent_orders = load_sent_orders(log_path)
+        for order in sent_orders:
+            if order.get("key") == order_key:
+                order.update(fields)
+                save_sent_orders(log_path, sent_orders)
+                return True
+    return False
+
+
+def expire_stale_pending(log_file) -> int:
+    """Mark PENDING orders left by a previous run as EXPIRED (their buttons no longer work)."""
+    log_path = Path(log_file)
+    with _SENT_ORDERS_LOCK:
+        _, sent_orders = load_sent_orders(log_path)
+        count = 0
+        for order in sent_orders:
+            if order.get("status") == "PENDING":
+                order["status"] = "EXPIRED"
+                count += 1
+        if count:
+            save_sent_orders(log_path, sent_orders)
+    return count
 
 
 def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
@@ -94,7 +173,7 @@ def update_order_status_from_csv(output_dir: str, log_file: str) -> int:
         key = order.get("key", "")
         current_status = order.get("status", "")
         
-        if current_status in ('WIN', 'LOSS', 'CANCELLED'):
+        if current_status in ('WIN', 'LOSS', 'CANCELLED') or current_status in NOT_PLACED_STATUSES:
             continue
         
         if key in trades_from_csv:
@@ -327,7 +406,117 @@ def check_and_send_open_orders(
     changed_files: Optional[List[Path]] = None,
     update_status: bool = True,
 ) -> int:
-    """Check for new OPEN orders and send notifications. Returns count of new orders sent."""
+    """Check for new OPEN orders and send notifications. Returns count of new orders sent.
+
+    With an approval hub set, new signals are only sent for approval (status PENDING);
+    the order is placed later, when the signal is approved on the web chart or Telegram.
+    """
+    with _SENT_ORDERS_LOCK:
+        return _check_and_send_open_orders(output_dir, log_file, skipped_file, changed_files, update_status)
+
+
+def _late_entry_problem(symbol: str, order_type: str, stop_loss: float, take_profit: Optional[float]) -> Optional[str]:
+    """Approval comes minutes after the signal: refuse when price is already past SL or TP.
+
+    A market order opened past SL would have no valid stop loss on the exchange.
+    """
+    from src.live.bybit.exchange import get_exchange, format_symbol
+    from src.live.bybit.risk_calculator import clean_symbol
+
+    try:
+        price = get_exchange().fetch_ticker(format_symbol(clean_symbol(symbol))).get('last')
+    except Exception:
+        return None  # place_order reports exchange errors itself
+    if price is None:
+        return None
+    price = float(price)
+    if str(order_type).strip().upper() in ('LONG', 'BUY'):
+        if price <= stop_loss:
+            return f"Giá hiện tại {price} đã chạm SL {stop_loss}"
+        if take_profit is not None and price >= take_profit:
+            return f"Giá hiện tại {price} đã chạm TP {take_profit}"
+    else:
+        if price >= stop_loss:
+            return f"Giá hiện tại {price} đã chạm SL {stop_loss}"
+        if take_profit is not None and price <= take_profit:
+            return f"Giá hiện tại {price} đã chạm TP {take_profit}"
+    return None
+
+
+def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, place_kwargs: dict):
+    """Build the sender that puts the signal in the approval hub and posts the image to Discord."""
+    symbol = str(row['Symbol']).strip()
+    signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
+    label = entry_title(str(row['Type']), symbol, signal_timeframe)
+    now = lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    via_label = lambda sig: "Web" if sig.decided_via == "web" else f"Telegram: {sig.decided_by}"
+
+    def on_approve(sig: Signal) -> tuple[bool, str]:
+        problem = _late_entry_problem(
+            place_kwargs['symbol'], place_kwargs['order_type'],
+            place_kwargs['stop_loss'], place_kwargs['take_profit'],
+        )
+        if problem:
+            result_text = f"❌ KHÔNG ĐẶT LỆNH\n└─ {problem}"
+            update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via)
+            send_custom_message(f"**{label}** ⚠️ Đã duyệt ({via_label(sig)}) — không đặt lệnh\n```\n{result_text}\n```")
+            return False, result_text
+
+        order_result = place_order(**place_kwargs, signal_timestamp=time.time())
+        bybit = order_result.get('bybit') or {}
+        result_text = f"BYBIT\n{bybit_format_order_message(bybit)}"
+        success = bool(order_result.get('success'))
+        update_sent_order(
+            log_file, order_key,
+            status="OPEN" if success else "FAILED",
+            order_id=bybit.get('order_id'),
+            approved_at=now(),
+            approved_via=sig.decided_via,
+        )
+        verdict = "đã đặt lệnh" if success else "đặt lệnh thất bại"
+        icon = "✅" if success else "⚠️"
+        send_custom_message(f"**{label}** {icon} Đã duyệt ({via_label(sig)}) — {verdict}\n```\n{result_text}\n```")
+        return success, result_text
+
+    def on_reject(sig: Signal) -> None:
+        update_sent_order(log_file, order_key, status="REJECTED", decided_at=now(), approved_via=sig.decided_via)
+        send_custom_message(f"**{label}** ❌ Bỏ qua ({via_label(sig)}) — không đặt lệnh")
+
+    def on_expire(sig: Signal) -> None:
+        update_sent_order(log_file, order_key, status="EXPIRED", decided_at=now())
+        send_custom_message(f"**{label}** ⌛ Hết hạn duyệt — không đặt lệnh")
+
+    def sender(message_kwargs: dict, image: bytes | None) -> None:
+        hub.submit(Signal(
+            key=order_key,
+            label=label,
+            symbol=symbol,
+            side=str(row['Type']).strip().upper(),
+            signal_timeframe=signal_timeframe,
+            entry_time=str(row['Entry_Time']).strip(),
+            entry=float(place_kwargs['entry_price']),
+            stop_loss=float(place_kwargs['stop_loss']),
+            take_profit=place_kwargs['take_profit'],
+            risk_per_trade=float(place_kwargs['risk_per_trade']),
+            message_kwargs={k: v for k, v in message_kwargs.items() if k != 'result'},
+            image=image,
+            on_approve=on_approve,
+            on_reject=on_reject,
+            on_expire=on_expire,
+        ))
+        send_entry_discord(**message_kwargs, image=image)
+
+    return sender
+
+
+def _check_and_send_open_orders(
+    output_dir: str,
+    log_file: str,
+    skipped_file: str,
+    changed_files: Optional[List[Path]],
+    update_status: bool,
+) -> int:
+    hub = _approval_hub
     output_path = Path(output_dir)
     log_path = Path(log_file)
     skipped_path = Path(skipped_file)
@@ -371,7 +560,58 @@ def check_and_send_open_orders(
             take_profit = parse_optional_float(row.get('Take_Profit'))
             actual_rr_ratio = parse_optional_float(row.get('RR'))
             flex_rr_ratio = parse_optional_float(row.get('Flex_RR'))
-             
+            signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
+            message_kwargs = dict(
+                type=row['Type'],
+                entry=float(row['Entry_Price']),
+                stoploss=float(row['Stop_Loss']),
+                takeprofit=float(take_profit) if take_profit is not None else float(row['Entry_Price']),
+                time=row['Entry_Time'],
+                name_coin=row['Symbol'],
+                risk_per_trade=effective_risk_per_trade,
+                signal_timeframe=signal_timeframe,
+            )
+            order_detail = {
+                "key": order_key,
+                "order_id": None,
+                "symbol": row['Symbol'],
+                "type": row['Type'],
+                "signal_timeframe": signal_timeframe,
+                "entry_price": float(row['Entry_Price']),
+                "stop_loss": float(row['Stop_Loss']),
+                "take_profit": take_profit,
+                "rr": actual_rr_ratio,
+                "flex_rr": flex_rr_ratio,
+                "base_risk_per_trade": base_risk_per_trade,
+                "risk_per_trade": effective_risk_per_trade,
+                "risk_boost_multiplier": risk_boost_multiplier,
+                "tp_capped": parse_optional_bool(row.get('TP_Capped')),
+                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "status": "OPEN",
+            }
+
+            if hub is not None:
+                # Manual approval: save as PENDING first, so the approval thread can update it.
+                # Written straight to the file (not the in-memory list) so the final save below
+                # cannot overwrite a status set meanwhile by the sender.
+                order_detail["status"] = "PENDING"
+                append_sent_order(log_path, order_detail)
+                sent_keys.add(order_key)
+                new_sent_count += 1
+                place_kwargs = dict(
+                    symbol=row['Symbol'],
+                    order_type=row['Type'],
+                    entry_price=float(row['Entry_Price']),
+                    stop_loss=float(row['Stop_Loss']),
+                    take_profit=take_profit,
+                    entry_time=row['Entry_Time'],
+                    risk_per_trade=effective_risk_per_trade,
+                )
+                sender = _make_approval_sender(hub, row, order_key, log_file, place_kwargs)
+                pending_note = f"⏳ Chờ duyệt trên Web / Telegram (hết hạn sau {hub.timeout_minutes:g} phút)"
+                notify_entry(row, dict(message_kwargs, result=pending_note), sender=sender)
+                continue
+
             order_result = place_order(
                 symbol=row['Symbol'],
                 order_type=row['Type'],
@@ -393,36 +633,9 @@ def check_and_send_open_orders(
             
             combined_result = bybit_msg.strip()
             
-            send_entry_discord(
-                type=row['Type'],
-                entry=float(row['Entry_Price']),
-                stoploss=float(row['Stop_Loss']),
-                takeprofit=float(take_profit) if take_profit is not None else float(row['Entry_Price']),
-                time=row['Entry_Time'],
-                name_coin=row['Symbol'],
-                result=combined_result,
-                risk_per_trade=effective_risk_per_trade,
-                signal_timeframe=str(row.get('Signal_Timeframe', '')).strip(),
-            )
-            
-            order_detail = {
-                "key": order_key,
-                "order_id": bybit_order_id,
-                "symbol": row['Symbol'],
-                "type": row['Type'],
-                "signal_timeframe": str(row.get('Signal_Timeframe', '')).strip(),
-                "entry_price": float(row['Entry_Price']),
-                "stop_loss": float(row['Stop_Loss']),
-                "take_profit": take_profit,
-                "rr": actual_rr_ratio,
-                "flex_rr": flex_rr_ratio,
-                "base_risk_per_trade": base_risk_per_trade,
-                "risk_per_trade": effective_risk_per_trade,
-                "risk_boost_multiplier": risk_boost_multiplier,
-                "tp_capped": parse_optional_bool(row.get('TP_Capped')),
-                "sent_at": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                "status": "OPEN",
-            }
+            notify_entry(row, dict(message_kwargs, result=combined_result))
+
+            order_detail["order_id"] = bybit_order_id
             sent_orders.append(order_detail)
             sent_keys.add(order_key)
             new_sent_count += 1
@@ -431,7 +644,7 @@ def check_and_send_open_orders(
             print(f"Error processing order {order_key}: {e}")
             continue
     
-    if new_sent_count > 0:
+    if new_sent_count > 0 and hub is None:
         save_sent_orders(log_path, sent_orders)
     
     return new_sent_count

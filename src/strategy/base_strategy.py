@@ -114,6 +114,11 @@ class BaseSignal:
     risk_per_trade: Optional[float] = None
     risk_boost_multiplier: float = 1.0
     tp_capped: bool = False
+    # Zone that triggered the signal (for charts/notifications only)
+    zone_high: Optional[float] = None
+    zone_low: Optional[float] = None
+    zone_time: Optional[datetime] = None
+    zone_type: str = ""
 
 
 @dataclass
@@ -444,6 +449,17 @@ class BaseStrategy(ABC):
 
     # ==================== SIGNAL CREATION ====================
 
+    @staticmethod
+    def _zone_fields(zone: BaseZone) -> dict:
+        """Describe the triggering zone so live charts can highlight it."""
+        structure = str(getattr(zone, 'structure_type', '') or '').strip()
+        return {
+            'zone_high': float(zone.high),
+            'zone_low': float(zone.low),
+            'zone_time': zone.time,
+            'zone_type': f"OB_{structure}" if structure else "OB",
+        }
+
     def _create_signal(
         self,
         symbol: str,
@@ -506,6 +522,7 @@ class BaseStrategy(ABC):
             risk_per_trade=trade_plan.risk_per_trade,
             risk_boost_multiplier=trade_plan.risk_boost_multiplier,
             tp_capped=trade_plan.tp_capped,
+            **self._zone_fields(zone),
         )
 
     def _create_signal_from_entry(
@@ -551,4 +568,5 @@ class BaseStrategy(ABC):
             risk_per_trade=trade_plan.risk_per_trade,
             risk_boost_multiplier=trade_plan.risk_boost_multiplier,
             tp_capped=trade_plan.tp_capped,
+            **self._zone_fields(zone),
         )

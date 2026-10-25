@@ -46,6 +46,10 @@ class Trade:
     risk_boost_multiplier: float = 1.0
     tp_capped: bool = False
     pnl_r: Optional[float] = None
+    zone_high: Optional[float] = None
+    zone_low: Optional[float] = None
+    zone_time: Optional[datetime] = None
+    zone_type: str = ""
     
     # Exit info (calculated by TradeSimulator)
     exit_time: Optional[datetime] = None
@@ -243,6 +247,10 @@ class TradeSimulator:
                 risk_per_trade=signal.risk_per_trade,
                 risk_boost_multiplier=signal.risk_boost_multiplier,
                 tp_capped=signal.tp_capped,
+                zone_high=getattr(signal, 'zone_high', None),
+                zone_low=getattr(signal, 'zone_low', None),
+                zone_time=getattr(signal, 'zone_time', None),
+                zone_type=getattr(signal, 'zone_type', ''),
                 exit_time=exit_time_dt,
                 exit_price=exit_price,
                 result=result_map[result_code],
@@ -297,7 +305,11 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
             'PnL_R': round(t.pnl_r, 4) if t.pnl_r is not None else None,
             'Exit_Time': t.exit_time,
             'Exit_Price': round_price(t.exit_price) if t.exit_price else None,
-            'Result': result
+            'Result': result,
+            'Zone_High': round_price(t.zone_high) if t.zone_high is not None else None,
+            'Zone_Low': round_price(t.zone_low) if t.zone_low is not None else None,
+            'Zone_Time': t.zone_time,
+            'Zone_Type': t.zone_type,
         })
     
     df = pd.DataFrame(data)

@@ -358,6 +358,12 @@ def generate_orders_panel(trades: list) -> Panel:
             result_style = "red bold"
         elif result == "PASSED":
             result_style = "cyan bold"
+        elif result == "PENDING":
+            result_style = "magenta bold"
+        elif result in ("REJECTED", "EXPIRED"):
+            result_style = "dim"
+        elif result == "FAILED":
+            result_style = "red"
         else:  # OPEN
             result_style = "yellow bold"
         

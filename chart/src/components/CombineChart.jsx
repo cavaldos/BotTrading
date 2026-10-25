@@ -1,10 +1,9 @@
 import { useEffect, useRef, useMemo, useImperativeHandle, forwardRef, useState, useCallback } from 'react';
 import { createChart, CandlestickSeries, HistogramSeries } from 'lightweight-charts';
 import { createSeriesMarkers } from 'lightweight-charts';
-import { createTradeZones, createOrderBlockRect, RectanglePrimitive } from '../plugins/RectanglePrimitive';
-import { createStructureLine, createEqhEqlLine, createSwingSegmentLine } from '../plugins/LinePrimitive';
-import { createFibRetracement } from '../plugins/FibRetracementPrimitive';
-import { PrimitiveLayer } from '../plugins/PrimitiveLayer';
+import { createTradeZones, createOrderBlockRect } from '../plugins/RectanglePrimitive';
+import { buildSmcPrimitives } from '../terminal/lib/smcOverlays';
+import { PrimitiveLayer, timeToLogical } from '../plugins/PrimitiveLayer';
 import { MeasurementPrimitive, createMeasurementHandler } from '../plugins/MeasurementPlugin';
 import {
   crosshairTimeAxisLabelStyle,
@@ -52,6 +51,8 @@ const CombineChart = forwardRef(function CombineChart({
   indicatorData = {},
   indicatorVisibility = {},
   onTradeSelect = null,
+  snapshotMode = false,
+  pricePrecision = null,
 }, ref) {
   const chartContainerRef = useRef(null);
   const timeAxisLabelRef = useRef(null);
@@ -251,6 +252,24 @@ const CombineChart = forwardRef(function CombineChart({
 
     getChart: () => chartRef.current,
 
+    // Set exact time and price ranges (used by the snapshot page)
+    setViewport: ({ from, to, priceLow, priceHigh }) => {
+      if (!chartRef.current || !candleSeriesRef.current) return;
+      if (Number.isFinite(from) && Number.isFinite(to)) {
+        // Logical range allows empty space to the right of the last candle
+        const fromLogical = timeToLogical(candleTimes, from);
+        const toLogical = timeToLogical(candleTimes, to);
+        if (fromLogical !== null && toLogical !== null) {
+          chartRef.current.timeScale().setVisibleLogicalRange({ from: fromLogical, to: toLogical });
+        }
+      }
+      const priceScale = candleSeriesRef.current.priceScale();
+      if (priceScale && Number.isFinite(priceLow) && Number.isFinite(priceHigh)) {
+        priceScale.applyOptions({ autoScale: false });
+        priceScale.setVisibleRange({ from: priceLow, to: priceHigh });
+      }
+    },
+
     getScrollPosition: () => {
       if (!chartRef.current) return null;
       const timeScale = chartRef.current.timeScale();
@@ -304,7 +323,7 @@ const CombineChart = forwardRef(function CombineChart({
       }
     },
     isMeasuring: () => activeMeasurementTool !== null,
-  }), [activeMeasurementTool, barDuration, candles, animateVisibleRange]);
+  }), [activeMeasurementTool, barDuration, candles, candleTimes, animateVisibleRange]);
 
   // Initialize chart
   useEffect(() => {
@@ -498,6 +517,14 @@ const CombineChart = forwardRef(function CombineChart({
     preservePositionRef.current = false;
   }, [candles, animateVisibleRange]);
 
+  // Price axis decimals (default 2 is unreadable for low-priced coins)
+  useEffect(() => {
+    if (!candleSeriesRef.current || !Number.isInteger(pricePrecision)) return;
+    candleSeriesRef.current.applyOptions({
+      priceFormat: { type: 'price', precision: pricePrecision, minMove: 10 ** -pricePrecision },
+    });
+  }, [pricePrecision]);
+
   // Update volume data
   useEffect(() => {
     if (!volumeSeriesRef.current || !volume?.length) return;
@@ -562,239 +589,7 @@ const CombineChart = forwardRef(function CombineChart({
   // Update indicator primitives
   useEffect(() => {
     if (!indicatorLayerRef.current) return;
-
-    const newPrimitives = [];
-
-    // BOS lines
-    if (indicatorVisibility.bos && indicatorData.bos?.length > 0) {
-      indicatorData.bos.forEach(item => {
-        newPrimitives.push(createStructureLine(item));
-      });
-    }
-
-    // CHoCH lines
-    if (indicatorVisibility.choch && indicatorData.choch?.length > 0) {
-      indicatorData.choch.forEach(item => {
-        newPrimitives.push(createStructureLine(item));
-      });
-    }
-
-    // Order Blocks (from indicator data)
-    if (indicatorVisibility.orderBlocks && indicatorData.orderBlocks?.length > 0) {
-      indicatorData.orderBlocks.forEach(ob => {
-        const endTime = ob.endTime || (ob.startTime + 150 * barDuration);
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: ob.startTime,
-          endTime: endTime,
-          lowPrice: ob.low,
-          highPrice: ob.high,
-          fillColor: ob.color || (ob.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.15)'
-            : 'rgba(239, 83, 80, 0.15)'),
-          borderColor: null,
-          borderWidth: 0,
-          label: `OB ${ob.structureType || ''}`,
-          labelColor: ob.bias === 'BULLISH' ? '#26a69a' : '#ef5350',
-        }));
-      });
-    }
-
-    // FVG zones
-    if (indicatorVisibility.fvg && indicatorData.fvg?.length > 0) {
-      const fvgItems = indicatorData.fvg.filter(f => !f.isFilled);
-      fvgItems.forEach(fvg => {
-        const endTime = fvg.time + 80 * barDuration;
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: fvg.time,
-          endTime: endTime,
-          lowPrice: fvg.bottom,
-          highPrice: fvg.top,
-          fillColor: fvg.color || (fvg.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.12)'
-            : 'rgba(239, 83, 80, 0.12)'),
-          borderColor: null,
-          label: 'FVG',
-          labelColor: fvg.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.6)'
-            : 'rgba(239, 83, 80, 0.6)',
-        }));
-      });
-    }
-
-    // IFVG zones
-    if (indicatorVisibility.ifvg && indicatorData.ifvg?.length > 0) {
-      const ifvgItems = indicatorData.ifvg.filter(item => !item.isFilled);
-      ifvgItems.forEach(item => {
-        const endTime = item.time + 80 * barDuration;
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: item.startTime || item.sourceTime || item.time,
-          endTime,
-          lowPrice: item.bottom,
-          highPrice: item.top,
-          fillColor: item.color || 'rgba(189, 189, 189, 0.12)',
-          borderColor: item.borderColor || (item.bias === 'BULLISH'
-            ? 'rgba(76, 175, 80, 0.70)'
-            : 'rgba(255, 112, 67, 0.75)'),
-          borderWidth: 1,
-          label: 'IFVG',
-          labelColor: item.labelColor || (item.bias === 'BULLISH'
-            ? 'rgba(76, 175, 80, 0.95)'
-            : 'rgba(255, 112, 67, 0.95)'),
-        }));
-      });
-    }
-
-    // EQH/EQL lines
-    if (indicatorVisibility.eqhEql && indicatorData.eqhEql?.length > 0) {
-      const eqItems = indicatorData.eqhEql.slice(-200);
-      eqItems.forEach(item => {
-        newPrimitives.push(createEqhEqlLine(item));
-      });
-    }
-
-    // Imbalance zones
-    if (indicatorVisibility.imbalance && indicatorData.imbalance?.length > 0) {
-      const imbItems = indicatorData.imbalance.filter(i => !i.isFilled);
-      imbItems.forEach(imb => {
-        const endTime = imb.time + 60 * barDuration;
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: imb.time,
-          endTime: endTime,
-          lowPrice: imb.low,
-          highPrice: imb.high,
-          fillColor: imb.color || 'rgba(0, 188, 212, 0.15)',
-          borderColor: 'rgba(0, 188, 212, 0.4)',
-          borderWidth: 1,
-          label: `IMB ${imb.strength?.toFixed(1) || ''}`,
-          labelColor: 'rgba(0, 188, 212, 0.8)',
-        }));
-      });
-    }
-
-    // Breaker Blocks
-    if (indicatorVisibility.breakerBlocks && indicatorData.breakerBlocks?.length > 0) {
-      indicatorData.breakerBlocks.forEach(bb => {
-        const endTime = bb.endTime || (bb.startTime + 100 * barDuration);
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: bb.startTime,
-          endTime: endTime,
-          lowPrice: bb.low,
-          highPrice: bb.high,
-          fillColor: bb.color || (bb.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.2)'
-            : 'rgba(244, 67, 54, 0.2)'),
-          borderColor: bb.borderColor || (bb.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.7)'
-            : 'rgba(244, 67, 54, 0.7)'),
-          borderWidth: 2,
-          label: 'BB',
-          labelColor: bb.bias === 'BULLISH' ? '#26a69a' : '#f44336',
-        }));
-      });
-    }
-
-    // Mitigation Blocks
-    if (indicatorVisibility.mitigationBlocks && indicatorData.mitigationBlocks?.length > 0) {
-      indicatorData.mitigationBlocks.forEach(mb => {
-        const endTime = mb.endTime || (mb.startTime + 80 * barDuration);
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: mb.startTime,
-          endTime: endTime,
-          lowPrice: mb.low,
-          highPrice: mb.high,
-          fillColor: mb.color || (mb.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.1)'
-            : 'rgba(239, 83, 80, 0.1)'),
-          borderColor: mb.borderColor || (mb.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.4)'
-            : 'rgba(239, 83, 80, 0.4)'),
-          borderWidth: 1,
-          label: `MB ${mb.mitigationPercent?.toFixed(0) || ''}%`,
-          labelColor: mb.bias === 'BULLISH'
-            ? 'rgba(38, 166, 154, 0.7)'
-            : 'rgba(239, 83, 80, 0.7)',
-        }));
-      });
-    }
-
-    // Fibonacci Retracements
-    if (indicatorVisibility.retracement && indicatorData.retracement?.length > 0) {
-      const fibItems = indicatorData.retracement.slice(-15);
-      fibItems.forEach(item => {
-        newPrimitives.push(createFibRetracement(item));
-      });
-    }
-
-    // Swings (HH/HL/LH/LL)
-    if (indicatorVisibility.swing && indicatorData.swing?.length > 0) {
-      const items = indicatorData.swing.slice(-500);
-      items.forEach(s => {
-        const start = s.time;
-        const end = s.time + barDuration;
-        const pad = Math.abs((s.price || 0) * 0.002) || 0.0001;
-
-        newPrimitives.push(new RectanglePrimitive({
-          startTime: start,
-          endTime: end,
-          lowPrice: s.price - pad,
-          highPrice: s.price + pad,
-          fillColor: 'rgba(0,0,0,0)',
-          borderColor: null,
-          borderWidth: 0,
-          label: s.type,
-          labelColor: s.isHigh ? '#ff5252' : '#00bfa5',
-        }));
-      });
-    }
-
-    // Gann Swings (zigzag line through swing pivots)
-    if (indicatorVisibility.gannSwing && indicatorData.gannSwing?.length > 0) {
-      const items = indicatorData.gannSwing
-        .slice(-1200)
-        .filter(s => Number.isFinite(s?.time) && Number.isFinite(s?.price))
-        .sort((a, b) => a.time - b.time);
-
-      for (let i = 1; i < items.length; i += 1) {
-        newPrimitives.push(createSwingSegmentLine(items[i - 1], items[i], {
-          color: '#ffb300',
-          lineWidth: 3,
-          zOrder: 'top',
-        }));
-      }
-
-      // Extend last confirmed swing to current bar extreme (active leg)
-      const lastSwing = items[items.length - 1];
-      const latestCandle = candles?.[candles.length - 1];
-      if (
-        lastSwing
-        && latestCandle
-        && Number.isFinite(latestCandle.time)
-        && latestCandle.time > lastSwing.time
-      ) {
-        let projectedPrice = Number(lastSwing.price);
-        for (let i = candles.length - 1; i >= 0; i -= 1) {
-          const c = candles[i];
-          if (!c || !Number.isFinite(c.time) || c.time < lastSwing.time) break;
-          if (lastSwing.isHigh) {
-            if (Number.isFinite(c.low) && c.low < projectedPrice) projectedPrice = c.low;
-          } else if (Number.isFinite(c.high) && c.high > projectedPrice) {
-            projectedPrice = c.high;
-          }
-        }
-
-        if (Number.isFinite(projectedPrice) && projectedPrice !== lastSwing.price) {
-          newPrimitives.push(createSwingSegmentLine(lastSwing, {
-            time: latestCandle.time,
-            price: projectedPrice,
-          }, {
-            color: '#ffb300',
-            lineWidth: 3,
-            zOrder: 'top',
-          }));
-        }
-      }
-    }
-
+    const newPrimitives = buildSmcPrimitives(indicatorData, indicatorVisibility, { barDuration, candles });
     indicatorLayerRef.current.setPrimitives(newPrimitives, candleTimes);
   }, [indicatorData, indicatorVisibility, barDuration, candles, candleTimes]);
 
@@ -830,11 +625,11 @@ const CombineChart = forwardRef(function CombineChart({
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
       <div style={{
+        display: snapshotMode ? 'none' : 'flex',
         position: 'absolute',
         top: 10,
         right: 10,
         zIndex: 100,
-        display: 'flex',
         gap: '8px',
       }}>
         <button
@@ -895,7 +690,7 @@ const CombineChart = forwardRef(function CombineChart({
         style={{
           width: '100%',
           height: '100%',
-          minHeight: '500px',
+          minHeight: snapshotMode ? 0 : '500px',
         }}
       />
       <div

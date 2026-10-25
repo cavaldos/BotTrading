@@ -14,7 +14,7 @@ const Navigation = () => {
         <nav className="bg-gray-900 shadow-lg">
             <div className="max-w-7xl mx-auto px-4">
                 <div className="flex items-center justify-center h-10 gap-2">
-                    {Router.map((route, index) => (
+                    {Router.filter(route => !route.hidden).map((route, index) => (
                         <button
                             key={index}
                             onClick={() => handleNavigation(route.path)}

@@ -33,6 +33,44 @@ dashboard:
 runtime:
   reset_state_on_start: false # default: false
 
+# Chart snapshot attached to Discord entry messages (needs playwright + chart/dist build)
+snapshot:
+  enabled: false # default: false
+  bars: 400 # default: 400 (signal-TF candles sent to the chart)
+  lookback_bars: 170 # default: 170 (bars visible before entry; widened to include the entry OB)
+  right_padding_bars: 35 # default: 35 (space after entry for the TP/SL box)
+  max_visible_bars: 250 # default: 250 (cap when widening the view to a far entry OB)
+  width: 1400 # default: 1400 (px)
+  height: 800 # default: 800 (px)
+  scale: 2 # default: 2 (device pixel ratio)
+  timeout: 20 # default: 20 (seconds per render; on failure the text-only message is sent)
+  port: 0 # default: 0 (local static server port, 0 = auto)
+  dist_folder: "chart/dist" # default: "chart/dist" (built frontend)
+  frontend_url: "" # default: "" (set e.g. "http://localhost:5173" to use `npm run dev` instead of dist)
+  indicators: ["orderBlocks", "bos", "choch", "eqhEql", "fvg", "ifvg", "swing"]
+
 # Strategy settings are loaded from: src/config/strategy.yaml
 # - signal_timeframe (supports list)
 # - entry_timeframe
+
+# Manual approval: each bot signal waits for a decision before any order is placed.
+# Decide on the web chart (Trade panel) or on Telegram (chart image + ✅ / ❌ buttons);
+# the first decision wins. Discord gets the image too (no buttons).
+# If enabled and neither the web API nor Telegram can start, the bot exits.
+approval:
+  enabled: false # default: false (false = place orders automatically, as before)
+  timeout_minutes: 5 # default: 5 (no decision in time -> signal expires, no order)
+  telegram: true # default: true (also send signals to Telegram; needs TELEGRAM_TOKEN + TELEGRAM_CHAT_ID)
+  allowed_user_ids: [] # default: [] (Telegram user ids allowed to click; empty = anyone in TELEGRAM_CHAT_ID)
+
+# Trading API for the web chart: approve signals and place manual orders from the chart.
+# Needs WEB_API_TOKEN in .env (enter the same token in the chart's Trade panel).
+# The chart dev server (`npm run dev` in chart/) proxies /api to this address (BOT_API_URL in chart/.env).
+web:
+  enabled: false # default: false
+  host: "127.0.0.1" # default: "127.0.0.1" (use "0.0.0.0" only inside Docker, with the port mapped)
+  port: 8787 # default: 8787
+  leverage: 20 # default: 20 (leverage of manual orders)
+  max_risk_per_trade: 0 # default: 0 (= 2 x strategy risk_per_trade; manual orders above it are refused)
+  order_cooldown_seconds: 3 # default: 3 (min time between two manual orders)
+  manual_orders_file: "res/logs/manual_orders.json" # default: "res/logs/manual_orders.json"

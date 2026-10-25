@@ -13,7 +13,8 @@ Output JSON structure:
 }
 
 Usage:
-    python -m src.indicators.main
+    python -m src.indicators.main                    # export the data files as they are
+    python -m src.indicators.main --tfs 15m,1h,4h    # also resample them and export these timeframes
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import argparse
 import pandas as pd
 import numpy as np
 from glob import glob
@@ -32,21 +34,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.config import load_backtest_config
 
-# Import all indicators
-from src.indicators.BOS import detect_bos, to_json as bos_to_json
-from src.indicators.CHOCH import detect_choch, to_json as choch_to_json
-from src.indicators.order_block import detect_order_blocks, to_json as ob_to_json
-from src.indicators.FVG import detect_fvg, to_json as fvg_to_json
-from src.indicators.ifvg import detect_ifvg, to_json as ifvg_to_json
-from src.indicators.eqh_eql import detect_eqh_eql, to_json as eqhl_to_json
-from src.indicators.imbalance import detect_imbalance, to_json as imbalance_to_json
-from src.indicators.breaker_block import detect_breaker_blocks, to_json as breaker_to_json
-from src.indicators.mitigation_block import detect_mitigation_blocks, to_json as mitigation_to_json
-from src.indicators.retracement import detect_retracements, to_json as retracement_to_json
-
-# Swing indicator
-from src.indicators.swing import detect_swings, to_json as swing_to_json
-from src.indicators.gann_swing import detect_gann_swings, to_json as gann_swing_to_json
+from src.utils.convertTF import convert_timeframe, parse_timeframe_minutes
+from src.indicators.export import (
+    datetime_to_timestamp,
+    export_candles,
+    export_volume,
+    run_indicators,
+)
 
 
 # ==================== CONFIGURATION ====================
@@ -61,12 +55,6 @@ try:
     GANN_SWING_LENGTH = max(1, int(gann_length_raw))
 except (TypeError, ValueError):
     GANN_SWING_LENGTH = 3
-
-COLORS = {
-    'bullish_candle': '#26a69a',
-    'bearish_candle': '#ef5350',
-}
-
 
 # ==================== DATA LOADING ====================
 
@@ -106,155 +94,26 @@ def load_data(data_file: str) -> pd.DataFrame:
     return df
 
 
-# ==================== EXPORT HELPERS ====================
-
-def datetime_to_timestamp(dt) -> int:
-    """Convert datetime to Unix timestamp (seconds)."""
-    if pd.isna(dt):
-        return 0
-    if isinstance(dt, pd.Timestamp):
-        return int(dt.timestamp())
-    elif isinstance(dt, datetime):
-        return int(dt.timestamp())
-    elif isinstance(dt, np.datetime64):
-        ts = pd.Timestamp(dt)
-        if str(ts) == 'NaT':
-            return 0
-        return int(ts.value // 1_000_000_000)
-    return int(dt)
-
-
-def export_candles(df: pd.DataFrame) -> List[dict]:
-    """Export candlestick data in lightweight-charts format."""
-    candles = []
-    times = np.asarray(df['Time'].to_numpy())
-    opens = df['Open'].values
-    highs = df['High'].values
-    lows = df['Low'].values
-    closes = df['Close'].values
-
-    for i in range(len(df)):
-        candles.append({
-            'time': datetime_to_timestamp(times[i]),
-            'open': float(opens[i]),
-            'high': float(highs[i]),
-            'low': float(lows[i]),
-            'close': float(closes[i]),
-        })
-    return candles
-
-
-def export_volume(df: pd.DataFrame) -> List[dict]:
-    """Export volume data in lightweight-charts histogram format."""
-    volume = []
-    times = np.asarray(df['Time'].to_numpy())
-    opens = df['Open'].values
-    closes = df['Close'].values
-    volumes = df['Volume'].values if 'Volume' in df.columns else np.zeros(len(df))
-
-    for i in range(len(df)):
-        is_bullish = closes[i] >= opens[i]
-        volume.append({
-            'time': datetime_to_timestamp(times[i]),
-            'value': float(volumes[i]),
-            'color': COLORS['bullish_candle'] if is_bullish else COLORS['bearish_candle'],
-        })
-    return volume
-
-
 # ==================== MAIN PROCESSING ====================
 
 def run_all_indicators(df: pd.DataFrame) -> dict:
     """
     Run ALL SMC indicators on a DataFrame.
-    Each indicator uses its own default config defined in its own file.
-
-    Returns dict with all indicator results in JSON-serializable format.
+    Each indicator uses its own default config defined in its own file
+    (Gann swing length comes from the strategy config).
     """
-    results = {}
-    times = np.asarray(df['Time'].to_numpy())
-
-    # 1. BOS (pass times for same timestamp conversion as candles → alignment)
-    print("    BOS...", end='', flush=True)
-    bos_list = detect_bos(df)
-    results['bos'] = bos_to_json(bos_list, times=times)
-    print(f" {len(bos_list)} found")
-
-    # 2. CHoCH (pass times for alignment with candles)
-    print("    CHoCH...", end='', flush=True)
-    choch_list = detect_choch(df)
-    results['choch'] = choch_to_json(choch_list, times=times)
-    print(f" {len(choch_list)} found")
-
-    # 3. Order Blocks
-    print("    Order Blocks...", end='', flush=True)
-    ob_list = detect_order_blocks(df)
-    results['orderBlocks'] = ob_to_json(ob_list, df=df)
-    print(f" {len(ob_list)} found")
-
-    # 4. FVG
-    print("    FVG...", end='', flush=True)
-    fvg_list = detect_fvg(df)
-    results['fvg'] = fvg_to_json(fvg_list, times=times)
-    print(f" {len(fvg_list)} found")
-
-    # 5. IFVG
-    print("    IFVG...", end='', flush=True)
-    ifvg_list = detect_ifvg(df)
-    results['ifvg'] = ifvg_to_json(ifvg_list, times=times)
-    print(f" {len(ifvg_list)} found")
-
-    # 6. EQH/EQL
-    print("    EQH/EQL...", end='', flush=True)
-    eqhl_list = detect_eqh_eql(df)
-    results['eqhEql'] = eqhl_to_json(eqhl_list, times=times)
-    print(f" {len(eqhl_list)} found")
-
-    # 7. Imbalance
-    print("    Imbalance...", end='', flush=True)
-    imb_list = detect_imbalance(df)
-    results['imbalance'] = imbalance_to_json(imb_list)
-    print(f" {len(imb_list)} found")
-
-    # 8. Breaker Blocks
-    print("    Breaker Blocks...", end='', flush=True)
-    breaker_list = detect_breaker_blocks(df)
-    results['breakerBlocks'] = breaker_to_json(breaker_list, df=df)
-    print(f" {len(breaker_list)} found")
-
-    # 9. Mitigation Blocks
-    print("    Mitigation Blocks...", end='', flush=True)
-    mit_list = detect_mitigation_blocks(df)
-    results['mitigationBlocks'] = mitigation_to_json(mit_list, df=df)
-    print(f" {len(mit_list)} found")
-
-    # 10. Retracement
-    print("    Retracement...", end='', flush=True)
-    ret_list = detect_retracements(df)
-    results['retracement'] = retracement_to_json(ret_list, times=times)
-    print(f" {len(ret_list)} found")
-
-    # 11. Swings (HH/HL/LH/LL)
-    print("    Swings...", end='', flush=True)
-    swings = detect_swings(df)
-    results['swing'] = swing_to_json(swings, times=times)
-    print(f" {len(swings)} found")
-
-    # 12. Gann Swings (leg-based HH/HL/LH/LL)
-    print(f"    Gann Swing (len={GANN_SWING_LENGTH})...", end='', flush=True)
-    gann_swings = detect_gann_swings(df, length=GANN_SWING_LENGTH)
-    results['gannSwing'] = gann_swing_to_json(gann_swings, times=list(times))
-    print(f" {len(gann_swings)} found")
-
-    return results
+    return run_indicators(df, gann_swing_length=GANN_SWING_LENGTH, verbose=True)
 
 
 def export_symbol(symbol_info: dict) -> dict:
     """Process and export a single symbol to JSON."""
     print(f"\nProcessing {symbol_info['id']}...")
 
-    # Load data
+    # Load data (resampled to a larger timeframe when requested)
     df = load_data(symbol_info['data_file'])
+    if symbol_info.get('resample'):
+        df = convert_timeframe(df, symbol_info['timeframe'])
+        print(f"  Resampled {os.path.basename(symbol_info['data_file'])} -> {symbol_info['timeframe']}")
     print(f"  Loaded {len(df)} candles")
 
     # Run all indicators
@@ -306,9 +165,47 @@ def export_symbol(symbol_info: dict) -> dict:
     }
 
 
+def plan_exports(native_infos: List[dict], tfs: List[str] | None) -> List[dict]:
+    """Native files when no timeframes are given, otherwise each requested timeframe per symbol."""
+    if not tfs:
+        return native_infos
+    plans = []
+    for info in native_infos:
+        native_minutes = parse_timeframe_minutes(info['timeframe'])
+        for tf in tfs:
+            target = parse_timeframe_minutes(tf)
+            if not native_minutes or not target or target < native_minutes or target % native_minutes:
+                continue
+            if target == native_minutes:
+                plans.append(info)
+                continue
+            plans.append({**info, 'timeframe': tf, 'id': f"{info['symbol']}_{tf}", 'resample': True,
+                          'source_minutes': native_minutes})
+    # One export per id: a native file wins, otherwise resample from the largest source timeframe (fewer rows)
+    def rank(plan: dict) -> int:
+        return 10**9 if not plan.get('resample') else plan['source_minutes']
+
+    best: Dict[str, dict] = {}
+    for plan in plans:
+        if plan['id'] not in best or rank(plan) > rank(best[plan['id']]):
+            best[plan['id']] = plan
+    return sorted(best.values(), key=lambda x: (x['symbol'], parse_timeframe_minutes(x['timeframe']) or 0))
+
+
 def export_symbols_list(symbols: List[dict]):
-    """Export list of available symbols to symbols.json."""
+    """Write symbols.json, keeping earlier entries whose JSON file still exists."""
     output_file = os.path.join(OUTPUT_DIR, 'symbols.json')
+    merged = {}
+    try:
+        with open(output_file, 'r', encoding='utf-8') as f:
+            for entry in json.load(f).get('symbols', []):
+                if os.path.exists(os.path.join(OUTPUT_DIR, f"{entry.get('id')}.json")):
+                    merged[entry['id']] = entry
+    except (OSError, ValueError, AttributeError):
+        pass
+    for entry in symbols:
+        merged[entry['id']] = entry
+    symbols = sorted(merged.values(), key=lambda x: (x['symbol'], parse_timeframe_minutes(x['timeframe']) or 0))
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump({
             'symbols': symbols,
@@ -321,6 +218,11 @@ def export_symbols_list(symbols: List[dict]):
 
 def main():
     """Main function to run all indicators and export to JSON."""
+    parser = argparse.ArgumentParser(description="Export SMC indicators to chart JSON")
+    parser.add_argument("--tfs", default="", help="Comma-separated timeframes to export, e.g. 1m,5m,15m,1h,4h")
+    args = parser.parse_args()
+    tfs = [tf.strip() for tf in args.tfs.split(',') if tf.strip()]
+
     print("=" * 60)
     print("SMC Indicators - Export All to JSON")
     print("=" * 60)
@@ -330,7 +232,7 @@ def main():
 
     # Scan for data files
     print(f"\nScanning {DATA_DIR}/ for data files...")
-    symbol_infos = scan_data_files()
+    symbol_infos = plan_exports(scan_data_files(), tfs)
 
     if not symbol_infos:
         print("No data files found!")

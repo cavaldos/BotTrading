@@ -1,34 +1,48 @@
 import { lazy } from 'react';
 
-const MainLayout = lazy(() => import('@/components/Layout/main.layout'));
-const ViewBacktestPage = lazy(() => import('@/pages/ViewBacktest'));
-const LiveTradePage = lazy(() => import('@/pages/LiveTrade'));
-const IndicatorPage = lazy(() => import('@/pages/Indicator'))
-const CombinePage = lazy(() => import('@/pages/Combine'));
+const TerminalPage = lazy(() => import('@/terminal/TerminalPage'));
+const SnapshotPage = lazy(() => import('@/pages/Snapshot'));
+const BacktestRedirect = lazy(() => import('@/terminal/LegacyRedirects').then(m => ({ default: m.BacktestRedirect })));
+const LiveRedirect = lazy(() => import('@/terminal/LegacyRedirects').then(m => ({ default: m.LiveRedirect })));
+const IndicatorsRedirect = lazy(() => import('@/terminal/LegacyRedirects').then(m => ({ default: m.IndicatorsRedirect })));
+
+// One TradingView-style chart for backtest, SMC indicator and live data.
+// The old page routes redirect to it with the matching ?source=.
 const Router = [
     {
-        name: 'View Backtest',
+        name: 'Chart',
         path: '/',
-        component: ViewBacktestPage,
-        Layout: MainLayout,
+        component: TerminalPage,
+        Layout: null,
     },
     {
         name: 'Live Trade',
         path: '/live-trade',
-        component: LiveTradePage,
-        Layout: MainLayout,
+        component: LiveRedirect,
+        Layout: null,
+        hidden: true,
     },
     {
         name: 'Indicators',
         path: '/indicator',
-        component: IndicatorPage,
-        Layout: MainLayout,
+        component: IndicatorsRedirect,
+        Layout: null,
+        hidden: true,
     },
     {
         name: 'Combine',
         path: '/combine',
-        component: CombinePage,
-        Layout: MainLayout,
+        component: BacktestRedirect,
+        Layout: null,
+        hidden: true,
+    },
+    {
+        // Render-only page screenshotted by the live bot (not shown in navigation)
+        name: 'Snapshot',
+        path: '/snapshot',
+        component: SnapshotPage,
+        Layout: null,
+        hidden: true,
     },
 
 ];

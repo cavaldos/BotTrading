@@ -1,0 +1,12 @@
+.git
+.venv
+venv
+res
+**/__pycache__
+*.egg-info
+.env
+chart/node_modules
+chart/dist
+chart/public/data
+chart/res
+chart/.agents

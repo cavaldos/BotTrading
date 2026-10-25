@@ -68,6 +68,31 @@ Edit `src/config/live.yaml`, `src/config/backtest.yaml`, and `src/config/strateg
 risk_reward_ratio: 2.0
 ```
 
+## Exchange Comparison
+
+USDT perpetuals, base tier (VIP 0). Researched 2026-10. Fees change often, so check each exchange's official fee page before relying on these numbers.
+
+| | **Lighter** | **Binance Futures** | **Bybit Perp** |
+|---|---|---|---|
+| Type | DEX (zk-rollup on Ethereum), self-custody | CEX | CEX |
+| Maker fee | **0%** (Standard account) | 0.02% | 0.02% |
+| Taker fee | **0%** (Standard account) | 0.05% (10% off when paid in BNB) | 0.055% |
+| Premium / VIP fees | ~0.002–0.004% maker, ~0.02–0.028% taker (sources disagree) | Lower with 30-day volume (VIP 1 from $15M) | Lower with volume, best taker ~0.03% |
+| Round-trip taker cost | **0%** | ~0.10% | ~0.11% |
+| Latency | Standard has a built-in delay: ~200 ms taker, ~300 ms maker. Premium is faster (~150–200 ms taker) | Matching in microseconds; API round trip ~30–80 ms from Vietnam | Similar to Binance |
+| Spread (BTC/ETH) | Tight, but the order book is much thinner, so large orders and altcoins slip more | ~1 tick, deepest market | ~1 tick, close to Binance |
+| Markets | Fewer (mostly majors) | Most | Many |
+| Funding interval | Every hour | Every 8h (some pairs 4h/1h) | Every 8h (some pairs shorter) |
+| Main risks | Smart contracts, young project, limited API docs | Centralized custody, KYC | Centralized custody, KYC (hacked in 2025) |
+
+What this means for this bot:
+
+- **Fees decide whether a strategy is profitable.** With the stop-loss 1% from entry, a Binance taker round trip (~0.10%) costs about 0.1R per trade. On Lighter Standard that cost is close to zero, leaving only spread and slippage.
+- **Latency of 200–300 ms does not matter** for 1h-candle signals. It only hurts scalping, market making, or strategies that need fast cancels.
+- **Still model spread and slippage on Lighter**, especially for altcoins. Do not assume trading there costs nothing.
+
+Sources: [Mobula perps fees](https://docs.mobula.io/perps-fees), [Lighter review (cryptowinrate)](https://cryptowinrate.com/crypto-exchanges/lighter/?p=1191), [Binance futures fees (Finder)](https://www.finder.com/binance-futures-fees), [Bybit perpetual fees](https://www.bybit.com/my-MM/help-center/article/Perpetual-Futures-Contract-Fees-Explained), [Bybit vs Binance fees (Coinperps)](https://www.coinperps.com/zh/learn/bybit-vs-binance-perpetual-futures-fees).
+
 ## File Structure
 
 ```

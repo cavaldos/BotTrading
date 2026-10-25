@@ -14,6 +14,13 @@ export default ({ mode }) => {
     .map(h => h.trim())
     .filter(Boolean)
 
+  // Trading API of the live bot (src/live/web/server.py). The browser only talks to
+  // this server; /api is forwarded to the bot, which checks the WEB_API_TOKEN.
+  const botApi = env.BOT_API_URL || 'http://127.0.0.1:8787'
+  const proxy = {
+    '/api': { target: botApi, changeOrigin: true },
+  }
+
   return defineConfig({
     resolve: {
       alias: {
@@ -32,11 +39,13 @@ export default ({ mode }) => {
     server: {
       host: '0.0.0.0',
       allowedHosts,
+      proxy,
     },
     preview: {
       host: '0.0.0.0',
       allowedHosts,
       port: 5173,
+      proxy,
     },
   })
 }
