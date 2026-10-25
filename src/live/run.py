@@ -16,7 +16,7 @@ from rich.live import Live
 
 from src.config import load_live_config, load_strategy_config
 from src.utils.remove_all_files import remove_all_files
-from src.utils.get_data import (fetch_and_save_candles_parallel, append_latest_candle_parallel)
+from src.utils.getdata.get_data import (fetch_and_save_candles_parallel, append_latest_candle_parallel)
 from src.live.dashboard import create_dashboard, update_dashboard
 from src.live.core.execute import execute
 from src.live.core.approval import ApprovalHub
@@ -454,7 +454,7 @@ def getdata(timeframe: str):
       
       # In strategy-timeframe mode, always fetch entry_timeframe data
       fetch_tf = ENTRY_TIMEFRAME if USE_STRATEGY_TIMEFRAMES else timeframe
-      use_closed_candles = WAIT_FOR_CLOSE and os.environ.get("EXCHANGE") in {"binance", "bybit"}
+      use_closed_candles = WAIT_FOR_CLOSE and os.environ.get("EXCHANGE") in {"binance", "bybit", "lighter"}
       fetch_kwargs = {"closed_only": True} if use_closed_candles else {}
       
       # Check if data files exist (first run vs subsequent runs)

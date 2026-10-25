@@ -68,9 +68,12 @@ src/
 │   ├── benchmark_patterns.py
 │   ├── console_logger.py
 │   ├── convertTF.py
-│   ├── get_data_binance.py
-│   ├── get_data_bybit.py
-│   ├── get_data.py
+│   ├── getdata/
+│   │   ├── __init__.py
+│   │   ├── get_data.py          # picks exchange from EXCHANGE env
+│   │   ├── get_data_binance.py
+│   │   ├── get_data_bybit.py
+│   │   └── get_data_lighter.py
 │   ├── JsonDB.py
 │   ├── price_chart.py
 │   ├── remove_all_files.py

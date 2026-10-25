@@ -1,17 +1,19 @@
 import os
 from dotenv import load_dotenv  # pyright: ignore[reportMissingModuleSource]
 
-from src.utils import get_data_binance, get_data_bybit
+from src.utils.getdata import get_data_binance, get_data_bybit, get_data_lighter
 
 load_dotenv()
 
 EXCHANGES = {
     'binance': get_data_binance,
     'bybit': get_data_bybit,
+    'lighter': get_data_lighter,
 }
 
 binance = get_data_binance
 bybit = get_data_bybit
+lighter = get_data_lighter
 
 
 def _get_exchange_from_env():

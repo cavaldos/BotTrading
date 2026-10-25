@@ -2,7 +2,7 @@
 # Note: fallback defaults are shown inline as `default: ...`.
 
 # Exchange: "binance" | "bybit"
-exchange: "binance" # default: "binance"
+exchange: "binance" # data source: "binance" (default), "bybit" or "lighter"
 
 # Data feed settings
 data:
