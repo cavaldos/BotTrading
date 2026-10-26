@@ -296,7 +296,12 @@ def format_market_order_message(order_result: dict) -> str:
         else:
             timing_line = f"\n│\n├─ ⏱️ Order Execution: {order_exec:.2f}s"
     
-    message = f"""✅ THÀNH CÔNG
+    sl_tp_warning = order_result.get('sl_tp_warning')
+    header = "✅ THÀNH CÔNG"
+    if sl_tp_warning:
+        header += f"\n⚠️ CHƯA ĐẶT ĐƯỢC SL/TP TRÊN SÀN: {sl_tp_warning}"
+
+    message = f"""{header}
 
 {side_emoji} {side_text} {symbol}
 ├─ Order ID: {order_id}

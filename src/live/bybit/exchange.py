@@ -403,10 +403,19 @@ def set_position_sl_tp(
             params['tpTriggerBy'] = 'LastPrice'
         
         # Sử dụng API v5 endpoint
-        result = exchange.privatePostV5PositionTradingStop(params)
+        try:
+            result = exchange.privatePostV5PositionTradingStop(params)
+        except Exception as e:
+            # 34040 "not modified": SL/TP trên sàn đã đúng bằng giá trị gửi lên
+            # (vd. lần gọi trước đã thành công nhưng response bị lỗi/timeout) -> coi như OK.
+            if '34040' not in str(e):
+                raise
+            result = {'retCode': 0, 'retMsg': 'not modified (already set)'}
         
         # Check response
         ret_code = result.get('retCode', -1)
+        if ret_code == 34040:
+            ret_code = 0
         ret_msg = result.get('retMsg', 'Unknown error')
         
         if ret_code != 0:
