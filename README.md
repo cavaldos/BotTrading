@@ -115,6 +115,7 @@ python -m src.exchanges.lighter.tools.test_connect      # check the Lighter setu
 python -m src.exchanges.lighter.tools.lighter_dashboard
 python -m src.exchanges.bybit.tools.bybit_dashboard
 python -m src.exchanges.bybit.tools.position_manager --once --dry-run
+python -m src.live.web.doctor                           # why the web chart cannot reach the bot (read-only checks)
 python -m src.utils.getdata                             # download candles from EXCHANGE in .env (backtest.yaml settings)
 python -m src.exchanges.bybit.candles                   # same, always from Bybit (also binance / lighter)
 ```

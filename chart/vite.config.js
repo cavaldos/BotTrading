@@ -27,7 +27,8 @@ export default ({ mode }) => {
           if (!res || typeof res.writeHead !== 'function' || res.headersSent || res.writableEnded) return
           const error = `Chart server cannot reach the bot API at ${botApi} (${err.code || err.message}). ` +
             'On the server check: the bot is running, web.enabled: true in src/config/live.yaml, ' +
-            'WEB_API_TOKEN (16+ characters) in .env, and web.port matches.'
+            'WEB_API_TOKEN (16+ characters) in .env, and web.port matches. ' +
+            'Run on the server: .venv/bin/python -m src.live.web.doctor'
           res.writeHead(502, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ error }))
         })
