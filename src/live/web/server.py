@@ -10,12 +10,16 @@ to it, so a public chart link still needs the token to see or place anything.
   GET  /api/config                       symbols, risk limits, approval timeout
   GET  /api/signals                      pending + recently decided bot signals
   GET  /api/signals/<id>/image           chart snapshot PNG of a signal
-  POST /api/signals/<id>/approve|reject  decide a pending signal
-  POST /api/orders/preview               size / checks for a manual order (nothing placed)
+  POST /api/signals/<id>/approve|reject  decide a pending signal; an approve body
+                                         {orderType, entry, stopLoss, takeProfit, risk,
+                                         fillTimeoutMinutes} trades edited values
+  POST /api/orders/preview               size / checks for an order (nothing placed)
   POST /api/orders                       place a manual order ({..., confirm: true, clientId})
-  GET  /api/orders                       recent manual orders
-  POST /api/orders/<id>/cancel           cancel an open manual limit order
+  GET  /api/orders                       orders followed on the exchange (signals + manual)
+  POST /api/orders/<id>/cancel           cancel a limit order still waiting to fill
   GET  /api/events                       server-sent events: snapshot, signal, order
+                                         (order events carry `change`: placed, partial,
+                                         filled, not_filled, cancelled, unknown, update)
 """
 
 from __future__ import annotations
@@ -30,11 +34,13 @@ from queue import Empty, Full, Queue
 from typing import Callable, Optional
 
 from src.live.core.approval import ApprovalHub, Signal
-from src.live.web.orders import ManualOrderService, OrderError
+from src.live.core.order_tracker import OrderTracker, TrackedOrder
+from src.live.web.orders import ManualOrderService, OrderError, parse_fill_timeout
 
 
 MAX_BODY = 64 * 1024
 KEEPALIVE_SECONDS = 15
+EDIT_FIELDS = ("orderType", "entry", "stopLoss", "takeProfit", "risk", "fillTimeoutMinutes")
 
 
 class WebApiServer:
@@ -44,6 +50,7 @@ class WebApiServer:
         port: int,
         token: str,
         orders: ManualOrderService,
+        tracker: OrderTracker,
         hub: Optional[ApprovalHub] = None,
         on_log: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
@@ -54,6 +61,7 @@ class WebApiServer:
         self.port = int(port)
         self.token = token
         self.orders = orders
+        self.tracker = tracker
         self.hub = hub
         self.on_log = on_log or (lambda msg: None)
         self.on_error = on_error or (lambda msg: print(f"Web API error: {msg}"))
@@ -73,6 +81,7 @@ class WebApiServer:
         self._thread.start()
         if self.hub is not None:
             self.hub.add_listener(self._on_hub_event)
+        self.tracker.add_listener(self._on_order_event)
         self.on_log(f"Web API on http://{self.host}:{self.port}")
         return self
 
@@ -106,8 +115,8 @@ class WebApiServer:
     def _on_hub_event(self, event: str, sig: Signal) -> None:
         self.broadcast("signal", {"event": event, "signal": sig.to_dict(), "serverTime": time.time()})
 
-    def on_order_event(self, event: str, record: dict) -> None:
-        self.broadcast("order", {"order": record, "serverTime": time.time()})
+    def _on_order_event(self, event: str, order: TrackedOrder) -> None:
+        self.broadcast("order", {"change": event, "order": order.to_dict(), "serverTime": time.time()})
 
     def snapshot(self) -> dict:
         signals = self.hub.snapshot() if self.hub is not None else {"pending": [], "recent": []}
@@ -116,7 +125,7 @@ class WebApiServer:
             "approval": self.hub is not None,
             "timeoutMinutes": self.hub.timeout_minutes if self.hub is not None else None,
             "signals": signals,
-            "orders": self.orders.recent(),
+            "orders": self.tracker.recent(),
             "config": self.orders.config(),
         }
 
@@ -192,7 +201,7 @@ class _Handler(BaseHTTPRequestHandler):
             if path == "/api/signals":
                 return self._send_json(200, self.app.snapshot()["signals"])
             if path == "/api/orders":
-                return self._send_json(200, self.app.orders.recent())
+                return self._send_json(200, self.app.tracker.recent())
             if path == "/api/events":
                 return self._stream_events()
             match = _SIGNAL_IMAGE.match(path)
@@ -218,10 +227,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send_json(200, result)
             match = _ORDER_CANCEL.match(path)
             if match:
-                return self._send_json(200, self.app.orders.cancel(match.group(1)))
+                ok, message, order = self.app.tracker.cancel(match.group(1))
+                return self._send_json(200, {"success": ok, "message": message, "order": order.to_dict() if order else None})
             match = _SIGNAL_ACTION.match(path)
             if match:
-                return self._decide(match.group(1), match.group(2))
+                return self._decide(match.group(1), match.group(2), body)
             return self._send_json(404, {"error": "Not found"})
         except OrderError as exc:
             return self._send_json(400, {"error": str(exc)})
@@ -229,11 +239,32 @@ class _Handler(BaseHTTPRequestHandler):
             self.app.on_error(f"POST {path}: {exc}")
             return self._send_json(500, {"error": str(exc)})
 
-    def _decide(self, signal_id: str, action: str):
+    def _decide(self, signal_id: str, action: str, body: dict):
         hub = self.app.hub
         if hub is None:
             return self._send_json(400, {"error": "Approval is not enabled on the bot"})
-        ok, message, sig = hub.decide(signal_id, action, via="web", by="web")
+        changes = None
+        if action == "approve" and any(k in body for k in EDIT_FIELDS):
+            # Edited on the web: same checks as a manual order before anything is placed
+            sig = hub.get(signal_id)
+            if sig is None:
+                return self._send_json(200, {"ok": False, "message": "Signal not found (expired or bot restarted)", "signal": None})
+            if sig.status != "PENDING":
+                return self._send_json(200, {"ok": False, "message": f"Signal already {sig.status.lower()}", "signal": sig.to_dict()})
+            fill_timeout = parse_fill_timeout(body)
+            check = self.app.orders.preview(dict(body, symbol=sig.symbol, side=sig.side))
+            if not check["ok"]:
+                return self._send_json(200, {"ok": False, "message": "; ".join(check["errors"]), "preview": check, "signal": sig.to_dict()})
+            changes = {
+                "order_type": check["orderType"],
+                "entry": check["entry"],          # market: the current price, used for sizing
+                "stop_loss": check["stopLoss"],
+                "take_profit": check["takeProfit"],
+                "risk_per_trade": check["risk"],
+                "leverage": check["leverage"],
+                "fill_timeout_minutes": fill_timeout,
+            }
+        ok, message, sig = hub.decide(signal_id, action, via="web", by="web", changes=changes)
         return self._send_json(200, {"ok": ok, "message": message, "signal": sig.to_dict() if sig else None})
 
     def _signal_image(self, signal_id: str):

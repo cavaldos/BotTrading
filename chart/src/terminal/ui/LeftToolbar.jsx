@@ -10,9 +10,10 @@ const GROUPS = [
   [['long', IconLong], ['short', IconShort], ['measure', IconRuler]],
 ];
 
-export default function LeftToolbar({ tool, onTool, magnet, onMagnet, locked, onLocked, hidden, onHidden, onRemoveAll, hasDrawings }) {
+/** Drawing tools. `floating`: phone palette shown over the chart (opened from the bottom bar). */
+export default function LeftToolbar({ tool, onTool, magnet, onMagnet, locked, onLocked, hidden, onHidden, onRemoveAll, hasDrawings, floating }) {
   return (
-    <nav className="tv-panel tv-tools" aria-label="Drawing tools">
+    <nav className={`tv-panel tv-tools ${floating ? 'is-floating' : ''}`} aria-label="Drawing tools">
       <button
         type="button"
         className="tv-tool"

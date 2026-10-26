@@ -6,6 +6,8 @@ Channels (the web chart, Telegram) only show signals and forward clicks:
   hub.decide(id, "approve"|"reject", ...)  -> first decision wins, listeners get ("update", signal)
   no decision before `expires_at`          -> status EXPIRED, listeners get ("update", signal)
 
+An approval can carry `changes` (order type, entry, SL, TP, risk edited on the web);
+they replace the signal's values before the order is placed.
 On approve, `signal.on_approve(signal)` places the order and returns (success, text).
 Listeners run on one dispatcher thread, so a slow channel never blocks a decision.
 """
@@ -23,6 +25,9 @@ from typing import Any, Callable, Optional
 
 # PENDING -> PLACING -> PLACED | FAILED,  PENDING -> REJECTED | EXPIRED
 FINAL_STATUSES = ("PLACED", "FAILED", "REJECTED", "EXPIRED")
+
+# Signal fields an approval may change (see `decide`)
+EDITABLE_FIELDS = ("order_type", "entry", "stop_loss", "take_profit", "risk_per_trade", "leverage", "fill_timeout_minutes")
 
 
 @dataclass
@@ -42,6 +47,11 @@ class Signal:
     on_reject: Callable[["Signal"], None]
     on_expire: Callable[["Signal"], None]
     image: Optional[bytes] = None
+    order_type: str = "market"                    # market | limit (limit only when edited on the web)
+    leverage: Optional[int] = None                # None = the order module default
+    fill_timeout_minutes: Optional[float] = None  # limit orders; None = order tracker default
+    edited: bool = False                          # values changed on the web before approval
+    tracked_id: str = ""                          # order tracker id once the order is placed
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:16])
     created_at: float = field(default_factory=time.time)
     expires_at: float = 0.0
@@ -75,6 +85,9 @@ class Signal:
             "decidedAt": self.decided_at,
             "resultText": self.result_text,
             "hasImage": bool(self.image),
+            "orderType": self.order_type,
+            "edited": self.edited,
+            "trackedId": self.tracked_id,
         }
 
 
@@ -149,8 +162,18 @@ class ApprovalHub:
         recent = [s.to_dict() for s in reversed(items) if s.status in FINAL_STATUSES]
         return {"pending": pending, "recent": recent}
 
-    def decide(self, signal_id: str, action: str, via: str, by: str) -> tuple[bool, str, Optional[Signal]]:
-        """Apply the first decision. Returns (ok, message, signal). Blocks while the order is placed."""
+    def decide(
+        self,
+        signal_id: str,
+        action: str,
+        via: str,
+        by: str,
+        changes: Optional[dict] = None,
+    ) -> tuple[bool, str, Optional[Signal]]:
+        """Apply the first decision. Returns (ok, message, signal). Blocks while the order is placed.
+
+        `changes` (approve only): new values for EDITABLE_FIELDS, already validated by the caller.
+        """
         if action not in ("approve", "reject"):
             return False, "Unknown action", None
         with self._lock:
@@ -163,6 +186,11 @@ class ApprovalHub:
             if expired:
                 sig.status = "EXPIRED"
             else:
+                if action == "approve" and changes:
+                    for name in EDITABLE_FIELDS:
+                        if name in changes:
+                            setattr(sig, name, changes[name])
+                    sig.edited = True
                 sig.status = "PLACING" if action == "approve" else "REJECTED"
                 sig.decided_by = by
                 sig.decided_via = via
@@ -179,7 +207,8 @@ class ApprovalHub:
             self.on_log(f"{sig.label}: rejected by {by} ({via})")
             return True, "Rejected", sig
 
-        self.on_log(f"{sig.label}: approved by {by} ({via}), placing order")
+        edited = f", edited: {sig.order_type} SL {sig.stop_loss:g} TP {sig.take_profit:g}" if sig.edited and sig.take_profit else ""
+        self.on_log(f"{sig.label}: approved by {by} ({via}){edited}, placing order")
         outcome = self._safe(sig.on_approve, sig)
         success, text = outcome if outcome else (False, "Order failed (see bot log)")
         with self._lock:

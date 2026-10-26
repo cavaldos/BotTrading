@@ -26,12 +26,15 @@ _snapshot_worker = None
 # Set by the live runner when `approval.enabled` (see src/live/core/approval.py).
 # When set, orders are placed only after a signal is approved on the web chart or Telegram.
 _approval_hub = None
+# Set by the live runner with the approval hub or the web API (see src/live/core/order_tracker.py).
+# Approved orders are followed on the exchange until they fill or not.
+_order_tracker = None
 
 # Guards sent_orders.json: the order scan and the approval threads both write it.
 _SENT_ORDERS_LOCK = threading.RLock()
 
-# Statuses of signals that never became an order on the exchange (or are still waiting).
-NOT_PLACED_STATUSES = ('PENDING', 'REJECTED', 'EXPIRED', 'FAILED')
+# Statuses of signals that never became a position on the exchange (or are still waiting).
+NOT_PLACED_STATUSES = ('PENDING', 'REJECTED', 'EXPIRED', 'FAILED', 'NOT_FILLED')
 
 
 def set_snapshot_worker(worker) -> None:
@@ -42,6 +45,11 @@ def set_snapshot_worker(worker) -> None:
 def set_approval_hub(hub) -> None:
     global _approval_hub
     _approval_hub = hub
+
+
+def set_order_tracker(tracker) -> None:
+    global _order_tracker
+    _order_tracker = tracker
 
 
 def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
@@ -59,6 +67,7 @@ def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
 
 # from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
 from .place_order import risk_per_trade as default_risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
+from .place_order import place_limit_order, bybit_format_limit_message
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -107,6 +116,20 @@ def update_sent_order(log_file, order_key: str, **fields) -> bool:
                 save_sent_orders(log_path, sent_orders)
                 return True
     return False
+
+
+def record_signal_fill(log_file, order) -> None:
+    """Save the fill result of an approved signal's order (a TrackedOrder) in sent_orders.json."""
+    if not order.key:
+        return
+    fields = {
+        "fill_status": order.status,
+        "filled_qty": order.filled,
+        "fill_price": order.avg_price,
+    }
+    if order.status in ("NOT_FILLED", "CANCELLED") and order.filled <= 0:
+        fields["status"] = "NOT_FILLED"
+    update_sent_order(log_file, order.key, **fields)
 
 
 def expire_stale_pending(log_file) -> int:
@@ -443,6 +466,37 @@ def _late_entry_problem(symbol: str, order_type: str, stop_loss: float, take_pro
     return None
 
 
+def _follow_order(sig: Signal, bybit: dict, order_key: str) -> None:
+    """Hand an approved signal's order to the order tracker (fill / no fill notifications)."""
+    tracker = _order_tracker
+    order_id = bybit.get('order_id')
+    if tracker is None or not order_id:
+        return
+    from src.live.bybit.risk_calculator import clean_symbol
+
+    position = bybit.get('position_info') or {}
+    quantity = bybit.get('final_quantity') or bybit.get('contracts') or position.get('quantity') or 0
+    is_limit = sig.order_type == "limit"
+    tracked = tracker.track(
+        source="signal",
+        ref=sig.id,
+        key=order_key,
+        symbol=clean_symbol(sig.symbol),
+        side=sig.side,
+        order_type=sig.order_type,
+        order_id=order_id,
+        price=sig.entry if is_limit else (bybit.get('entry_price') or sig.entry),
+        stop_loss=bybit.get('stop_loss') or sig.stop_loss,
+        take_profit=bybit.get('take_profit') or sig.take_profit,
+        quantity=quantity,
+        risk=sig.risk_per_trade,
+        timeframe=sig.signal_timeframe,
+        timeout_minutes=sig.fill_timeout_minutes,
+        sl_tp_missing="" if is_limit else str(bybit.get('sl_tp_warning') or ""),
+    )
+    sig.tracked_id = tracked.id
+
+
 def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, place_kwargs: dict):
     """Build the sender that puts the signal in the approval hub and posts the image to Discord."""
     symbol = str(row['Symbol']).strip()
@@ -452,30 +506,60 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
     via_label = lambda sig: "Web" if sig.decided_via == "web" else f"Telegram: {sig.decided_by}"
 
     def on_approve(sig: Signal) -> tuple[bool, str]:
-        problem = _late_entry_problem(
-            place_kwargs['symbol'], place_kwargs['order_type'],
-            place_kwargs['stop_loss'], place_kwargs['take_profit'],
+        # The signal holds the values to trade: the bot's, or the ones edited on the web
+        is_limit = sig.order_type == "limit"
+        kwargs = dict(
+            place_kwargs,
+            entry_price=sig.entry,
+            stop_loss=sig.stop_loss,
+            take_profit=sig.take_profit,
+            risk_per_trade=sig.risk_per_trade,
         )
-        if problem:
-            result_text = f"❌ KHÔNG ĐẶT LỆNH\n└─ {problem}"
-            update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via)
-            send_custom_message(f"**{label}** ⚠️ Đã duyệt ({via_label(sig)}) — không đặt lệnh\n```\n{result_text}\n```")
-            return False, result_text
+        if sig.leverage:
+            kwargs['leverage'] = int(sig.leverage)
+        approved = f"Đã duyệt ({via_label(sig)})" + (f", đã chỉnh: {sig.order_type.upper()}" if sig.edited else "")
 
-        order_result = place_order(**place_kwargs, signal_timestamp=time.time())
-        bybit = order_result.get('bybit') or {}
-        result_text = f"BYBIT\n{bybit_format_order_message(bybit)}"
+        if not is_limit:
+            problem = _late_entry_problem(kwargs['symbol'], kwargs['order_type'], kwargs['stop_loss'], kwargs['take_profit'])
+            if problem:
+                result_text = f"❌ KHÔNG ĐẶT LỆNH\n└─ {problem}"
+                update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via)
+                send_custom_message(f"**{label}** ⚠️ {approved} — không đặt lệnh\n```\n{result_text}\n```")
+                return False, result_text
+
+        if is_limit:
+            order_result = place_limit_order(**kwargs, signal_timestamp=time.time())
+            bybit = order_result.get('bybit') or {}
+            result_text = f"BYBIT\n{bybit_format_limit_message(bybit)}"
+        else:
+            order_result = place_order(**kwargs, signal_timestamp=time.time())
+            bybit = order_result.get('bybit') or {}
+            result_text = f"BYBIT\n{bybit_format_order_message(bybit)}"
         success = bool(order_result.get('success'))
-        update_sent_order(
-            log_file, order_key,
+        fields = dict(
             status="OPEN" if success else "FAILED",
             order_id=bybit.get('order_id'),
             approved_at=now(),
             approved_via=sig.decided_via,
+            order_mode=sig.order_type,
         )
-        verdict = "đã đặt lệnh" if success else "đặt lệnh thất bại"
+        if sig.edited:
+            fields.update(
+                edited=True,
+                placed_entry=sig.entry,
+                placed_stop_loss=sig.stop_loss,
+                placed_take_profit=sig.take_profit,
+                placed_risk_per_trade=sig.risk_per_trade,
+            )
+        update_sent_order(log_file, order_key, **fields)
+        if success:
+            try:
+                _follow_order(sig, bybit, order_key)
+            except Exception as e:  # the order is placed: never report it as failed
+                print(f"Order tracking failed for {order_key}: {e}")
+        verdict = "đã gửi lệnh, chờ sàn khớp" if success else "đặt lệnh thất bại"
         icon = "✅" if success else "⚠️"
-        send_custom_message(f"**{label}** {icon} Đã duyệt ({via_label(sig)}) — {verdict}\n```\n{result_text}\n```")
+        send_custom_message(f"**{label}** {icon} {approved} — {verdict}\n```\n{result_text}\n```")
         return success, result_text
 
     def on_reject(sig: Signal) -> None:

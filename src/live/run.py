@@ -21,7 +21,15 @@ from src.live.dashboard import create_dashboard, update_dashboard
 from src.live.core.execute import execute
 from src.live.core.approval import ApprovalHub
 from src.live.core.discord_notify import send_custom_message
-from src.live.core.send import check_and_send_open_orders, expire_stale_pending, set_approval_hub, set_snapshot_worker
+from src.live.core.send import (
+    check_and_send_open_orders,
+    expire_stale_pending,
+    record_signal_fill,
+    set_approval_hub,
+    set_order_tracker,
+    set_snapshot_worker,
+)
+from src.live.core.order_tracker import OrderTracker, format_order_message, load_tracking_config
 from src.live.core.snapshot import SnapshotWorker, load_snapshot_config
 from src.live.core.telegram_approval import TelegramChannel, load_approval_config, send_telegram_text
 from src.live.web.orders import ManualOrderService, load_web_config
@@ -131,6 +139,9 @@ APPROVAL_CONFIG = load_approval_config(CONFIG)
 
 # Trading API for the web chart (approve signals, manual orders)
 WEB_CONFIG = load_web_config(CONFIG)
+
+# Following approved / web orders on the exchange until they fill or not
+TRACKING_CONFIG = load_tracking_config(CONFIG)
 DEFAULT_RISK_PER_TRADE = float(STRATEGY_CONFIG.get("risk_per_trade", 5) or 5)
 
 
@@ -701,20 +712,32 @@ def start_snapshot_worker() -> SnapshotWorker | None:
 
 
 class TradingServices:
-    """Approval hub, its Telegram channel and the web trading API (each optional)."""
+    """Approval hub, its Telegram channel, the order tracker and the web trading API (each optional)."""
+
+    # Order tracker events announced on Telegram + Discord
+    ANNOUNCED_CHANGES = ("partial", "filled", "not_filled", "cancelled", "unknown")
 
     def __init__(self):
         self.hub: ApprovalHub | None = None
         self.telegram: TelegramChannel | None = None
+        self.tracker: OrderTracker | None = None
         self.web: WebApiServer | None = None
 
-    def notify_manual_order(self, text: str) -> None:
-        """Announce web orders on Telegram + Discord (also an alert if someone else uses the web)."""
+    def notify_text(self, text: str) -> None:
+        """Send a message to Telegram + Discord (web orders, fills; also an alert if someone else uses the web)."""
         if self.telegram is not None:
             self.telegram.notify(text)
         else:
             send_telegram_text(os.environ.get("TELEGRAM_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), text)
         send_custom_message(f"```\n{text}\n```")
+
+    def on_order_change(self, change: str, order) -> None:
+        """Order tracker listener: save the fill result of bot signals and announce it."""
+        if change not in self.ANNOUNCED_CHANGES:
+            return
+        if order.source == "signal":
+            record_signal_fill(LOG_FILE, order)
+        self.notify_text(format_order_message(order, change))
 
     def start(self) -> "TradingServices":
         """Raises when approval is on but no channel can show signals (never auto-trade instead)."""
@@ -741,6 +764,19 @@ class TradingServices:
                 except Exception as e:
                     state.add_error("TG", f"Telegram disabled: {e}")
 
+        if self.hub is not None or WEB_CONFIG.get("enabled"):
+            self.tracker = OrderTracker(
+                file=str(TRACKING_CONFIG.get("file")),
+                poll_seconds=float(TRACKING_CONFIG.get("poll_seconds", 5)),
+                limit_timeout_minutes=float(TRACKING_CONFIG.get("limit_timeout_minutes", 30)),
+                cancel_if_target_hit=bool(TRACKING_CONFIG.get("cancel_if_target_hit", True)),
+                on_log=lambda msg: state.add_log("Orders", msg),
+                on_error=lambda msg: state.add_error("ORD", msg),
+            )
+            self.tracker.add_listener(self.on_order_change)
+            self.tracker.start()
+            set_order_tracker(self.tracker)
+
         if WEB_CONFIG.get("enabled"):
             try:
                 max_risk = float(WEB_CONFIG.get("max_risk_per_trade") or 0) or DEFAULT_RISK_PER_TRADE * 2
@@ -751,25 +787,26 @@ class TradingServices:
                     leverage=int(WEB_CONFIG.get("leverage", 20)),
                     cooldown_seconds=float(WEB_CONFIG.get("order_cooldown_seconds", 3)),
                     log_file=str(WEB_CONFIG.get("manual_orders_file")),
-                    notify=self.notify_manual_order,
+                    notify=self.notify_text,
+                    tracker=self.tracker,
                 )
                 self.web = WebApiServer(
                     host=str(WEB_CONFIG.get("host", "127.0.0.1")),
                     port=int(WEB_CONFIG.get("port", 8787)),
                     token=os.environ.get("WEB_API_TOKEN", ""),
                     orders=orders,
+                    tracker=self.tracker,
                     hub=self.hub,
                     on_log=lambda msg: state.add_log("Web", msg),
                     on_error=lambda msg: state.add_error("WEB", msg),
                 )
-                orders.on_event = self.web.on_order_event
                 self.web.start()
             except Exception as e:
                 self.web = None
                 state.add_error("WEB", f"Web API disabled: {e}")
 
         if self.hub is not None and self.telegram is None and self.web is None:
-            self.hub.stop()
+            self.stop()
             raise RuntimeError("approval.enabled is true but neither the web API nor Telegram could start")
 
         set_approval_hub(self.hub)
@@ -780,9 +817,12 @@ class TradingServices:
 
     def stop(self) -> None:
         set_approval_hub(None)
+        set_order_tracker(None)
         # Hub first: pending signals expire and the channels can still show it.
         if self.hub is not None:
             self.hub.stop()
+        if self.tracker is not None:
+            self.tracker.stop()  # orders left open are followed again on the next start
         if self.telegram is not None:
             self.telegram.stop()
         if self.web is not None:

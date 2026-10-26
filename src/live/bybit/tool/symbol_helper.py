@@ -117,7 +117,7 @@ def get_all_bybit_symbols(exchange=None, show_info: bool = True) -> dict:
         }
 
 
-def save_symbols_to_markdown(symbols_result: dict, exchange=None, output_file: str = "docs/bybit_futures_symbols.md") -> str:
+def save_symbols_to_markdown(symbols_result: dict, exchange=None, output_file: str = "docs/exchanges/bybit_futures_symbols.md") -> str:
     """
     Save Bybit symbols to markdown file.
     
@@ -179,7 +179,7 @@ if __name__ == "__main__":
         
         symbols_result = get_all_bybit_symbols(exchange=exchange, show_info=True)
         
-        output_file = save_symbols_to_markdown(symbols_result, exchange=exchange, output_file="docs/bybit_futures_symbols.md")
+        output_file = save_symbols_to_markdown(symbols_result, exchange=exchange, output_file="docs/exchanges/bybit_futures_symbols.md")
         print(f"\n✓ Saved {symbols_result['total_count']} symbols to {output_file}")
         
     except Exception as e:

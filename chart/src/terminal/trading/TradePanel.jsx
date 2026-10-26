@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { formatPrice } from '../lib/format';
 import { Dialog } from '../ui/Dialog';
 import { apiImageUrl } from './api';
+import { countdown, isOpenOrder, orderDetail, orderTitle, sideLabel, typeLabel } from './orderText';
 import { useTicker } from './useTrading';
 
 const SIGNAL_STATUS = {
@@ -14,10 +15,12 @@ const SIGNAL_STATUS = {
 };
 
 const ORDER_STATUS = {
+  WAITING: { label: 'Waiting fill', tone: 'accent' },
+  PARTIAL: { label: 'Partly filled', tone: 'warn' },
   FILLED: { label: 'Filled', tone: 'up' },
-  OPEN: { label: 'Open', tone: 'accent' },
+  NOT_FILLED: { label: 'Not filled', tone: 'down' },
   CANCELLED: { label: 'Cancelled', tone: 'muted' },
-  FAILED: { label: 'Failed', tone: 'down' },
+  UNKNOWN: { label: 'Unknown', tone: 'warn' },
 };
 
 const CONFIRM_MS = 3000;
@@ -27,11 +30,6 @@ function clock(epochSeconds) {
   return new Date(epochSeconds * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
 }
 
-function countdown(ms) {
-  const s = Math.max(0, Math.ceil(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
-
 function StatusTag({ map, status }) {
   const def = map[status] || { label: status, tone: 'muted' };
   return <span className={`tv-tag tv-tag--${def.tone}`}>{def.label}</span>;
@@ -39,7 +37,7 @@ function StatusTag({ map, status }) {
 
 function SideTag({ side }) {
   const isLong = String(side).toUpperCase() === 'LONG';
-  return <span className={`tv-tag ${isLong ? 'tv-tag--up' : 'tv-tag--down'}`}>{isLong ? 'Long' : 'Short'}</span>;
+  return <span className={`tv-tag ${isLong ? 'tv-tag--up' : 'tv-tag--down'}`}>{sideLabel(side)}</span>;
 }
 
 // ---- login --------------------------------------------------------------------------
@@ -107,7 +105,7 @@ function useSignalImage(signal) {
   return url;
 }
 
-function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onImage }) {
+function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdit, onImage }) {
   const image = useSignalImage(signal);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(null);
@@ -183,6 +181,9 @@ function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onIma
         <button type="button" className="tv-btn tv-btn--ghost" onClick={() => onShow(signal)}>Show on chart</button>
         {pending && (
           <>
+            <button type="button" className="tv-btn tv-btn--ghost" onClick={() => onEdit(signal)} disabled={!!busy}>
+              Edit SL/TP
+            </button>
             <button type="button" className="tv-btn tv-btn--ghost" onClick={() => decide('reject')} disabled={!!busy}>
               {busy === 'reject' ? 'Rejecting…' : 'Reject'}
             </button>
@@ -220,10 +221,11 @@ function SignalHistory({ items }) {
   );
 }
 
-function OrderHistory({ items, onCancel }) {
+function OrderList({ items, serverNow, onCancel, onShow }) {
   const [busyId, setBusyId] = useState(null);
   const [error, setError] = useState(null);
-  if (!items.length) return <div className="tv-empty">No orders placed from the web yet.</div>;
+  useTicker(items.some(o => isOpenOrder(o) && o.expiresAt > 0));
+  if (!items.length) return <div className="tv-empty">No orders yet. Approved signals and web orders show up here until they fill.</div>;
   const cancel = async (order) => {
     setBusyId(order.id);
     setError(null);
@@ -236,24 +238,40 @@ function OrderHistory({ items, onCancel }) {
       setBusyId(null);
     }
   };
+  const now = serverNow();
   return (
     <>
       {error && <p className="tv-trade-error" role="alert">{error}</p>}
       <ul className="tv-trade-list">
-        {items.map(o => (
-          <li key={o.id} className="tv-trade-row" title={o.message || undefined}>
-            <span className="num tv-muted">{clock(o.createdAt)}</span>
-            <b>{o.symbol}</b>
-            <SideTag side={o.side} />
-            {o.orderType === 'limit' && o.status === 'OPEN' ? (
-              <button type="button" className="tv-btn tv-btn--ghost tv-btn--xs" onClick={() => cancel(o)} disabled={busyId === o.id}>
-                {busyId === o.id ? '…' : 'Cancel'}
-              </button>
-            ) : (
-              <StatusTag map={ORDER_STATUS} status={o.status} />
-            )}
-          </li>
-        ))}
+        {items.map(o => {
+          const waiting = o.status === 'WAITING' && o.orderType !== 'limit';
+          const status = waiting ? { WAITING: { label: 'Filling…', tone: 'accent' } } : ORDER_STATUS;
+          const canCancel = o.orderType === 'limit' && isOpenOrder(o);
+          return (
+            <li key={o.id} className={`tv-ord ${isOpenOrder(o) ? 'is-open' : ''}`} title={orderTitle(o)}>
+              <div className="tv-ord-main">
+                <span className="num tv-muted">{clock(o.placedAt)}</span>
+                <button type="button" className="tv-ord-symbol" onClick={() => onShow(o)} aria-label={`Show ${o.symbol} on the chart`}>
+                  {o.symbol}
+                </button>
+                <SideTag side={o.side} />
+                <span className="tv-ord-type">{typeLabel(o.orderType)}</span>
+                <StatusTag map={status} status={o.status} />
+              </div>
+              <div className="tv-ord-sub">
+                <span className={`tv-ord-detail num ${o.status === 'NOT_FILLED' ? 'tv-down' : ''}`}>{orderDetail(o, now)}</span>
+                {canCancel && (
+                  <button type="button" className="tv-btn tv-btn--ghost tv-btn--xs" onClick={() => cancel(o)} disabled={busyId === o.id}>
+                    {busyId === o.id ? 'Cancelling…' : 'Cancel'}
+                  </button>
+                )}
+              </div>
+              {o.slTpMissing && o.filled > 0 && (
+                <p className="tv-trade-error">Stop loss / target not set on the exchange: {o.slTpMissing}</p>
+              )}
+            </li>
+          );
+        })}
       </ul>
     </>
   );
@@ -261,7 +279,7 @@ function OrderHistory({ items, onCancel }) {
 
 // ---- panel ------------------------------------------------------------------------------
 
-export default function TradePanel({ trading, activeSymbol, onShowSignal, onNewOrder }) {
+export default function TradePanel({ trading, activeSymbol, onShowSignal, onEditSignal, onShowOrder, onNewOrder }) {
   const { conn, error, signals, orders, config, approval } = trading;
   const [viewer, setViewer] = useState(null);
 
@@ -275,6 +293,11 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onNewO
     .sort((a, b) => (b.decidedAt || b.createdAt) - (a.decidedAt || a.createdAt))
     .slice(0, 15);
   const canTrade = conn === 'online' && config?.symbols?.includes(activeSymbol);
+  const openOrders = orders.filter(isOpenOrder);
+  const shownOrders = [
+    ...openOrders.sort((a, b) => b.placedAt - a.placedAt),
+    ...orders.filter(o => !isOpenOrder(o)).sort((a, b) => (b.closedAt || b.updatedAt) - (a.closedAt || a.updatedAt)),
+  ].slice(0, 15);
 
   return (
     <div className="tv-trade">
@@ -307,6 +330,7 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onNewO
             timeoutMinutes={approval.timeoutMinutes}
             onDecide={trading.decide}
             onShow={onShowSignal}
+            onEdit={onEditSignal}
             onImage={(url, sig) => setViewer({ url, sig })}
           />
         ))}
@@ -325,14 +349,17 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onNewO
         </p>
       </section>
 
+      <section aria-labelledby="trade-orders">
+        <h3 id="trade-orders" className="tv-trade-h">
+          Orders
+          {openOrders.length > 0 && <span className="tv-count">{openOrders.length}</span>}
+        </h3>
+        <OrderList items={shownOrders} serverNow={trading.serverNow} onCancel={trading.cancelOrder} onShow={onShowOrder} />
+      </section>
+
       <section aria-labelledby="trade-history">
         <h3 id="trade-history" className="tv-trade-h">Signal history</h3>
         <SignalHistory items={decided} />
-      </section>
-
-      <section aria-labelledby="trade-orders">
-        <h3 id="trade-orders" className="tv-trade-h">Web orders</h3>
-        <OrderHistory items={orders.slice(0, 15)} onCancel={trading.cancelOrder} />
       </section>
 
       {/* The image URL belongs to its card: close with it when the signal is decided */}

@@ -65,14 +65,17 @@ def status_line(sig: Signal, timeout_minutes: float) -> str:
         who = f"{sig.decided_by} (Telegram)"
     else:
         who = VIA_LABEL.get(sig.decided_via, sig.decided_via)
-    return {
+    line = {
         "PENDING": f"⏳ Chờ duyệt (hết hạn sau {timeout_minutes:g} phút) — duyệt trên Web hoặc bấm nút",
         "PLACING": f"⏳ Đã duyệt bởi {who} — đang đặt lệnh...",
-        "PLACED": f"✅ ĐÃ ĐẶT LỆNH (duyệt bởi {who})",
+        "PLACED": f"✅ ĐÃ GỬI LỆNH (duyệt bởi {who}) — chờ sàn khớp",
         "FAILED": f"⚠️ ĐẶT LỆNH THẤT BẠI (duyệt bởi {who})",
         "REJECTED": f"❌ ĐÃ BỎ QUA bởi {who}",
         "EXPIRED": "⌛ HẾT HẠN — không đặt lệnh",
     }.get(sig.status, sig.status)
+    if sig.edited and sig.status in ("PLACING", "PLACED", "FAILED"):
+        line += f"\nĐã chỉnh trên web: {sig.order_type.upper()} @ {sig.entry:g} · SL {sig.stop_loss:g} · TP {sig.take_profit:g}"
+    return line
 
 
 class TelegramChannel:

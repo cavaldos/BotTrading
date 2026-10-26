@@ -69,4 +69,7 @@ export const IconCopy = make(<><rect x="8" y="8" width="12" height="12" rx="1.5"
 export const IconSort = make(<><path d="M8 10l4-4 4 4M8 14l4 4 4-4" /></>);
 export const IconRefresh = make(<><path d="M20 11a8 8 0 00-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0014.5 4.5L20 16M20 20v-4h-4" /></>);
 export const IconStrategy = make(<><path d="M4 20V10M10 20V4M16 20v-7M22 20H2" /></>);
+export const IconMore = make(<>{dot(5, 12)}{dot(12, 12)}{dot(19, 12)}</>);
 export const IconDot = make(<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />);
+export const IconCalendar = make(<><rect x="3.5" y="5" width="17" height="15" rx="2" /><path d="M3.5 9.5h17M8 3v4M16 3v4" />{[[8, 13.5], [12, 13.5], [16, 13.5], [8, 17], [12, 17]].map(([x, y]) => <circle key={`${x}-${y}`} cx={x} cy={y} r="1.1" fill="currentColor" stroke="none" />)}</>);
+export const IconClock = make(<><circle cx="12" cy="12" r="8.5" /><path d="M12 7.5V12l3 2" /></>);

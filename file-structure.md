@@ -56,6 +56,17 @@ src/
 │   │       ├── order_manager.py
 │   │       ├── sent_orders_tui.py
 │   │       └── symbol_helper.py
+│   ├── lighter/                 # same functions as bybit/, for the Lighter DEX
+│   │   ├── exchange.py          # client: account, orders, SL/TP, leverage (python -m ... = setup check)
+│   │   ├── signer.py            # signer library bindings (--download to get it)
+│   │   ├── market_order.py
+│   │   ├── limit_order.py
+│   │   └── tool/
+│   │       ├── lighter_dashboard.py
+│   │       ├── get_history.py
+│   │       ├── order_manager.py
+│   │       ├── symbol_helper.py
+│   │       └── test_connect.py
 │   └── core/
 │       ├── calculate.py
 │       ├── discord_notify.py

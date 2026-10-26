@@ -230,14 +230,14 @@ function TradesTable({ rows, selectedId, onSelect }) {
 }
 
 const TABS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'summary', label: 'Performance Summary' },
-  { id: 'trades', label: 'List of Trades' },
+  { id: 'overview', label: 'Overview', short: 'Overview' },
+  { id: 'summary', label: 'Performance Summary', short: 'Summary' },
+  { id: 'trades', label: 'List of Trades', short: 'Trades' },
 ];
 
 export default function StrategyTester({
   rows, allRows, open, onToggle, height, onHeight, maxHeight, tab, onTab, selectedId, onSelect, title, emptyNote, onEmptyAction,
-  commission, onCommission,
+  commission, onCommission, compact,
 }) {
   const [feeDraft, setFeeDraft] = useState(null);
   const [dragging, setDragging] = useState(false);
@@ -269,6 +269,9 @@ export default function StrategyTester({
 
   const effective = !open ? 38 : maximized ? maxHeight : height;
 
+  // Phones open the tester from the bottom bar, so a closed tester takes no room
+  if (compact && !open) return null;
+
   return (
     <section className="tv-panel tv-bottom" style={{ height: effective }} aria-label="Strategy Tester">
       {open && (
@@ -286,7 +289,7 @@ export default function StrategyTester({
         />
       )}
       <div className="tv-bottom-head">
-        <h2>Strategy Tester</h2>
+        <h2 className="tv-hide-phone">Strategy Tester</h2>
         <div role="tablist" aria-label="Strategy Tester views" style={{ display: 'flex' }}>
           {TABS.map(t => (
             <button
@@ -297,13 +300,13 @@ export default function StrategyTester({
               aria-selected={open && tab === t.id}
               onClick={() => { onTab(t.id); if (!open) onToggle(true); }}
             >
-              {t.label}
+              {compact ? t.short : t.label}
             </button>
           ))}
         </div>
         <span className="tv-spacer" />
         <label className="tv-fee" title="Fixed cost taken from every closed trade, like fee_per_trade_r in the Python backtest">
-          <span>Commission (R / trade)</span>
+          <span>{compact ? 'Fee R' : 'Commission (R / trade)'}</span>
           <input
             className="tv-input num"
             type="number"

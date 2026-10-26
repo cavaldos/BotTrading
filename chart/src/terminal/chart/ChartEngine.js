@@ -275,6 +275,67 @@ export class ChartEngine {
     this.chart.timeScale().scrollToRealTime();
   }
 
+  /** Index of the bar that contains `time` (last bar starting at or before it), clamped to the data. */
+  _barAt(time) {
+    const n = this.times.length;
+    if (!n) return -1;
+    return Math.max(0, Math.min(n - 1, lowerBound(this.times, Number(time) + 1) - 1));
+  }
+
+  /** Times of the first and last bar on screen (null without data). */
+  visibleTimes() {
+    const n = this.times.length;
+    if (!n) return null;
+    const range = this.chart.timeScale().getVisibleLogicalRange();
+    const clamp = (v) => Math.max(0, Math.min(n - 1, Math.round(v)));
+    const from = range ? clamp(range.from) : Math.max(0, n - 160);
+    const to = range ? clamp(range.to) : n - 1;
+    return { from: this.times[from], to: this.times[to] };
+  }
+
+  /** Center the bar that contains `time`, keep the zoom, and point the crosshair at it. */
+  goToTime(time) {
+    const i = this._barAt(time);
+    if (i < 0) return null;
+    const range = this.chart.timeScale().getVisibleLogicalRange();
+    const width = range ? Math.max(20, range.to - range.from) : 160;
+    this.mainSeries.priceScale().applyOptions({ autoScale: true });
+    this.chart.timeScale().setVisibleLogicalRange({ from: i - width / 2, to: i + width / 2 });
+    this._pointAt(i);
+    return this.times[i];
+  }
+
+  /** Fit the bars between two times on screen. */
+  goToRange(fromTime, toTime) {
+    let a = this._barAt(Math.min(fromTime, toTime));
+    const b = this._barAt(Math.max(fromTime, toTime));
+    if (a < 0) return null;
+    // A range start inside a bar's gap belongs to the next bar
+    if (this.times[a] < Math.min(fromTime, toTime) && a < b) a += 1;
+    const pad = Math.max(2, (b - a) * 0.03);
+    this.mainSeries.priceScale().applyOptions({ autoScale: true });
+    this.chart.timeScale().setVisibleLogicalRange({ from: a - pad, to: b + pad });
+    return { from: this.times[a], to: this.times[b] };
+  }
+
+  _pointAt(i) {
+    const bar = this.display[i];
+    if (!bar) return;
+    // Wait for the new range to render so the crosshair lands on the bar
+    requestAnimationFrame(() => {
+      try {
+        this.chart.setCrosshairPosition(bar.close, bar.time, this.mainSeries);
+      } catch {
+        // series swapped meanwhile
+      }
+    });
+  }
+
+  /** Phones: smaller axis text so the price scale takes less width. */
+  setCompact(on) {
+    this.chart.applyOptions({ layout: { fontSize: on ? 11 : 12 } });
+  }
+
   getBarIndex(time) {
     const i = lowerBound(this.times, Number(time));
     return this.times[i] === Number(time) ? i : -1;

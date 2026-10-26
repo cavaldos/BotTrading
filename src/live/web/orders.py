@@ -7,7 +7,9 @@ Every request is checked here, never trusted from the browser:
   - risk per trade <= max_risk_per_trade, stop not absurdly close to entry
   - margin must fit the free balance, one order at a time with a cooldown
   - `confirm: true` and a client id (a double-submit returns the first result)
-Each placed order is saved to manual_orders.json and announced on Telegram + Discord.
+Each placed order is saved to manual_orders.json, announced on Telegram + Discord and
+handed to the order tracker, which reports whether it fills (and cancels a limit order
+still unfilled after `fillTimeoutMinutes`).
 """
 
 from __future__ import annotations
@@ -19,13 +21,16 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from src.live.bybit.exchange import calculate_position_size, format_symbol, get_exchange, validate_symbol
 from src.live.bybit.limit_order import format_limit_order_message
 from src.live.bybit.market_order import format_market_order_message
 from src.live.bybit.risk_calculator import clean_symbol
-from src.live.core.place_order import cancel_order, place_limit_order, place_market_order
+from src.live.core.place_order import place_limit_order, place_market_order
+
+if TYPE_CHECKING:
+    from src.live.core.order_tracker import OrderTracker
 
 
 WEB_DEFAULTS: dict[str, Any] = {
@@ -41,6 +46,7 @@ WEB_DEFAULTS: dict[str, Any] = {
 MIN_STOP_PCT = 0.05      # % of entry
 WIDE_STOP_PCT = 30.0
 BALANCE_CACHE_SECONDS = 10
+MAX_FILL_TIMEOUT_MINUTES = 7 * 24 * 60
 
 
 def load_web_config(live_config: dict | None) -> dict[str, Any]:
@@ -70,6 +76,20 @@ def _float(body: dict, key: str, label: str, required: bool = True) -> Optional[
     return number
 
 
+def parse_fill_timeout(body: dict) -> Optional[float]:
+    """Minutes before an unfilled limit order is cancelled: None = tracker default, 0 = never."""
+    value = body.get("fillTimeoutMinutes") if isinstance(body, dict) else None
+    if value in (None, ""):
+        return None
+    try:
+        minutes = float(value)
+    except (TypeError, ValueError):
+        raise OrderError("Fill timeout must be a number of minutes")
+    if not 0 <= minutes <= MAX_FILL_TIMEOUT_MINUTES:
+        raise OrderError(f"Fill timeout must be between 0 and {MAX_FILL_TIMEOUT_MINUTES} minutes")
+    return minutes
+
+
 class ManualOrderService:
     def __init__(
         self,
@@ -80,7 +100,7 @@ class ManualOrderService:
         cooldown_seconds: float,
         log_file: str,
         notify: Optional[Callable[[str], None]] = None,
-        on_event: Optional[Callable[[str, dict], None]] = None,
+        tracker: Optional["OrderTracker"] = None,
     ):
         self.symbols = sorted({clean_symbol(str(s)).upper() for s in symbols})
         self.default_risk = float(default_risk)
@@ -89,7 +109,7 @@ class ManualOrderService:
         self.cooldown_seconds = float(cooldown_seconds)
         self.log_file = Path(log_file)
         self.notify = notify or (lambda text: None)
-        self.on_event = on_event or (lambda event, data: None)
+        self.tracker = tracker
         self._lock = threading.Lock()          # one order at a time
         self._file_lock = threading.Lock()
         self._last_order_at = 0.0
@@ -104,10 +124,8 @@ class ManualOrderService:
             "defaultRisk": self.default_risk,
             "maxRisk": self.max_risk,
             "leverage": self.leverage,
+            "limitTimeoutMinutes": self.tracker.limit_timeout_minutes if self.tracker is not None else None,
         }
-
-    def recent(self, limit: int = 30) -> list[dict]:
-        return list(reversed(self._load()))[:limit]
 
     # ---------------- checks ----------------
 
@@ -253,6 +271,7 @@ class ManualOrderService:
             raise OrderError("Missing client id")
         if client_id in self._done:
             return self._done[client_id]
+        fill_timeout = parse_fill_timeout(body)
 
         with self._lock:
             if client_id in self._done:
@@ -285,6 +304,7 @@ class ManualOrderService:
 
         bybit = result.get("bybit") or {}
         success = bool(result.get("success"))
+        is_limit = check["orderType"] == "limit"
         record = {
             "id": uuid.uuid4().hex[:12],
             "clientId": client_id,
@@ -299,33 +319,38 @@ class ManualOrderService:
             "quantity": check["quantity"],
             "success": success,
             "orderId": bybit.get("order_id") or result.get("order_id"),
-            "status": ("OPEN" if check["orderType"] == "limit" else "FILLED") if success else "FAILED",
+            "status": "PLACED" if success else "FAILED",
+            "fillTimeoutMinutes": fill_timeout if is_limit else None,
             "message": text,
         }
+        order = None
+        if success and record["orderId"] and self.tracker is not None:
+            try:
+                tracked = self.tracker.track(
+                    source="web",
+                    ref=record["id"],
+                    symbol=check["symbol"],
+                    side=check["side"],
+                    order_type=check["orderType"],
+                    order_id=record["orderId"],
+                    price=check["entry"] if is_limit else (bybit.get("entry_price") or check["entry"]),
+                    stop_loss=bybit.get("stop_loss") or check["stopLoss"],
+                    take_profit=bybit.get("take_profit") or check["takeProfit"],
+                    quantity=bybit.get("final_quantity") or bybit.get("contracts") or check["quantity"],
+                    risk=check["risk"],
+                    timeout_minutes=fill_timeout,
+                    sl_tp_missing="" if is_limit else str(bybit.get("sl_tp_warning") or ""),
+                )
+                record["trackedId"] = tracked.id
+                order = tracked.to_dict()
+            except Exception as exc:  # the order is placed: report it as such
+                text += f"\n⚠️ Order tracking failed: {exc}"
         self._append(record)
         headline = f"🖥 LỆNH TỪ WEB: {check['side']} {check['symbol']} ({check['orderType'].upper()})"
         self.notify(f"{headline}\n{text}")
-        self.on_event("order", record)
-        response = {"success": success, "message": text, "order": record}
+        response = {"success": success, "message": text, "order": order}
         self._done[client_id] = response
         return response
-
-    def cancel(self, record_id: str) -> dict:
-        with self._file_lock:
-            records = self._load()
-            record = next((r for r in records if r.get("id") == record_id), None)
-        if record is None:
-            raise OrderError("Order not found")
-        if record.get("orderType") != "limit" or record.get("status") != "OPEN" or not record.get("orderId"):
-            raise OrderError("Only open limit orders can be cancelled here")
-        result = cancel_order(record["symbol"], record["orderId"])
-        success = bool(result.get("success"))
-        error = (result.get("bybit") or {}).get("error") or ""
-        if success:
-            record = self._update(record_id, status="CANCELLED") or record
-            self.notify(f"🖥 HỦY LỆNH TỪ WEB: {record['side']} {record['symbol']} LIMIT @ {record['entry']}")
-            self.on_event("order", record)
-        return {"success": success, "message": "Cancelled" if success else f"Cancel failed: {error}", "order": record}
 
     # ---------------- storage ----------------
 
@@ -345,13 +370,3 @@ class ManualOrderService:
             records = self._load()
             records.append(record)
             self._save(records)
-
-    def _update(self, record_id: str, **fields) -> Optional[dict]:
-        with self._file_lock:
-            records = self._load()
-            for record in records:
-                if record.get("id") == record_id:
-                    record.update(fields)
-                    self._save(records)
-                    return record
-        return None

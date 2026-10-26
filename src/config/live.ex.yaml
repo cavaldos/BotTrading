@@ -74,3 +74,12 @@ web:
   max_risk_per_trade: 0 # default: 0 (= 2 x strategy risk_per_trade; manual orders above it are refused)
   order_cooldown_seconds: 3 # default: 3 (min time between two manual orders)
   manual_orders_file: "res/logs/manual_orders.json" # default: "res/logs/manual_orders.json"
+
+# Following orders on the exchange (bot signals approved on the web/Telegram, and web orders).
+# Fills, partial fills and orders that do not fill are shown on the web chart and sent to Telegram + Discord.
+# Active when approval or web is enabled; state is kept in `file`, so open orders are followed again after a restart.
+order_tracking:
+  poll_seconds: 5 # default: 5 (how often the exchange is asked)
+  limit_timeout_minutes: 30 # default: 30 (cancel a limit order still unfilled after this; 0 = never; the web ticket can override it per order)
+  cancel_if_target_hit: true # default: true (cancel a waiting limit order once price reaches its take profit)
+  file: "res/logs/tracked_orders.json" # default: "res/logs/tracked_orders.json"

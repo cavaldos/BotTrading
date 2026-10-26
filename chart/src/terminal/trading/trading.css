@@ -220,13 +220,15 @@
 
 .tv-sig-note { margin: 8px 0 0 4px; font-size: 12px; }
 
+/* Show on chart | Edit SL/TP, then Reject | Approve */
 .tv-sig-actions {
   display: grid;
-  grid-template-columns: auto 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: 6px;
   margin: 10px 0 0 4px;
 }
 .tv-sig-actions .tv-btn { height: 32px; justify-content: center; padding: 0 8px; }
+.tv-sig-actions > :only-child { grid-column: 1 / -1; }
 
 .tv-sig-viewer { padding: 12px; overflow: auto; }
 .tv-sig-viewer img {
@@ -277,6 +279,110 @@
 
 .tv-dialog-foot .tv-btn--buy,
 .tv-dialog-foot .tv-btn--sell { min-width: 120px; }
+
+/* Signal approval: time left, pushed to the left of the buttons */
+.tv-order-expiry {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tv-order-note { margin: 0 0 10px; font-size: 12px; line-height: 1.4; }
+.tv-order-after { margin: 8px 0 0; font-size: 12px; line-height: 1.4; }
+
+/* ---- orders followed on the exchange ---------------------------------------------- */
+
+.tv-ord {
+  display: grid;
+  gap: 2px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.tv-ord + .tv-ord { border-top: 1px solid var(--tv-border); }
+.tv-ord-main {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+}
+.tv-ord-symbol {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  font-weight: 600;
+  color: var(--tv-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tv-ord-symbol:hover { color: var(--tv-accent); text-decoration: underline; text-underline-offset: 2px; }
+.tv-ord-type { color: var(--tv-muted); font-size: 11px; }
+.tv-ord-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding-left: 46px;
+}
+.tv-ord-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--tv-muted);
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums;
+}
+.tv-ord.is-open .tv-ord-detail { color: var(--tv-text); }
+.tv-ord .tv-trade-error { margin: 2px 0 0 46px; }
+
+/* ---- fill alerts (bottom right, above the chart) ---------------------------------- */
+
+.tv-alerts {
+  position: fixed;
+  right: 60px;
+  bottom: 20px;
+  z-index: 1050;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(320px, calc(100vw - 76px));
+  pointer-events: none;
+}
+.tv-alert {
+  --tone: var(--tv-muted);
+  pointer-events: auto;
+  padding: 10px 10px 10px 14px;
+  border-radius: var(--tv-radius);
+  background: var(--tv-popup);
+  box-shadow: inset 3px 0 0 var(--tone), var(--tv-shadow-pop);
+  font-size: 12px;
+}
+.tv-alert--up { --tone: var(--tv-up); }
+.tv-alert--down { --tone: var(--tv-down); }
+.tv-alert--warn { --tone: var(--tv-warn); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .tv-alert { animation: tv-sig-in 200ms var(--tv-ease); }
+}
+
+.tv-alert-head { display: flex; align-items: center; gap: 8px; }
+.tv-alert-head b { flex: 1; font-size: 13px; font-weight: 600; color: var(--tv-text-strong); }
+.tv-alert-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--tone); }
+.tv-alert-close { height: 24px; width: 24px; margin: -4px -4px 0 0; color: var(--tv-muted); }
+.tv-alert-what { margin: 4px 0 0; color: var(--tv-text); }
+.tv-alert-detail { margin: 2px 0 0; line-height: 1.4; color: var(--tv-text-strong); font-variant-numeric: tabular-nums; }
+.tv-alert-detail.tv-muted { color: var(--tv-muted); }
+.tv-alert .tv-trade-error { margin-top: 4px; }
+.tv-alert-show { margin-top: 8px; }
+
+@media (max-width: 900px) {
+  .tv-alerts { right: 56px; bottom: 12px; }
+}
+
+/* Phones: full width, above the bottom bar */
+@media (max-width: 600px) {
+  .tv-alerts { left: 8px; right: 8px; bottom: 64px; width: auto; }
+}
 
 /* Trade button in the drawing toolbar */
 .tv-draw-bar .tv-btn--trade { font-weight: 600; color: var(--tv-text-strong); background: var(--tv-accent); padding: 0 10px; }

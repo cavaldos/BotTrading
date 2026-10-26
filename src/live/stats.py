@@ -193,7 +193,7 @@ def load_all_sent_orders(log_file: str) -> list[dict]:
                 
                 # Map status to result format
                 result = str(status).strip().upper()
-                if result in ("PENDING", "REJECTED", "EXPIRED", "FAILED"):
+                if result in ("PENDING", "REJECTED", "EXPIRED", "FAILED", "NOT_FILLED"):
                     continue  # signal never became an order (manual approval)
                 if result not in ["WIN", "LOSS", "OPEN"]:
                     result = "OPEN"

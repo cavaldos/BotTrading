@@ -1,15 +1,20 @@
-// Attention cues for a new bot signal: a short chime, and a system notification
-// when the tab is in the background (permission is asked when connecting).
+// Attention cues for a new bot signal and for order fills: a short chime, and a
+// system notification when the tab is in the background (permission is asked when connecting).
+import { ORDER_CHANGES, orderDetail, sideLabel, typeLabel } from './orderText';
 
 let audio = null;
 
-function chime() {
+// Rising two-tone: new signal / filled. Falling: not filled / problem.
+const UP = [880, 1320];
+const DOWN = [660, 440];
+
+function chime(tones = UP) {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
   audio = audio || new Ctx();
   if (audio.state === 'suspended') audio.resume();
   const t = audio.currentTime;
-  [880, 1320].forEach((freq, i) => {
+  tones.forEach((freq, i) => {
     const osc = audio.createOscillator();
     const gain = audio.createGain();
     osc.type = 'sine';
@@ -34,6 +39,30 @@ export function announceSignal(signal) {
       const n = new Notification(`${signal.symbol} ${signal.side} · ${signal.signalTimeframe}`, {
         body: `Entry ${signal.entry} · SL ${signal.stopLoss} · TP ${signal.takeProfit}\nWaiting for approval`,
         tag: `signal-${signal.id}`,
+      });
+      n.onclick = () => {
+        window.focus();
+        n.close();
+      };
+    }
+  } catch {
+    // notifications not supported
+  }
+}
+
+export function announceOrder(order, change) {
+  const good = change === 'filled' || change === 'partial';
+  try {
+    chime(good ? UP : DOWN);
+  } catch {
+    // audio blocked until the user interacts with the page
+  }
+  try {
+    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+      const title = `${ORDER_CHANGES[change]?.title || 'Order update'}: ${sideLabel(order.side)} ${order.symbol}`;
+      const n = new Notification(title, {
+        body: `${typeLabel(order.orderType)} · ${orderDetail(order)}`,
+        tag: `order-${order.id}`,
       });
       n.onclick = () => {
         window.focus();

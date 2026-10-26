@@ -17,25 +17,20 @@ import StrategyTester from './ui/StrategyTester';
 import SymbolSearch from './ui/SymbolSearch';
 import IndicatorsDialog from './ui/IndicatorsDialog';
 import IndicatorSettings from './ui/IndicatorSettings';
+import GoToDate from './ui/GoToDate';
 import Tooltip from './ui/Tooltip';
 import { DrawingBar, TextEditor } from './ui/DrawingBar';
+import MobileNav from './ui/MobileNav';
 import { IconToEnd, IconWatchlist, IconTrades, IconOrder } from './ui/icons';
+import { TOOL_DEFS } from './drawings/tools';
+import { matches, NARROW, PHONE, SHORT, useMediaQuery, useWindowHeight } from './lib/useMediaQuery';
 import TradePanel from './trading/TradePanel';
 import OrderDialog from './trading/OrderDialog';
+import OrderAlerts from './trading/OrderAlerts';
 import { useTrading } from './trading/useTrading';
-import { announceSignal } from './trading/notify';
+import { announceOrder, announceSignal } from './trading/notify';
+import { isOpenOrder } from './trading/orderText';
 import './trading/trading.css';
-
-const NARROW = '(max-width: 900px)';
-const PHONE = '(max-width: 600px)';
-
-function matches(query) {
-  try {
-    return window.matchMedia(query).matches;
-  } catch {
-    return false;
-  }
-}
 
 /** useState that is mirrored to localStorage. */
 function usePersisted(key, initial) {
@@ -86,6 +81,15 @@ function filterRows(rows, filter) {
   }
 }
 
+// Shown on phones while a drawing tool waits for the chart to be touched
+function toolHint(tool) {
+  const def = TOOL_DEFS[tool];
+  if (!def) return '';
+  if (def.clicks === 'drag') return 'drag on the chart to draw';
+  if (def.clicks === 1) return 'tap the chart to place it';
+  return 'drag across the chart, or tap two points';
+}
+
 function isTyping(el) {
   if (!el) return false;
   const tag = el.tagName;
@@ -95,6 +99,9 @@ function isTyping(el) {
 export default function TerminalPage() {
   const [params, setParams] = useSearchParams();
   const rootRef = useRef(null);
+  const phone = useMediaQuery(PHONE);
+  const short = useMediaQuery(SHORT);
+  const windowHeight = useWindowHeight();
   const [legendStore] = useState(createLegendStore);
   const [engine, setEngineState] = useState(null);
   const setEngine = useCallback((e) => {
@@ -145,8 +152,9 @@ export default function TerminalPage() {
   const [smcVisibility, setSmcVisibility] = usePersisted('smcVisibility', DEFAULT_SMC_VISIBILITY);
   const [rightTab, setRightTab] = usePersisted('rightTabV2', 'trades');
   const [rightOpen, setRightOpen] = useState(() => !matches(NARROW) && loadJSON('rightOpen', true) !== false);
-  const [bottomOpen, setBottomOpen] = usePersisted('bottomOpen', !matches(PHONE));
-  const [bottomHeight, setBottomHeight] = usePersisted('bottomHeight', 280);
+  // Phones (portrait or sideways) start with the tester closed: the chart comes first
+  const [bottomOpen, setBottomOpen] = usePersisted('bottomOpen', () => !matches(PHONE) && !matches(SHORT));
+  const [bottomHeight, setBottomHeight] = usePersisted('bottomHeight', () => (matches(PHONE) ? Math.round(window.innerHeight * 0.45) : 280));
   const [bottomTab, setBottomTab] = usePersisted('bottomTab', 'overview');
   const [magnet, setMagnet] = usePersisted('magnet', false);
   // Same default as fee_per_trade_r in the Python strategy config
@@ -174,6 +182,8 @@ export default function TerminalPage() {
 
   // ---- transient UI ----------------------------------------------------------
   const [tool, setTool] = useState(null);
+  // Phone: drawing palette shown over the chart
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [drawLocked, setDrawLocked] = useState(false);
   const [drawHidden, setDrawHidden] = useState(false);
   const [selectedDrawing, setSelectedDrawing] = useState(null);
@@ -188,7 +198,11 @@ export default function TerminalPage() {
   const [panesVersion, setPanesVersion] = useState(0);
   const [toast, setToast] = useState(null);
   const [orderTicket, setOrderTicket] = useState(null);
+  const [orderDraft, setOrderDraft] = useState(null);
+  const [orderAlerts, setOrderAlerts] = useState([]);
   const [focusSignalId, setFocusSignalId] = useState(null);
+  // Stable so open dialogs keep focus while live data refreshes the page
+  const closeDialog = useCallback(() => setDialog(null), []);
 
   // ---- bot connection (signals to approve, manual orders) -------------------------
   const trading = useTrading({
@@ -199,6 +213,14 @@ export default function TerminalPage() {
         setRightTab('trade');
         setRightOpen(true);
       }
+    },
+    // Fill / no fill: a card that stays until dismissed (one per order, newest last)
+    onOrderChange: (order, change) => {
+      announceOrder(order, change);
+      setOrderAlerts(list => [
+        ...list.filter(a => a.order.id !== order.id),
+        { id: `${order.id}:${change}`, order, change },
+      ].slice(-4));
     },
   });
   const pendingCount = trading.signals.filter(s => s.status === 'PENDING').length;
@@ -269,10 +291,29 @@ export default function TerminalPage() {
           { price: s.takeProfit, color: '#089981', title: 'Target' },
         );
       });
+    // Limit orders on the exchange still waiting to fill
+    trading.orders
+      .filter(o => o.symbol === activeSymbol && o.orderType === 'limit' && isOpenOrder(o))
+      .forEach(o => {
+        lines.push(
+          { price: o.price, color: '#5b8bff', title: `${o.side === 'LONG' ? 'Long' : 'Short'} limit`, dashed: false },
+          { price: o.stopLoss, color: '#f23645', title: 'Order stop', dashed: false },
+          { price: o.takeProfit, color: '#089981', title: 'Order target', dashed: false },
+        );
+      });
+    // Levels being edited in the order ticket
+    if (orderDraft && orderTicket?.symbol === activeSymbol) {
+      lines.push(
+        { price: orderDraft.entry, color: '#ff9800', title: 'New entry', width: 2 },
+        { price: orderDraft.stopLoss, color: '#f23645', title: 'New stop', width: 2 },
+        { price: orderDraft.takeProfit, color: '#089981', title: 'New target', width: 2 },
+      );
+    }
     engine.setSignalLines(lines);
-  }, [engine, trading.signals, activeSymbol, focusSignalId]);
+  }, [engine, trading.signals, trading.orders, activeSymbol, focusSignalId, orderDraft, orderTicket]);
 
   useEffect(() => { engine?.drawings.setTool(tool); }, [engine, tool]);
+  useEffect(() => { engine?.setCompact(phone); }, [engine, phone]);
   useEffect(() => { engine?.drawings.setMagnet(magnet); }, [engine, magnet]);
   useEffect(() => { engine?.drawings.setLocked(drawLocked); }, [engine, drawLocked]);
   useEffect(() => { engine?.drawings.setHidden(drawHidden); }, [engine, drawHidden]);
@@ -336,6 +377,8 @@ export default function TerminalPage() {
           setTool('rect');
         } else if (e.code === 'KeyR') {
           s.engine?.resetView();
+        } else if (e.code === 'KeyG') {
+          if (s.engine?.times.length) setDialog('goto');
         } else if (map[e.code]) {
           setTool(map[e.code]);
         } else {
@@ -453,7 +496,8 @@ export default function TerminalPage() {
     : null;
 
   const settingsInst = settingsUid ? safeIndicators.find(i => i.uid === settingsUid) : null;
-  const maxBottom = Math.max(200, (typeof window !== 'undefined' ? window.innerHeight : 800) - 200);
+  // Leave the chart at least ~200px; on short (sideways phone) screens the tester gets at most ~half
+  const maxBottom = short ? Math.max(140, Math.round(windowHeight * 0.5)) : Math.max(200, windowHeight - 200);
   const testerEmpty = !sourceDef.hasTrades
     ? 'SMC data files have no trades. Switch to Backtest to use the Strategy Tester.'
     : rows.length === 0 && data ? 'No trades in this file yet.' : null;
@@ -475,9 +519,20 @@ export default function TerminalPage() {
   // ---- trading actions -------------------------------------------------------------------
   const livePrice = source === 'live' && lastClose ? lastClose.close : null;
 
-  const openTradePanel = (message) => {
-    setRightTab('trade');
+  // Phones have room for one drawer under the chart: a side panel or the tester
+  const openRight = (tab) => {
+    setRightTab(tab);
     setRightOpen(true);
+    if (phone) setBottomOpen(false);
+  };
+
+  const toggleTester = () => {
+    if (!bottomOpen && phone) setRightOpen(false);
+    setBottomOpen(!bottomOpen);
+  };
+
+  const openTradePanel = (message) => {
+    openRight('trade');
     if (message) setToast(message);
   };
 
@@ -518,13 +573,58 @@ export default function TerminalPage() {
     if (matches(NARROW)) setRightOpen(false);
   };
 
+  // Approve a signal with edited levels: show it on the chart and open the ticket prefilled
+  const editSignal = (sig) => {
+    if (trading.conn !== 'online') {
+      setToast('The bot is not connected');
+      return;
+    }
+    showSignal(sig);
+    setOrderTicket({
+      symbol: sig.symbol,
+      side: sig.side,
+      initial: {
+        signalId: sig.id,
+        timeframe: sig.signalTimeframe,
+        entry: sig.entry,
+        stopLoss: sig.stopLoss,
+        takeProfit: sig.takeProfit,
+        risk: sig.riskPerTrade,
+      },
+    });
+  };
+
+  const showOrder = (order) => {
+    if (source !== 'live') changeSource('live');
+    setSymbol(order.symbol);
+    if (order.timeframe) setTf(order.timeframe);
+    engine?.scrollToRealtime();
+    if (matches(NARROW)) setRightOpen(false);
+  };
+
   const toggleRight = (tab) => {
     if (rightOpen && shownRightTab === tab) {
       setRightOpen(false);
     } else {
-      setRightTab(tab);
-      setRightOpen(true);
+      openRight(tab);
     }
+  };
+
+  const toolbarProps = {
+    tool,
+    // Phone: close the palette once a tool is picked so the whole chart can be drawn on
+    onTool: (t) => {
+      setTool(t);
+      if (phone && t) setToolsOpen(false);
+    },
+    magnet,
+    onMagnet: setMagnet,
+    locked: drawLocked,
+    onLocked: setDrawLocked,
+    hidden: drawHidden,
+    onHidden: setDrawHidden,
+    onRemoveAll: () => engine?.drawings.removeAll(),
+    hasDrawings: drawingCount > 0,
   };
 
   return (
@@ -540,6 +640,7 @@ export default function TerminalPage() {
         onSource={changeSource}
         onOpenSymbol={() => setDialog('symbol')}
         onOpenIndicators={() => setDialog('indicators')}
+        onGoTo={data?.candles?.length ? () => setDialog('goto') : null}
         live={sourceDef.live ? {
           lastUpdate: file.lastUpdate,
           autoRefresh,
@@ -552,21 +653,11 @@ export default function TerminalPage() {
           setCanUndo(!!engine?.drawings.canUndo());
         }}
         canUndo={canUndo}
+        compact={phone}
       />
 
       <div className="tv-body">
-        <LeftToolbar
-          tool={tool}
-          onTool={setTool}
-          magnet={magnet}
-          onMagnet={setMagnet}
-          locked={drawLocked}
-          onLocked={setDrawLocked}
-          hidden={drawHidden}
-          onHidden={setDrawHidden}
-          onRemoveAll={() => engine?.drawings.removeAll()}
-          hasDrawings={drawingCount > 0}
-        />
+        {!phone && <LeftToolbar {...toolbarProps} />}
 
         <main className="tv-center">
           <ChartView onEngine={setEngine} handlers={handlers}>
@@ -618,6 +709,13 @@ export default function TerminalPage() {
             >
               <IconToEnd size={16} />
             </button>
+            {phone && toolsOpen && <LeftToolbar {...toolbarProps} floating />}
+            {phone && tool && !toolsOpen && (
+              <div className="tv-tool-hint" role="status">
+                <span><b>{TOOL_DEFS[tool]?.label}</b>: {toolHint(tool)}</span>
+                <button type="button" className="tv-btn tv-btn--ghost tv-btn--xs" onClick={() => setTool(null)}>Cancel</button>
+              </div>
+            )}
             {chartMessage && <div className="tv-chart-msg" role="status">{chartMessage}</div>}
           </ChartView>
 
@@ -638,12 +736,14 @@ export default function TerminalPage() {
             onEmptyAction={!sourceDef.hasTrades ? () => changeSource('backtest') : null}
             commission={commission}
             onCommission={setCommissionR}
+            compact={phone}
           />
         </main>
 
         {rightOpen && (
           <RightPanel
             tab={shownRightTab}
+            compact={phone}
             onClose={() => setRightOpen(false)}
             watchlist={{
               groups,
@@ -669,33 +769,50 @@ export default function TerminalPage() {
                 trading={trading}
                 activeSymbol={activeSymbol}
                 onShowSignal={showSignal}
+                onEditSignal={editSignal}
+                onShowOrder={showOrder}
                 onNewOrder={newOrder}
               />
             )}
           />
         )}
 
-        <nav className="tv-panel tv-side-strip" aria-label="Panels">
-          <button type="button" className="tv-tool" aria-pressed={rightOpen && shownRightTab === 'watchlist'} onClick={() => toggleRight('watchlist')} aria-label="Watchlist" data-tip="Watchlist" data-tip-side="left">
-            <IconWatchlist size={20} />
-          </button>
-          <button type="button" className="tv-tool" aria-pressed={rightOpen && shownRightTab === 'trades'} onClick={() => toggleRight('trades')} aria-label="Trades" data-tip="Trades" data-tip-side="left">
-            <IconTrades size={20} />
-          </button>
-          <button
-            type="button"
-            className="tv-tool"
-            aria-pressed={rightOpen && shownRightTab === 'trade'}
-            onClick={() => toggleRight('trade')}
-            aria-label={pendingCount ? `Trade, ${pendingCount} signal${pendingCount > 1 ? 's' : ''} waiting` : 'Trade'}
-            data-tip="Trade"
-            data-tip-side="left"
-          >
-            <IconOrder size={20} />
-            {pendingCount > 0 && <span className="tv-strip-badge" aria-hidden="true">{pendingCount}</span>}
-          </button>
-        </nav>
+        {!phone && (
+          <nav className="tv-panel tv-side-strip" aria-label="Panels">
+            <button type="button" className="tv-tool" aria-pressed={rightOpen && shownRightTab === 'watchlist'} onClick={() => toggleRight('watchlist')} aria-label="Watchlist" data-tip="Watchlist" data-tip-side="left">
+              <IconWatchlist size={20} />
+            </button>
+            <button type="button" className="tv-tool" aria-pressed={rightOpen && shownRightTab === 'trades'} onClick={() => toggleRight('trades')} aria-label="Trades" data-tip="Trades" data-tip-side="left">
+              <IconTrades size={20} />
+            </button>
+            <button
+              type="button"
+              className="tv-tool"
+              aria-pressed={rightOpen && shownRightTab === 'trade'}
+              onClick={() => toggleRight('trade')}
+              aria-label={pendingCount ? `Trade, ${pendingCount} signal${pendingCount > 1 ? 's' : ''} waiting` : 'Trade'}
+              data-tip="Trade"
+              data-tip-side="left"
+            >
+              <IconOrder size={20} />
+              {pendingCount > 0 && <span className="tv-strip-badge" aria-hidden="true">{pendingCount}</span>}
+            </button>
+          </nav>
+        )}
       </div>
+
+      {phone && (
+        <MobileNav
+          toolsOpen={toolsOpen}
+          toolActive={!!tool}
+          onTools={() => setToolsOpen(o => !o)}
+          panel={rightOpen ? shownRightTab : null}
+          onPanel={toggleRight}
+          testerOpen={bottomOpen}
+          onTester={toggleTester}
+          pendingCount={pendingCount}
+        />
+      )}
 
       {dialog === 'symbol' && (
         <SymbolSearch
@@ -720,26 +837,46 @@ export default function TerminalPage() {
           onClose={() => setDialog(null)}
         />
       )}
+      {dialog === 'goto' && engine && firstOpen && lastClose && (
+        <GoToDate
+          firstTime={firstOpen.time}
+          lastTime={lastClose.time}
+          barSeconds={tfOption?.seconds || tfToSeconds(tfOption?.tf) || 60}
+          view={engine.visibleTimes()}
+          onDate={(t) => engine.goToTime(t)}
+          onRange={(a, b) => engine.goToRange(a, b)}
+          onClose={closeDialog}
+        />
+      )}
       {settingsInst && (
         <IndicatorSettings inst={settingsInst} onApply={applyIndicator} onClose={() => setSettingsUid(null)} />
       )}
       {orderTicket && (
         <OrderDialog
-          key={`${orderTicket.symbol}-${orderTicket.side}`}
+          key={`${orderTicket.symbol}-${orderTicket.side}-${orderTicket.initial?.signalId || ''}`}
           trading={trading}
           symbol={orderTicket.symbol}
           side={orderTicket.side}
           initial={orderTicket.initial}
-          lastPrice={livePrice}
+          lastPrice={orderTicket.symbol === activeSymbol ? livePrice : null}
+          signal={orderTicket.initial?.signalId ? trading.signals.find(s => s.id === orderTicket.initial.signalId) : undefined}
+          onDraft={setOrderDraft}
           onClose={() => setOrderTicket(null)}
           onPlaced={(res) => {
+            const t = orderTicket;
             setOrderTicket(null);
-            const o = res.order || {};
-            setToast(`${o.orderType === 'limit' ? 'Limit order placed' : 'Order filled'}: ${o.side === 'LONG' ? 'Long' : 'Short'} ${o.symbol}`);
+            const what = `${t.side === 'LONG' ? 'Long' : 'Short'} ${t.symbol}`;
+            const limit = (res.order?.orderType || res.signal?.orderType) === 'limit';
+            setToast(`${t.initial?.signalId ? 'Approved' : 'Order sent'}: ${what}${limit ? ' limit' : ''} · waiting for the exchange to fill`);
           }}
         />
       )}
       <Tooltip rootRef={rootRef} />
+      <OrderAlerts
+        alerts={orderAlerts}
+        onDismiss={(id) => setOrderAlerts(list => list.filter(a => a.id !== id))}
+        onShow={showOrder}
+      />
       {toast && <div className="tv-toast" role="status">{toast}</div>}
     </div>
   );

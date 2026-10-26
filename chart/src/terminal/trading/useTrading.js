@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, ApiError, clearToken, getToken, newClientId, readEvents, setToken } from './api';
+import { ORDER_CHANGES } from './orderText';
 
 const STALE_MS = 45000; // the bot pings every 15 s; reconnect after 3 missed pings
 
@@ -15,10 +16,12 @@ function upsert(list, item) {
  * Live connection to the bot's trading API.
  *
  * conn: 'login' (no or bad token) | 'connecting' | 'online' | 'offline' (retrying)
- * signals: bot signals (pending and recently decided), orders: manual web orders.
- * `onSignal(signal)` is called for each new bot signal.
+ * signals: bot signals (pending and recently decided).
+ * orders: orders followed on the exchange (approved signals and web orders) with their fill status.
+ * `onSignal(signal)` is called for each new bot signal,
+ * `onOrderChange(order, change)` when an order fills, partly fills, does not fill or is cancelled.
  */
-export function useTrading({ onSignal } = {}) {
+export function useTrading({ onSignal, onOrderChange } = {}) {
   const [token, setTokenState] = useState(getToken);
   const [conn, setConn] = useState(() => (getToken() ? 'connecting' : 'login'));
   const [error, setError] = useState(null);
@@ -28,8 +31,10 @@ export function useTrading({ onSignal } = {}) {
   const [approval, setApproval] = useState({ enabled: false, timeoutMinutes: null });
   const clockOffset = useRef(0);
   const onSignalRef = useRef(onSignal);
+  const onOrderChangeRef = useRef(onOrderChange);
   useLayoutEffect(() => {
     onSignalRef.current = onSignal;
+    onOrderChangeRef.current = onOrderChange;
   });
 
   useEffect(() => {
@@ -59,6 +64,7 @@ export function useTrading({ onSignal } = {}) {
         if (data.event === 'new') onSignalRef.current?.(data.signal);
       } else if (name === 'order' && data?.order) {
         setOrders(list => upsert(list, data.order));
+        if (ORDER_CHANGES[data.change]) onOrderChangeRef.current?.(data.order, data.change);
       }
     };
 
@@ -118,8 +124,9 @@ export function useTrading({ onSignal } = {}) {
     setError(null);
   }, []);
 
-  const decide = useCallback(async (id, action) => {
-    const res = await api(`/signals/${id}/${action}`, { method: 'POST' });
+  // `changes` (approve only): {orderType, entry, stopLoss, takeProfit, risk, fillTimeoutMinutes} edited on the web
+  const decide = useCallback(async (id, action, changes) => {
+    const res = await api(`/signals/${id}/${action}`, { method: 'POST', body: changes });
     if (res?.signal) setSignals(list => upsert(list, res.signal));
     return res;
   }, []);

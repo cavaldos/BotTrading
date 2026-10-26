@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { formatShortDateTime, formatDateTime, formatSigned, formatPrice } from '../lib/format';
-import { IconChevronRight } from './icons';
+import { IconChevronDown, IconChevronRight } from './icons';
 
 // Last price / change for the live watchlist. Live files are small, so each
 // symbol's file is fetched while the watchlist is visible.
@@ -146,14 +146,15 @@ function TradeListPanel({ rows, filter, onFilter, selectedId, onSelect, showOpen
 
 const TITLES = { trades: 'Trades', watchlist: 'Watchlist', trade: 'Trade' };
 
-export default function RightPanel({ tab, onClose, watchlist, trades, trade }) {
+/** Side panel; on phones (`compact`) it is a drawer under the chart. */
+export default function RightPanel({ tab, onClose, watchlist, trades, trade, compact }) {
   const title = TITLES[tab] || 'Watchlist';
   return (
     <aside className="tv-panel tv-side" aria-label={title}>
       <div className="tv-side-head">
         <h2>{title}</h2>
         <button type="button" className="tv-btn tv-btn--icon" onClick={onClose} aria-label="Collapse panel" data-tip="Collapse" data-tip-side="left">
-          <IconChevronRight size={18} />
+          {compact ? <IconChevronDown size={18} /> : <IconChevronRight size={18} />}
         </button>
       </div>
       <div className="tv-side-body">
