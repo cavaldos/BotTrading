@@ -34,6 +34,14 @@ else
 fi
 export PYTHONUNBUFFERED=1
 
+# The chart reaches the bot only through its web API (live.yaml `web`)
+WEB_INFO=$(python -c "from src.config import load_live_config; from src.live.web.orders import load_web_config; c = load_web_config(load_live_config(include_strategy=False)); print('on' if c.get('enabled') else 'off', c.get('host'), c.get('port'))" 2>/dev/null || echo "unknown")
+case "$WEB_INFO" in
+  on*) echo "Bot web API: http://$(echo "$WEB_INFO" | cut -d' ' -f2):$(echo "$WEB_INFO" | cut -d' ' -f3) (chart proxies /api to it)" ;;
+  off*) echo "Cảnh báo: web.enabled đang là false trong src/config/live.yaml -> chart KHÔNG kết nối được bot (Bot is not reachable)." ;;
+  *) echo "Cảnh báo: không đọc được src/config/live.yaml (mục web)." ;;
+esac
+
 if ! grep -qE '^WEB_API_TOKEN=.{16,}' .env 2>/dev/null; then
   echo "Cảnh báo: .env chưa có WEB_API_TOKEN (16+ ký tự) -> web không duyệt lệnh được."
   echo "  Tạo token: python -c \"import secrets; print(secrets.token_urlsafe(24))\""

@@ -66,7 +66,9 @@ export async function apiImageUrl(path, options) {
 export async function readEvents(onEvent, { signal, token = getToken() } = {}) {
   const res = await request('/events', { signal, token });
   if (!res.ok || !res.body) {
-    throw new ApiError(res.status === 401 ? 'Token rejected by the bot' : UNREACHABLE, res.status);
+    const isJson = (res.headers.get('content-type') || '').includes('json');
+    const data = isJson ? await res.json().catch(() => null) : null;
+    throw new ApiError(res.status === 401 ? 'Token rejected by the bot' : data?.error || UNREACHABLE, res.status);
   }
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = '';

@@ -18,7 +18,21 @@ export default ({ mode }) => {
   // this server; /api is forwarded to the bot, which checks the WEB_API_TOKEN.
   const botApi = env.BOT_API_URL || 'http://127.0.0.1:8787'
   const proxy = {
-    '/api': { target: botApi, changeOrigin: true },
+    '/api': {
+      target: botApi,
+      changeOrigin: true,
+      // Bot down: answer with the reason as JSON (the chart shows `error`) instead of an empty 500
+      configure: (server) => {
+        server.on('error', (err, _req, res) => {
+          if (!res || typeof res.writeHead !== 'function' || res.headersSent || res.writableEnded) return
+          const error = `Chart server cannot reach the bot API at ${botApi} (${err.code || err.message}). ` +
+            'On the server check: the bot is running, web.enabled: true in src/config/live.yaml, ' +
+            'WEB_API_TOKEN (16+ characters) in .env, and web.port matches.'
+          res.writeHead(502, { 'Content-Type': 'application/json' })
+          res.end(JSON.stringify({ error }))
+        })
+      },
+    },
   }
 
   return defineConfig({

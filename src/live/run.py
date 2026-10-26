@@ -774,6 +774,8 @@ class TradingServices:
             except Exception as e:
                 self.web = None
                 state.add_error("WEB", f"Web API disabled: {e}")
+        else:
+            state.add_log("Web", "Web API off (web.enabled: false in live.yaml): the chart cannot connect")
 
         if self.hub is not None and self.telegram is None and self.web is None:
             self.stop()
