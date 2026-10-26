@@ -1,5 +1,4 @@
 import os
-import re
 import sys
 import time
 import threading
@@ -66,9 +65,16 @@ def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
     else:
         send_entry_discord(**message_kwargs)
 
-# from .place_order import risk_per_trade, place_limit_order as place_order, bybit_format_limit_message as bybit_format_order_message
-from .place_order import risk_per_trade as default_risk_per_trade, place_market_order as place_order, bybit_format_market_message as bybit_format_order_message
-from .place_order import place_limit_order, bybit_format_limit_message
+from src.core.symbols import strip_timeframe
+from src.exchanges import get_exchange
+from .place_order import (
+    exchange_label,
+    format_order_message,
+    place_limit_order,
+    place_market_order as place_order,
+    risk_per_trade as default_risk_per_trade,
+    short_error,
+)
 
 
 def load_sent_orders(log_file: Path) -> tuple[set, list]:
@@ -444,11 +450,8 @@ def _late_entry_problem(symbol: str, order_type: str, stop_loss: float, take_pro
 
     A market order opened past SL would have no valid stop loss on the exchange.
     """
-    from src.live.bybit.exchange import get_exchange, format_symbol
-    from src.live.bybit.risk_calculator import clean_symbol
-
     try:
-        price = get_exchange().fetch_ticker(format_symbol(clean_symbol(symbol))).get('last')
+        price = get_exchange().last_price(symbol)
     except Exception:
         return None  # place_order reports exchange errors itself
     if price is None:
@@ -467,46 +470,44 @@ def _late_entry_problem(symbol: str, order_type: str, stop_loss: float, take_pro
     return None
 
 
-def _follow_order(sig: Signal, bybit: dict, order_key: str) -> None:
+def _follow_order(sig: Signal, result: dict, order_key: str) -> None:
     """Hand an approved signal's order to the order tracker (fill / no fill notifications)."""
     tracker = _order_tracker
-    order_id = bybit.get('order_id')
+    order_id = result.get('order_id')
     if tracker is None or not order_id:
         return
-    from src.live.bybit.risk_calculator import clean_symbol
 
-    position = bybit.get('position_info') or {}
-    quantity = bybit.get('final_quantity') or bybit.get('contracts') or position.get('quantity') or 0
+    position = result.get('position_info') or {}
+    quantity = result.get('final_quantity') or result.get('contracts') or position.get('quantity') or 0
     is_limit = sig.order_type == "limit"
     tracked = tracker.track(
         source="signal",
         ref=sig.id,
         key=order_key,
-        symbol=clean_symbol(sig.symbol),
+        symbol=strip_timeframe(sig.symbol),
         side=sig.side,
         order_type=sig.order_type,
         order_id=order_id,
-        price=sig.entry if is_limit else (bybit.get('entry_price') or sig.entry),
-        stop_loss=bybit.get('stop_loss') or sig.stop_loss,
-        take_profit=bybit.get('take_profit') or sig.take_profit,
+        price=sig.entry if is_limit else (result.get('entry_price') or sig.entry),
+        stop_loss=result.get('stop_loss') or sig.stop_loss,
+        take_profit=result.get('take_profit') or sig.take_profit,
         quantity=quantity,
         risk=sig.risk_per_trade,
         timeframe=sig.signal_timeframe,
         timeout_minutes=sig.fill_timeout_minutes,
-        sl_tp_missing="" if is_limit else str(bybit.get('sl_tp_warning') or ""),
+        sl_tp_missing="" if is_limit else str(result.get('sl_tp_warning') or ""),
     )
     sig.tracked_id = tracked.id
 
 
-def _short_reason(text: str) -> str:
-    """One line for sent_orders.json / the web history from an order result message."""
-    text = str(text or "")
-    msg = re.search(r'"retMsg"\s*:\s*"([^"]+)"', text)
-    if msg:
-        code = re.search(r'"retCode"\s*:\s*(\d+)', text)
-        return f"{msg.group(1)}{f' (Bybit {code.group(1)})' if code else ''}"[:300]
+def _short_reason(order_result: dict, text: str) -> str:
+    """One line for sent_orders.json / the web history from a failed order result."""
+    error = order_result.get('error')
+    if error:
+        return short_error(error)[:300]
     lines = [ln.strip(" └├─❌⚠️").strip() for ln in str(text or "").splitlines()]
-    lines = [ln for ln in lines if ln and ln.upper() not in ("BYBIT", "THẤT BẠI", "KHÔNG ĐẶT LỆNH")]
+    skip = {exchange_label().upper(), "THẤT BẠI", "KHÔNG ĐẶT LỆNH"}
+    lines = [ln for ln in lines if ln and ln.upper() not in skip]
     reason = " · ".join(ln.split("Lỗi:", 1)[-1].strip() for ln in lines)
     return reason[:300]
 
@@ -544,22 +545,19 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
 
         if is_limit:
             order_result = place_limit_order(**kwargs, signal_timestamp=time.time())
-            bybit = order_result.get('bybit') or {}
-            result_text = f"BYBIT\n{bybit_format_limit_message(bybit)}"
         else:
             order_result = place_order(**kwargs, signal_timestamp=time.time())
-            bybit = order_result.get('bybit') or {}
-            result_text = f"BYBIT\n{bybit_format_order_message(bybit)}"
+        result_text = f"{exchange_label().upper()}\n{format_order_message(order_result, sig.order_type)}"
         success = bool(order_result.get('success'))
         fields = dict(
             status="OPEN" if success else "FAILED",
-            order_id=bybit.get('order_id'),
+            order_id=order_result.get('order_id'),
             approved_at=now(),
             approved_via=sig.decided_via,
             order_mode=sig.order_type,
         )
         if not success:
-            fields["reason"] = _short_reason(result_text)
+            fields["reason"] = _short_reason(order_result, result_text)
         if sig.edited:
             fields.update(
                 edited=True,
@@ -571,7 +569,7 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
         update_sent_order(log_file, order_key, **fields)
         if success:
             try:
-                _follow_order(sig, bybit, order_key)
+                _follow_order(sig, order_result, order_key)
             except Exception as e:  # the order is placed: never report it as failed
                 print(f"Order tracking failed for {order_key}: {e}")
         verdict = "đã gửi lệnh, chờ sàn khớp" if success else "đặt lệnh thất bại"
@@ -723,20 +721,10 @@ def _check_and_send_open_orders(
                 risk_per_trade=effective_risk_per_trade,
                 signal_timestamp=signal_timestamp,
             )
-            bybit_msg = ""
-            
-            bybit_msg = f"**BYBIT**\n{bybit_format_order_message(order_result['bybit'])}"
+            result_text = f"**{exchange_label().upper()}**\n{format_order_message(order_result)}"
+            notify_entry(row, dict(message_kwargs, result=result_text.strip()))
 
-            bybit_order_id = None
-            if order_result.get('bybit'):
-                bybit_order = order_result['bybit']
-                bybit_order_id = bybit_order.get('order_id')
-            
-            combined_result = bybit_msg.strip()
-            
-            notify_entry(row, dict(message_kwargs, result=combined_result))
-
-            order_detail["order_id"] = bybit_order_id
+            order_detail["order_id"] = order_result.get('order_id')
             sent_orders.append(order_detail)
             sent_keys.add(order_key)
             new_sent_count += 1

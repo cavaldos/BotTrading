@@ -1,6 +1,9 @@
 # Shared strategy configuration used by both live and backtest.
 # Note: fallback defaults are shown inline as `default: ...`.
 
+# Strategy package: src/strategy/<strategy>/ (its Config fields are the settings below)
+strategy: "smc" # default: "smc"
+
 # Risk/Reward
 risk_reward_ratio: 2.0 # default: 2.0
 

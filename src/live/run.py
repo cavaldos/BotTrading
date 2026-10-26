@@ -16,7 +16,8 @@ from rich.live import Live
 
 from src.config import load_live_config, load_strategy_config
 from src.utils.remove_all_files import remove_all_files
-from src.utils.getdata.get_data import (fetch_and_save_candles_parallel, append_latest_candle_parallel)
+from src.core.timeframe import normalize_timeframes, timeframe_to_minutes
+from src.exchanges import TRADING_ADAPTERS, configure_exchange, get_candle_source
 from src.live.dashboard import create_dashboard, update_dashboard
 from src.live.core.execute import execute
 from src.live.core.approval import ApprovalHub
@@ -42,50 +43,12 @@ from src.live.web.server import WebApiServer
 # =============================================================================
 
 
-def parse_timeframe(timeframe: str) -> int:
-    """
-    Convert timeframe string to minutes
-    Examples: "1m" -> 1, "5m" -> 5, "15m" -> 15, "1h" -> 60, "4h" -> 240, "1d" -> 1440
-    """
-    timeframe = timeframe.lower().strip()
-    
-    if timeframe.endswith("m"):
-        return int(timeframe[:-1])
-    elif timeframe.endswith("h"):
-        return int(timeframe[:-1]) * 60
-    elif timeframe.endswith("d"):
-        return int(timeframe[:-1]) * 1440
-    else:
-        raise ValueError(f"Invalid timeframe format: {timeframe}")
-
-
-def normalize_timeframe_list(value) -> list[str]:
-    if isinstance(value, str):
-        value = [value]
-
-    if not isinstance(value, list):
-        return []
-
-    normalized = []
-    for item in value:
-        tf = str(item).strip()
-        if tf:
-            normalized.append(tf)
-    return normalized
-
-
 # Load config (live setup + shared strategy settings)
 CONFIG = load_live_config(include_strategy=False)
 STRATEGY_CONFIG = load_strategy_config()
 
-if "exchange" in CONFIG:
-    os.environ["EXCHANGE"] = str(CONFIG.get("exchange", "binance")).lower()
-
-exchange_name = os.environ.get("EXCHANGE")
-
-if exchange_name == "bybit":
-    bybit_market_category = str(CONFIG.get("data", {}).get("market_category", "linear")).strip().lower()
-    os.environ["BYBIT_MARKET_CATEGORY"] = bybit_market_category
+# Exchange used for candles and orders (live.yaml `exchange`), see src/exchanges/__init__.py
+EXCHANGE_NAME = configure_exchange(CONFIG)
 
 # Data settings
 DATA_FOLDER = CONFIG["data"]["folder"]
@@ -104,7 +67,7 @@ else:
     RUNTIME_TIMEFRAMES = [TIMEFRAMES_CONFIG["value"]]
 
 # Strategy-driven timeframe settings (loaded from strategy.yaml)
-SIGNAL_TIMEFRAMES = normalize_timeframe_list(
+SIGNAL_TIMEFRAMES = normalize_timeframes(
     STRATEGY_CONFIG.get("signal_timeframe", STRATEGY_CONFIG.get("indicator_timeframe", []))
 )
 ENTRY_TIMEFRAME = str(STRATEGY_CONFIG.get("entry_timeframe", "")).strip()
@@ -117,7 +80,7 @@ if USE_STRATEGY_TIMEFRAMES:
 else:
     TIMEFRAMES = RUNTIME_TIMEFRAMES
 
-TIMEFRAME_MINUTES_MAP = {tf: parse_timeframe(tf) for tf in TIMEFRAMES}
+TIMEFRAME_MINUTES_MAP = {tf: timeframe_to_minutes(tf) for tf in TIMEFRAMES}
 FETCH_INTERVAL = int(TIMEFRAMES_CONFIG.get("fetch_interval", 60))  # Default 60 seconds
 WAIT_FOR_CLOSE = TIMEFRAMES_CONFIG.get("wait_for_close", False)  # Default: run by fetch interval
 CLOSE_DELAY = TIMEFRAMES_CONFIG.get("close_delay", 3)  # Seconds after candle close to wait
@@ -175,7 +138,7 @@ def _next_candle_close_utc(timeframe: str) -> datetime:
       Current candle opened at 14:00, closes at 15:00:00 UTC
       Returns: 15:00:00 UTC
     """
-    tf_minutes = TIMEFRAME_MINUTES_MAP.get(timeframe, parse_timeframe(timeframe))
+    tf_minutes = TIMEFRAME_MINUTES_MAP.get(timeframe, timeframe_to_minutes(timeframe))
     now = datetime.now(timezone.utc)
     
     # Calculate seconds since midnight UTC
@@ -466,8 +429,8 @@ def getdata(timeframe: str):
       
       # In strategy-timeframe mode, always fetch entry_timeframe data
       fetch_tf = ENTRY_TIMEFRAME if USE_STRATEGY_TIMEFRAMES else timeframe
-      use_closed_candles = WAIT_FOR_CLOSE and os.environ.get("EXCHANGE") in {"binance", "bybit", "lighter"}
-      fetch_kwargs = {"closed_only": True} if use_closed_candles else {}
+      candles = get_candle_source(EXCHANGE_NAME)
+      fetch_kwargs = {"closed_only": True} if WAIT_FOR_CLOSE else {}
       
       # Check if data files exist (first run vs subsequent runs)
       has_data_files = any(
@@ -477,7 +440,7 @@ def getdata(timeframe: str):
       
       if not has_data_files:
           # First run: remove old data and fetch all candles (parallel)
-          fetch_and_save_candles_parallel(
+          candles.fetch_and_save_candles_parallel(
               CURRENCIES,
               [fetch_tf],
               DATA_FOLDER,
@@ -486,7 +449,7 @@ def getdata(timeframe: str):
           )
       else:
           # Subsequent runs: only append latest candle and remove second row (parallel)
-          append_latest_candle_parallel(
+          candles.append_latest_candle_parallel(
               CURRENCIES,
               [fetch_tf],
               DATA_FOLDER,
@@ -876,6 +839,10 @@ def main():
     thread_2.start()
 
     timeframes_str = ", ".join(TIMEFRAMES)
+    if EXCHANGE_NAME in TRADING_ADAPTERS:
+        state.add_log("Main", f"Exchange: {EXCHANGE_NAME} (candles + orders)")
+    else:
+        state.add_error("EXC", f"{EXCHANGE_NAME} is a candle source only: orders will fail")
     if USE_STRATEGY_TIMEFRAMES:
         signal_label = ",".join(SIGNAL_TIMEFRAMES)
         state.add_log("Main", f"Application started (Strategy TF: signal=[{signal_label}], entry={ENTRY_TIMEFRAME})")

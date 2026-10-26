@@ -58,13 +58,22 @@ def _utc_ts(text: Any) -> Optional[int]:
         return None
 
 
+def _exchange_error(text: str) -> Optional[str]:
+    try:
+        from src.exchanges import get_exchange
+        return get_exchange().parse_error(text)
+    except Exception:
+        return None
+
+
 def _one_line(text: Any, limit: int = 300) -> str:
-    msg = re.search(r'"retMsg"\s*:\s*"([^"]+)"', str(text or ""))
-    if msg:
-        code = re.search(r'"retCode"\s*:\s*(\d+)', str(text))
-        return f"{msg.group(1)}{f' (Bybit {code.group(1)})' if code else ''}"[:limit]
+    parsed = _exchange_error(str(text or ""))
+    if parsed:
+        return parsed[:limit]
+    from src.exchanges import TRADING_ADAPTERS
+    skip = {name.upper() for name in TRADING_ADAPTERS} | {"THẤT BẠI"}
     lines = [re.sub(r"^[\s└├─❌⚠️✅🟡]+", "", ln).strip() for ln in str(text or "").splitlines()]
-    lines = [ln for ln in lines if ln and ln.upper() not in ("BYBIT", "THẤT BẠI")]
+    lines = [ln for ln in lines if ln and ln.upper() not in skip]
     return " · ".join(ln.split("Lỗi:", 1)[-1].strip() for ln in lines)[:limit]
 
 

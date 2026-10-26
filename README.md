@@ -93,13 +93,42 @@ What this means for this bot:
 
 Sources: [Mobula perps fees](https://docs.mobula.io/perps-fees), [Lighter review (cryptowinrate)](https://cryptowinrate.com/crypto-exchanges/lighter/?p=1191), [Binance futures fees (Finder)](https://www.finder.com/binance-futures-fees), [Bybit perpetual fees](https://www.bybit.com/my-MM/help-center/article/Perpetual-Futures-Contract-Fees-Explained), [Bybit vs Binance fees (Coinperps)](https://www.coinperps.com/zh/learn/bybit-vs-binance-perpetual-futures-fees).
 
+## Architecture
+
+The bot has two swap points, so changing exchange or strategy stays local:
+
+| Change | Where | Config |
+|---|---|---|
+| Exchange (Bybit -> Lighter, ...) | `src/exchanges/<name>/` (an `ExchangeAdapter`, see `src/exchanges/base.py`) | `exchange:` in `live.yaml` |
+| Strategy (SMC -> another) | `src/strategy/<name>/` (`Config` + `Strategy`, see `src/strategy/__init__.py`) | `strategy:` in `strategy.yaml` |
+
+The live bot (signals, approval, order tracker, web order ticket) only calls the active
+exchange adapter, and the backtest, live bot and tools all load the strategy through the
+strategy registry. Full layout and how to add an exchange or a strategy: [file-structure.md](file-structure.md).
+
+```bash
+# Tests (no network, no API keys)
+python -m unittest discover -s tests -t .
+
+# Exchange tools (run by hand)
+python -m src.exchanges.lighter.tools.test_connect      # check the Lighter setup
+python -m src.exchanges.lighter.tools.lighter_dashboard
+python -m src.exchanges.bybit.tools.bybit_dashboard
+python -m src.exchanges.bybit.tools.position_manager --once --dry-run
+python -m src.utils.getdata                             # download candles from EXCHANGE in .env (backtest.yaml settings)
+python -m src.exchanges.bybit.candles                   # same, always from Bybit (also binance / lighter)
+```
+
 ## File Structure
 
 ```
 Bot_Trade/
-├── .env                      # Telegram credentials
-├── src/config/live.yaml      # Live runtime configuration
+├── .env                      # API keys, Telegram / Discord / web tokens
+├── src/config/live.yaml      # Live runtime configuration (exchange, data, approval, web)
 ├── src/config/backtest.yaml  # Backtest runtime configuration
-├── src/config/strategy.yaml  # Shared strategy configuration
+├── src/config/strategy.yaml  # Shared strategy configuration (strategy: smc)
+├── src/exchanges/            # One package per exchange
+├── src/strategy/             # One package per strategy
+├── tests/                    # Unit tests
 └── res/logs/                 # Data and output logs
 ```

@@ -17,7 +17,8 @@ import pandas as pd
 from tqdm import tqdm
 
 # Import strategy components
-from src.strategy import Config, Strategy, STRATEGY_NAME, build_strategy_config
+from src.strategy import build_strategy_config
+from src.strategy.smc import STRATEGY_NAME, Config, Strategy
 from src.backtest.statistics import TradeSimulator, generate_summary_report
 from src.config import load_backtest_config, load_strategy_config
 from src.indicators.reversal_patterns import PATTERN_PAIR_NAMES, validate_pattern_ids, get_pattern_name
@@ -75,6 +76,7 @@ def create_config_with_pattern(pattern_ids: List[int]) -> Config:
         output_folder=str(output_folder),
         strategy_config=strategy_config,
         overrides={
+            'strategy': 'smc',  # reversal patterns are an SMC setting
             'signal_timeframe': signal_timeframe,
             'entry_timeframe': entry_timeframe,
             'require_reversal_pattern': True,

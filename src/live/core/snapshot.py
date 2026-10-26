@@ -37,7 +37,7 @@ from src.indicators.export import (
     run_indicators,
     strategy_indicator_params,
 )
-from src.utils.convertTF import convert_timeframe
+from src.core.timeframe import convert_timeframe
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -434,7 +434,7 @@ class SnapshotWorker:
 # ==================== MANUAL TEST ====================
 
 def _latest_strategy_trade(data_folder: str, symbol: str, signal_tf: str, entry_tf: str, strategy_config: dict) -> dict:
-    from src.strategy import Strategy, build_strategy_config
+    from src.strategy import build_strategy_config, create_strategy
 
     df_entry = _load_ohlcv(_resolve_data_file(data_folder, symbol, entry_tf))
     config = build_strategy_config(
@@ -443,7 +443,7 @@ def _latest_strategy_trade(data_folder: str, symbol: str, signal_tf: str, entry_
         strategy_config=strategy_config,
         overrides={"signal_timeframe": signal_tf, "entry_timeframe": entry_tf},
     )
-    strategy = Strategy(config)
+    strategy = create_strategy(config)
     if signal_tf != entry_tf:
         signals = strategy.generate_signals(convert_timeframe(df_entry, signal_tf), symbol, df_entry=df_entry)
     else:

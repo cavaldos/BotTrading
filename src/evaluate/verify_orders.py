@@ -67,8 +67,8 @@ from tqdm import tqdm
 from src.backtest.statistics import Trade, TradeSimulator
 from src.config import load_backtest_config, load_strategy_config
 from src.config.load_config import load_yaml_config
-from src.strategy import Signal, Strategy, build_strategy_config, parse_timeframe_minutes
-from src.utils.convertTF import convert_timeframe
+from src.strategy import BaseSignal as Signal, build_strategy_config, create_strategy, parse_timeframe_minutes
+from src.core.timeframe import convert_timeframe
 
 
 DEFAULT_DATA_FOLDER = "res/data"
@@ -217,7 +217,7 @@ def run_backtest(
 ) -> list[Trade]:
     """Same pipeline as src/backtest/main.py for one symbol / signal TF."""
     cfg = build_config(strategy_cfg, data_folder, signal_tf, entry_tf)
-    strategy = Strategy(cfg)
+    strategy = create_strategy(cfg)
     if signal_tf != entry_tf:
         signals = strategy.generate_signals(convert_timeframe(df, signal_tf), symbol, df_entry=df)
     else:
@@ -286,7 +286,7 @@ def _init_worker(
         entry_tf=entry_tf,
         entry_minutes=parse_timeframe_minutes(entry_tf),
         window=window,
-        strategies={tf: Strategy(build_config(strategy_cfg, data_folder, tf, entry_tf)) for tf in signal_tfs},
+        strategies={tf: create_strategy(build_config(strategy_cfg, data_folder, tf, entry_tf)) for tf in signal_tfs},
     )
 
 

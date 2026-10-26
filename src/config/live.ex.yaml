@@ -1,8 +1,9 @@
 # Live trading configuration (example values).
 # Note: fallback defaults are shown inline as `default: ...`.
 
-# Exchange: "binance" | "bybit"
-exchange: "binance" # data source: "binance" (default), "bybit" or "lighter"
+# Exchange for candles AND orders: "bybit" | "lighter" (src/exchanges/<name>/adapter.py)
+# "binance" is a candle source only (orders are refused).
+exchange: "bybit" # default: EXCHANGE env var, then "bybit"
 
 # Data feed settings
 data:

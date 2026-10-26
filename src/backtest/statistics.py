@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from numba import njit
 from decimal import Decimal
 
-from src.strategy import STRATEGY_NAME, Signal, Config
+from src.strategy import BaseConfig, BaseSignal
 from src.utils.rounding import round_price
 
 
@@ -169,10 +169,10 @@ class TradeSimulator:
     
     PERFORMANCE: Uses Numba JIT for binary search and exit simulation.
     """
-    def __init__(self, config: Config):
+    def __init__(self, config: BaseConfig):
         self.config = config
     
-    def simulate(self, signals: List[Signal], df: pd.DataFrame) -> List[Trade]:
+    def simulate(self, signals: List[BaseSignal], df: pd.DataFrame) -> List[Trade]:
         """
         Simulate trade exits for given signals.
         
@@ -328,7 +328,7 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
     return df
 
 
-def generate_summary_report(trades: List[Trade], symbol: str, config: Config) -> Dict:
+def generate_summary_report(trades: List[Trade], symbol: str, config: BaseConfig) -> Dict:
     """Generate simplified summary statistics for trades"""
     if not trades:
         return {
@@ -469,7 +469,7 @@ def generate_summary_report(trades: List[Trade], symbol: str, config: Config) ->
     }
 
 
-def generate_text_report(all_summaries: List[Dict], config: Config, output_path: str):
+def generate_text_report(all_summaries: List[Dict], config: BaseConfig, output_path: str):
     """
     Generate report with all results.
     Uses markdown table format that looks good both raw and rendered.
@@ -518,7 +518,7 @@ def generate_text_report(all_summaries: List[Dict], config: Config, output_path:
     # Build report with aligned markdown table
     lines = [
         "",
-        f"##  TRADE RESULTS - {timestamp} - {config.reversal_pattern_ids}",
+        f"##  TRADE RESULTS - {timestamp} - {config.report_label()}",
         f"- Base Risk/Trade: ${config.risk_per_trade}",
         f"- Flex TP Risk Boost Factor: {flex_tp_risk_boost_factor}",
         f"- Fee/Trade: {config.fee_per_trade_r}R (ROE = after fees, ROE-NF = no fees, both in R)",
@@ -635,7 +635,7 @@ def print_quick_stats(summary: Dict) -> None:
     print(f"  - Avg Win Streak: {summary['avg_win_streak']}, Avg Loss Streak: {summary['avg_loss_streak']}")
 
 
-def print_final_summary(all_trades: List[Trade], config: Optional[Config] = None) -> None:
+def print_final_summary(all_trades: List[Trade], config: Optional[BaseConfig] = None) -> None:
     """Print final summary after backtest completion"""
     print("\n" + "=" * 60)
     print("Analysis completed!")

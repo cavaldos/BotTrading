@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 from src.config import load_backtest_config
 
-from src.utils.convertTF import convert_timeframe, parse_timeframe_minutes
+from src.core.timeframe import convert_timeframe, parse_timeframe_minutes
 from src.indicators.export import (
     datetime_to_timestamp,
     export_candles,

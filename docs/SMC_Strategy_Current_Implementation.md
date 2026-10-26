@@ -2,7 +2,7 @@
 
 ## 1) Purpose and Scope
 
-Technical specification of the **current strategy logic** in `src/strategy/smc_strategy.py`.
+Technical specification of the **current strategy logic** in `src/strategy/smc/strategy.py`.
 
 Use it to:
 - Understand exactly why a signal is or is not generated.
@@ -16,8 +16,8 @@ Python implementation only (not old Pine variants). Last verified against the co
 
 | Part | File |
 |---|---|
-| Strategy | `src/strategy/smc_strategy.py` |
-| Shared SL/TP, mitigation, touch, dedup | `src/strategy/base_strategy.py` |
+| Strategy | `src/strategy/smc/strategy.py` |
+| Shared SL/TP, mitigation, touch, dedup | `src/strategy/base.py` |
 | Reversal pattern engine | `src/indicators/reversal_patterns.py` |
 | Config loading (unknown YAML keys are dropped silently) | `src/config/load_config.py`, `src/strategy/config_factory.py` |
 | Trade simulation and reports | `src/backtest/statistics.py` |

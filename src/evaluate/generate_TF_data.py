@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.config import load_backtest_config, load_strategy_config
-from src.utils.convertTF import convert_timeframe
+from src.core.timeframe import convert_timeframe
 
 
 OHLCV_COLUMNS = ["Time", "Open", "High", "Low", "Close", "Volume"]

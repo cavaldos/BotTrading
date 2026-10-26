@@ -71,7 +71,8 @@ export function shortReason(text) {
   return raw
     .split('\n')
     .map(l => l.replace(/^(?:\s|└|├|─|❌|⚠️|✅|🟡)+/u, '').trim())
-    .filter(l => l && !/^(BYBIT|THẤT BẠI|KHÔNG ĐẶT LỆNH)$/i.test(l))
+    // drop the exchange name header (BYBIT, LIGHTER, ...) and the status words
+    .filter(l => l && !/^[A-Z]{3,12}$/.test(l) && !/^(THẤT BẠI|KHÔNG ĐẶT LỆNH)$/i.test(l))
     .map(l => l.split('Lỗi:').pop().trim())
     .join(' · ')
     .slice(0, 300);

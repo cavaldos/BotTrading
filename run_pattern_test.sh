@@ -8,7 +8,7 @@
 #   ./run_pattern_test.sh 1 2 5 10  # Run pattern 1, 2, 5, and 10
 # ==============================================================================
 
-STRATEGY_FILE="src/strategy/smc_strategy.py"
+STRATEGY_FILE="src/strategy/smc/strategy.py"
 
 # Determine which pattern IDs to run
 if [ $# -eq 0 ]; then

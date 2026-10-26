@@ -15,7 +15,6 @@ still unfilled after `fillTimeoutMinutes`).
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 import uuid
@@ -23,11 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from src.live.bybit.exchange import calculate_position_size, format_symbol, get_exchange, validate_symbol
-from src.live.bybit.limit_order import format_limit_order_message
-from src.live.bybit.market_order import format_market_order_message
-from src.live.bybit.risk_calculator import clean_symbol
-from src.live.core.place_order import place_limit_order, place_market_order
+from src.core.symbols import strip_timeframe as clean_symbol
+from src.exchanges import get_exchange
+from src.live.core.place_order import format_order_message, place_limit_order, place_market_order
 
 if TYPE_CHECKING:
     from src.live.core.order_tracker import OrderTracker
@@ -155,28 +152,23 @@ class ManualOrderService:
         }
 
     def _free_balance(self, exchange) -> tuple[Optional[float], str]:
-        """(free USDT, error). Also a cheap check that the API key works before ordering."""
+        """(free margin in the quote currency, error). Also a cheap check that the API key works before ordering."""
         at, value, error = self._balance
         if time.time() - at < BALANCE_CACHE_SECONDS:
             return value, error
         try:
-            balance = exchange.fetch_balance()
-            value, error = float((balance.get("USDT") or {}).get("free") or 0), ""
+            value, error = exchange.free_balance(), ""
         except Exception as exc:
-            value, error = None, str(exc)
-            match = re.search(r'"retMsg":"([^"]+)"', error)
-            if match:
-                error = match.group(1)
+            value, error = None, exchange.short_error(str(exc)) or str(exc)
         self._balance = (time.time(), value, error)
         return value, error
 
     def preview(self, body: dict) -> dict:
         o = self._parse(body)
         exchange = get_exchange()
-        market = format_symbol(o["symbol"])
-        if not validate_symbol(exchange, market):
-            raise OrderError(f"{o['symbol']} is not tradable on the exchange")
-        price = float(exchange.fetch_ticker(market).get("last") or 0)
+        if not exchange.has_market(o["symbol"]):
+            raise OrderError(f"{o['symbol']} is not tradable on {exchange.label}")
+        price = float(exchange.last_price(o["symbol"]) or 0)
         if price <= 0:
             raise OrderError("Could not read the current price")
 
@@ -211,15 +203,13 @@ class ManualOrderService:
 
         size = None
         if risk_dist > 0:
-            size = calculate_position_size(
+            size = exchange.position_size(
+                symbol=o["symbol"],
                 entry_price=entry,
                 stop_loss=sl,
                 leverage=self.leverage,
                 risk_per_trade=o["risk"],
                 side="buy" if is_long else "sell",
-                skip_validation=True,
-                exchange=exchange,
-                symbol=market,
             )
             if size["quantity"] <= 0:
                 errors.append("Size rounds to zero on the exchange")
@@ -296,13 +286,11 @@ class ManualOrderService:
             )
             if check["orderType"] == "limit":
                 result = place_limit_order(**kwargs)
-                text = format_limit_order_message(result.get("bybit") or {})
             else:
                 result = place_market_order(**kwargs)
-                text = format_market_order_message(result.get("bybit") or {})
+            text = format_order_message(result, check["orderType"])
             self._last_order_at = time.time()
 
-        bybit = result.get("bybit") or {}
         success = bool(result.get("success"))
         is_limit = check["orderType"] == "limit"
         record = {
@@ -318,7 +306,7 @@ class ManualOrderService:
             "risk": check["risk"],
             "quantity": check["quantity"],
             "success": success,
-            "orderId": bybit.get("order_id") or result.get("order_id"),
+            "orderId": result.get("order_id"),
             "status": "PLACED" if success else "FAILED",
             "fillTimeoutMinutes": fill_timeout if is_limit else None,
             "message": text,
@@ -333,13 +321,13 @@ class ManualOrderService:
                     side=check["side"],
                     order_type=check["orderType"],
                     order_id=record["orderId"],
-                    price=check["entry"] if is_limit else (bybit.get("entry_price") or check["entry"]),
-                    stop_loss=bybit.get("stop_loss") or check["stopLoss"],
-                    take_profit=bybit.get("take_profit") or check["takeProfit"],
-                    quantity=bybit.get("final_quantity") or bybit.get("contracts") or check["quantity"],
+                    price=check["entry"] if is_limit else (result.get("entry_price") or check["entry"]),
+                    stop_loss=result.get("stop_loss") or check["stopLoss"],
+                    take_profit=result.get("take_profit") or check["takeProfit"],
+                    quantity=result.get("final_quantity") or result.get("contracts") or check["quantity"],
                     risk=check["risk"],
                     timeout_minutes=fill_timeout,
-                    sl_tp_missing="" if is_limit else str(bybit.get("sl_tp_warning") or ""),
+                    sl_tp_missing="" if is_limit else str(result.get("sl_tp_warning") or ""),
                 )
                 record["trackedId"] = tracked.id
                 order = tracked.to_dict()

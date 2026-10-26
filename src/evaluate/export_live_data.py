@@ -44,7 +44,7 @@ from src.indicators.export import (
     run_indicators,
     strategy_indicator_params,
 )
-from src.utils.convertTF import convert_timeframe
+from src.core.timeframe import convert_timeframe
 
 
 # ==================== CONFIGURATION ====================

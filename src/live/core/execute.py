@@ -17,27 +17,15 @@ from datetime import datetime, timezone
 from typing import Any, cast
 import pandas as pd
 
-# Import strategy components (interface contract)
-from src.strategy import Strategy, build_strategy_config
+# Strategy plug-in chosen in strategy.yaml (`strategy: <name>`)
+from src.strategy import BaseStrategy, build_strategy_config, create_strategy
 
 # Import trade simulation and report generation
 from src.backtest.statistics import TradeSimulator, generate_trade_orders
 
-# Import timeframe conversion utility
-from src.utils.convertTF import convert_timeframe
-
-
-# Timeframe string to minutes mapping
-def _timeframe_to_minutes(tf: str) -> int:
-    """Convert timeframe string to minutes. E.g. '5m'->5, '1h'->60, '4h'->240, '1d'->1440"""
-    tf = tf.lower().strip()
-    if tf.endswith("m"):
-        return int(tf[:-1])
-    elif tf.endswith("h"):
-        return int(tf[:-1]) * 60
-    elif tf.endswith("d"):
-        return int(tf[:-1]) * 1440
-    return 60  # fallback
+# Shared helpers
+from src.core.symbols import symbol_from_filename
+from src.core.timeframe import convert_timeframe, normalize_timeframes, timeframe_to_minutes
 
 
 def _drop_incomplete_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
@@ -50,7 +38,7 @@ def _drop_incomplete_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     if df.empty:
         return df
     
-    tf_minutes = _timeframe_to_minutes(timeframe)
+    tf_minutes = timeframe_to_minutes(timeframe, default=60)
     last_candle_time = pd.to_datetime(df['Time'].iloc[-1])
     
     # Make timezone-aware (UTC) for comparison
@@ -67,21 +55,6 @@ def _drop_incomplete_candle(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     return df
 
 
-def _normalize_signal_timeframes(value: Any) -> list[str]:
-    if isinstance(value, str):
-        value = [value]
-
-    if not isinstance(value, list):
-        return []
-
-    normalized: list[str] = []
-    for item in value:
-        tf = str(item).strip()
-        if tf:
-            normalized.append(tf)
-    return normalized
-
-
 def load_data(file_path: str) -> pd.DataFrame:
     """Load CSV data"""
     df = pd.read_csv(file_path)
@@ -93,14 +66,6 @@ def load_data(file_path: str) -> pd.DataFrame:
 def get_symbol_from_filename(filename: str) -> str:
     """Extract symbol name from filename"""
     return filename.replace('.csv', '')
-
-
-def extract_base_symbol(filename: str) -> str:
-    """Extract base symbol without timeframe from filename"""
-    # e.g., BTCUSDT_1m.csv -> BTCUSDT
-    name = filename.replace('.csv', '')
-    parts = name.rsplit('_', 1)
-    return parts[0] if len(parts) > 1 else name
 
 
 def execute(
@@ -135,8 +100,8 @@ def execute(
         if value is not None:
             strategy_payload[key] = value
 
-    configured_signal_timeframes = _normalize_signal_timeframes(strategy_payload.get("signal_timeframe"))
-    strategy_signal_tfs = _normalize_signal_timeframes(signal_timeframe) or configured_signal_timeframes
+    configured_signal_timeframes = normalize_timeframes(strategy_payload.get("signal_timeframe"))
+    strategy_signal_tfs = normalize_timeframes(signal_timeframe) or configured_signal_timeframes
 
     configured_entry_timeframe = str(strategy_payload.get("entry_timeframe", "")).strip()
     active_entry_timeframe = entry_timeframe or configured_entry_timeframe
@@ -168,7 +133,7 @@ def execute(
         if not entry_files:
             return
 
-        strategies_by_signal: dict[str, Strategy] = {}
+        strategies_by_signal: dict[str, BaseStrategy] = {}
         simulators_by_signal: dict[str, TradeSimulator] = {}
         for signal_tf in strategy_signal_tfs:
             tf_config = build_strategy_config(
@@ -180,11 +145,11 @@ def execute(
                     "entry_timeframe": active_entry_timeframe,
                 },
             )
-            strategies_by_signal[signal_tf] = Strategy(tf_config)
+            strategies_by_signal[signal_tf] = create_strategy(tf_config)
             simulators_by_signal[signal_tf] = TradeSimulator(tf_config)
 
         for entry_file in entry_files:
-            base_symbol = extract_base_symbol(entry_file.name)
+            base_symbol = symbol_from_filename(entry_file.name)
 
             df_entry = load_data(str(entry_file))
             df_entry = _drop_incomplete_candle(df_entry, active_entry_timeframe)
@@ -215,7 +180,7 @@ def execute(
     else:
         # === SINGLE-TIMEFRAME MODE (Legacy) ===
         config = base_config
-        strategy = Strategy(config)
+        strategy = create_strategy(config)
         simulator = TradeSimulator(config)
 
         # Find CSV files in data folder (filter by timeframe if specified)

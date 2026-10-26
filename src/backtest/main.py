@@ -4,12 +4,11 @@ Trading Strategy Backtester
 Main entry point for running the backtesting system.
 
 Architecture:
-- strategy/: Strategy generates signals (entry info only)
+- strategy/: the strategy plug-in generates signals (entry info only)
 - backtest/statistics.py: TradeSimulator calculates exits, then generates reports
 
-To change strategy:
-1. Edit strategy logic in src/strategy/smc_strategy.py
-2. Keep interface exports: Config, Strategy, Signal
+The strategy is chosen in strategy.yaml (`strategy: smc` -> src/strategy/smc/).
+To change strategy logic, edit only its package; see src/strategy/__init__.py.
 """
 
 import argparse
@@ -19,8 +18,8 @@ from typing import cast
 import pandas as pd
 from tqdm import tqdm
 
-# Import strategy components (interface contract)
-from src.strategy import Config, Strategy, Signal, STRATEGY_NAME, build_strategy_config
+# Strategy plug-in chosen in strategy.yaml
+from src.strategy import BaseConfig, BaseStrategy, build_strategy_config, create_strategy, strategy_label
 
 # Import statistics/reporting functions
 from src.backtest.statistics import (
@@ -39,7 +38,8 @@ from src.config.load_config import load_yaml_config
 
 # Import utility functions
 from src.utils.remove_all_files import remove_all_files
-from src.utils.convertTF import convert_timeframe
+from src.core.symbols import symbol_from_filename as extract_base_symbol
+from src.core.timeframe import convert_timeframe, normalize_timeframes
 
 
 # ==============================================================================
@@ -73,28 +73,8 @@ def get_symbol_from_filename(filename: str) -> str:
     return filename.replace('.csv', '')
 
 
-def extract_base_symbol(filename: str) -> str:
-    """Extract base symbol without timeframe from filename"""
-    # e.g., BTCUSDT_1m.csv -> BTCUSDT
-    name = filename.replace('.csv', '')
-    parts = name.rsplit('_', 1)
-    return parts[0] if len(parts) > 1 else name
-
-
 def normalize_signal_timeframes(value) -> list[str]:
-    if isinstance(value, str):
-        value = [value]
-
-    if not isinstance(value, list):
-        return list(DEFAULT_SIGNAL_TIMEFRAMES)
-
-    normalized: list[str] = []
-    for item in value:
-        timeframe = str(item).strip()
-        if timeframe:
-            normalized.append(timeframe)
-
-    return normalized or list(DEFAULT_SIGNAL_TIMEFRAMES)
+    return normalize_timeframes(value, default=DEFAULT_SIGNAL_TIMEFRAMES)
 
 
 # ============================================================================== 
@@ -112,7 +92,7 @@ def main():
     """Main execution function"""
     args = parse_args()
     print("=" * 60)
-    print(f"Strategy Backtester - {STRATEGY_NAME}")
+    print("Strategy Backtester")
     print("=" * 60)
     data_config = load_backtest_config(include_strategy=False)
     if args.backtest_config:
@@ -133,8 +113,8 @@ def main():
     signal_timeframes = normalize_signal_timeframes(strategy_cfg.get('signal_timeframe', DEFAULT_SIGNAL_TIMEFRAMES))
     entry_tf = str(strategy_cfg.get('entry_timeframe', DEFAULT_ENTRY_TIMEFRAME)).strip() or DEFAULT_ENTRY_TIMEFRAME
 
-    configs_by_signal: dict[str, Config] = {}
-    strategies_by_signal: dict[str, Strategy] = {}
+    configs_by_signal: dict[str, BaseConfig] = {}
+    strategies_by_signal: dict[str, BaseStrategy] = {}
     simulators_by_signal: dict[str, TradeSimulator] = {}
     for signal_tf in signal_timeframes:
         tf_config = build_strategy_config(
@@ -147,14 +127,14 @@ def main():
             },
         )
         configs_by_signal[signal_tf] = tf_config
-        strategies_by_signal[signal_tf] = Strategy(tf_config)
+        strategies_by_signal[signal_tf] = create_strategy(tf_config)
         simulators_by_signal[signal_tf] = TradeSimulator(tf_config)
 
     primary_signal_tf = signal_timeframes[0]
     primary_config = configs_by_signal[primary_signal_tf]
     use_multi_tf = len(signal_timeframes) > 1 or any(tf != entry_tf for tf in signal_timeframes)
 
-    print(f"\nStrategy: {STRATEGY_NAME}")
+    print(f"\nStrategy: {strategy_label(primary_config)} ({primary_config.strategy})")
     print("Configuration:")
     print(f"  - Risk/Reward Ratio: 1:{primary_config.risk_reward_ratio}")
     print(f"  - Risk per Trade: ${primary_config.risk_per_trade}")

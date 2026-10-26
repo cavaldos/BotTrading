@@ -27,7 +27,7 @@ from glob import glob
 from datetime import datetime
 from typing import Optional, List, Dict, Tuple
 from src.config import load_backtest_config, load_strategy_config
-from src.utils.convertTF import convert_timeframe
+from src.core.timeframe import convert_timeframe
 
 # ==================== CONFIGURATION ====================
 config = load_backtest_config(include_strategy=False)

@@ -11,7 +11,7 @@ manual web orders) and reports whether they fill.
   cancelled from the web                  -> ("cancelled", order)
   the exchange never knows the order id   -> ("unknown", order)
 
-The exchange is polled every `poll_seconds`. State is saved to a JSON file, so
+The active exchange (src.exchanges.get_exchange) is polled every `poll_seconds`. State is saved to a JSON file, so
 orders still waiting are followed again after a restart.
 """
 
@@ -24,7 +24,10 @@ import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
+
+if TYPE_CHECKING:
+    from src.exchanges.base import ExchangeAdapter
 
 
 TRACKING_DEFAULTS: dict[str, Any] = {
@@ -86,12 +89,6 @@ def fmt_duration(seconds: float, vi: bool = False) -> str:
     return f"{hours} {h}" + (f" {rest} {m}" if rest else "")
 
 
-def _short_error(exc: Exception) -> str:
-    text = str(exc)
-    for marker in ('"retMsg":"', "retMsg': '"):
-        if marker in text:
-            return text.split(marker, 1)[1].split('"', 1)[0].split("'", 1)[0]
-    return text[:200]
 
 
 @dataclass
@@ -194,15 +191,9 @@ def format_order_message(order: TrackedOrder, event: str) -> str:
     return "\n".join(lines)
 
 
-def _default_exchange():
-    from src.live.bybit.exchange import get_exchange
+def _default_exchange() -> "ExchangeAdapter":
+    from src.exchanges import get_exchange
     return get_exchange()
-
-
-def _default_market(symbol: str) -> str:
-    from src.live.bybit.exchange import format_symbol
-    from src.live.bybit.risk_calculator import clean_symbol
-    return format_symbol(clean_symbol(symbol))
 
 
 Listener = Callable[[str, TrackedOrder], None]
@@ -215,8 +206,7 @@ class OrderTracker:
         poll_seconds: float = TRACKING_DEFAULTS["poll_seconds"],
         limit_timeout_minutes: float = TRACKING_DEFAULTS["limit_timeout_minutes"],
         cancel_if_target_hit: bool = TRACKING_DEFAULTS["cancel_if_target_hit"],
-        exchange: Optional[Callable[[], Any]] = None,
-        market_of: Optional[Callable[[str], str]] = None,
+        exchange: Optional[Callable[[], "ExchangeAdapter"]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -225,7 +215,6 @@ class OrderTracker:
         self.limit_timeout_minutes = max(0.0, float(limit_timeout_minutes or 0))
         self.cancel_if_target_hit = bool(cancel_if_target_hit)
         self._exchange = exchange or _default_exchange
-        self._market_of = market_of or _default_market
         self.on_log = on_log or (lambda msg: None)
         self.on_error = on_error or (lambda msg: print(f"Order tracker error: {msg}"))
         self._orders: dict[str, TrackedOrder] = {}
@@ -355,41 +344,20 @@ class OrderTracker:
 
     def _read(self, order: TrackedOrder) -> Optional[dict]:
         """The order as the exchange sees it, or None when the exchange does not know the id (yet)."""
-        exchange = self._exchange()
-        market = self._market_of(order.symbol)
-        params = {"orderId": order.order_id}
-        found = self._match(exchange.fetch_open_orders(market, None, None, params), order.order_id)
-        if found is None:
-            # Order history: filled, cancelled and rejected orders (fetch_closed_orders only returns filled ones)
-            history = getattr(exchange, "fetch_canceled_and_closed_orders", None)
-            if history is not None:
-                found = self._match(history(market, None, None, params), order.order_id)
-        if found is None:
-            return None
-        info = found.get("info") or {}
-        reject = str(info.get("rejectReason") or "")
-        return {
-            "status": str(found.get("status") or "").lower(),
-            "filled": _num(found.get("filled")) or 0.0,
-            "amount": _num(found.get("amount")) or order.quantity,
-            "average": _num(found.get("average")),
-            "reject_reason": "" if reject in ("", "EC_NoError") else reject,
-        }
+        return self._exchange().order_state(order.symbol, order.order_id)
 
-    @staticmethod
-    def _match(orders, order_id: str) -> Optional[dict]:
-        for item in orders or []:
-            if str(item.get("id")) == str(order_id):
-                return item
-        return None
+    def _short_error(self, exc: Exception | str) -> str:
+        try:
+            return self._exchange().short_error(str(exc)) or str(exc)[:200]
+        except Exception:
+            return str(exc)[:200]
 
     def _last_price(self, order: TrackedOrder, prices: dict) -> Optional[float]:
         if order.symbol not in prices:
             try:
-                ticker = self._exchange().fetch_ticker(self._market_of(order.symbol))
-                prices[order.symbol] = _num(ticker.get("last"))
+                prices[order.symbol] = _num(self._exchange().last_price(order.symbol))
             except Exception as exc:
-                self._log_error(order, f"price check failed: {_short_error(exc)}")
+                self._log_error(order, f"price check failed: {self._short_error(exc)}")
                 prices[order.symbol] = None
         return prices[order.symbol]
 
@@ -402,7 +370,7 @@ class OrderTracker:
             try:
                 state = self._read(order)
             except Exception as exc:
-                self._log_error(order, f"status check failed: {_short_error(exc)}")
+                self._log_error(order, f"status check failed: {self._short_error(exc)}")
                 return
             if state is None:
                 self._missing(order)
@@ -490,9 +458,11 @@ class OrderTracker:
         """Cancel on the exchange and record the final state. Returns (cancelled, error)."""
         error = ""
         try:
-            self._exchange().cancel_order(order.order_id, self._market_of(order.symbol))
+            result = self._exchange().cancel_order(order.symbol, order.order_id)
+            if not result.get("success"):
+                error = self._short_error(result.get("error") or "Cancel failed")
         except Exception as exc:
-            error = _short_error(exc)
+            error = self._short_error(exc)
         try:
             state = self._read(order)
         except Exception:
@@ -510,7 +480,7 @@ class OrderTracker:
             if state["average"]:
                 order.avg_price = state["average"]
         if order.filled > 0:
-            amount = state["amount"] if state else order.quantity
+            amount = (state["amount"] if state else 0) or order.quantity
             self._finish(
                 order, FILLED,
                 f"Partly filled {fmt_qty(order.filled)} of {fmt_qty(amount)}; rest cancelled: {reason}",
