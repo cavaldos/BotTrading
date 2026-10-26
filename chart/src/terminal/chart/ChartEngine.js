@@ -21,6 +21,7 @@ import { heikinAshi } from '../lib/timeframes';
 import { priceDigits } from '../lib/format';
 import { DrawingManager } from '../drawings/DrawingManager';
 import { createMarkerPrimitives } from './markerPrimitives';
+import { OrderOverlay } from './OrderOverlay';
 
 export const THEME = {
   bg: '#131722',
@@ -71,9 +72,11 @@ function lowerBound(arr, value) {
 }
 
 export class ChartEngine {
-  constructor(container, { onCrosshair, onTradeClick, onDrawingChange, onDrawingSelect, onToolChange, onTextEdit, onPanesChange } = {}) {
+  constructor(container, {
+    onCrosshair, onTradeClick, onDrawingChange, onDrawingSelect, onToolChange, onTextEdit, onPanesChange, onOrderDrag, onChartMenu,
+  } = {}) {
     this.container = container;
-    this.cb = { onCrosshair, onTradeClick, onPanesChange };
+    this.cb = { onCrosshair, onTradeClick, onPanesChange, onChartMenu };
     this.chartType = 'candles';
     this.candles = [];
     this.volume = [];
@@ -129,6 +132,13 @@ export class ChartEngine {
 
     this.smcLayer = new PrimitiveLayer();
     this.tradeLayer = new PrimitiveLayer();
+    // Created before the drawing tools so its order lines get the pointer first
+    this.orderOverlay = new OrderOverlay({
+      chart: this.chart,
+      container,
+      isBusy: () => !!(this.drawings?.tool || this.drawings?.placing || this.drawings?.gesture),
+      onChange: (levels, info) => onOrderDrag?.(levels, info),
+    });
     this.drawings = new DrawingManager({
       chart: this.chart,
       container,
@@ -145,15 +155,45 @@ export class ChartEngine {
 
     this._onCrosshairMove = this._onCrosshairMove.bind(this);
     this._onClick = this._onClick.bind(this);
+    this._onContextMenu = this._onContextMenu.bind(this);
     this.chart.subscribeCrosshairMove(this._onCrosshairMove);
     this.chart.subscribeClick(this._onClick);
+    container.addEventListener('contextmenu', this._onContextMenu);
   }
 
   destroy() {
     this.chart.unsubscribeCrosshairMove(this._onCrosshairMove);
     this.chart.unsubscribeClick(this._onClick);
+    this.container.removeEventListener('contextmenu', this._onContextMenu);
+    this.orderOverlay.destroy();
     this.drawings.destroy();
     this.chart.remove();
+  }
+
+  /** Right click on the price pane: `onChartMenu({ clientX, clientY, price })` (price rounded to the tick). */
+  _onContextMenu(e) {
+    if (!this.cb.onChartMenu || !this.mainSeries || !this.candles.length) return;
+    const el = this.chart.panes()[0]?.getHTMLElement();
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const y = e.clientY - r.top;
+    if (y < 0 || y > r.height || e.clientX < r.left || e.clientX > r.right) return;
+    const raw = this.mainSeries.coordinateToPrice(y);
+    if (!Number.isFinite(raw)) return;
+    e.preventDefault();
+    this.cb.onChartMenu({ clientX: e.clientX, clientY: e.clientY, price: this.roundPrice(raw) });
+  }
+
+  /** Round to the price step shown on the axis. */
+  roundPrice(price) {
+    const pf = this.mainSeries?.options().priceFormat || {};
+    if (!pf.minMove || !Number.isFinite(price)) return price;
+    return Number((Math.round(price / pf.minMove) * pf.minMove).toFixed(pf.precision ?? 8));
+  }
+
+  /** Order being prepared, drawn with draggable lines (null hides it). See OrderOverlay.setOrder. */
+  setOrderDraft(order) {
+    this.orderOverlay.setOrder(order);
   }
 
   // ---- main series ----------------------------------------------------------
@@ -205,6 +245,7 @@ export class ChartEngine {
     series.attachPrimitive(this.smcLayer);
     series.attachPrimitive(this.tradeLayer);
     this.drawings.attachTo(series);
+    this.orderOverlay.attachTo(series);
     this.mainSeries = series;
     // Price lines lived on the old series and went away with it
     this.signalLines = [];
@@ -239,12 +280,17 @@ export class ChartEngine {
    */
   setData(candles, volume, key) {
     const prev = this.candles;
-    const sameSet = key === this.dataKey && prev.length > 0 && candles.length >= prev.length
-      && candles[0]?.time === prev[0]?.time;
+    const prevTimes = this.times;
+    const sameFile = key === this.dataKey && prev.length > 0 && candles?.length > 0;
+    const sameSet = sameFile && candles.length >= prev.length && candles[0]?.time === prev[0]?.time;
+    // Live files are a rolling window: the oldest bars drop off as new ones arrive
+    const rolled = sameFile && !sameSet && candles[0].time > prev[0].time && candles[0].time <= prev[prev.length - 1].time;
+    const view = rolled ? this.chart.timeScale().getVisibleLogicalRange() : null;
     this.candles = candles || [];
     this.volume = volume || [];
     this.times = this.candles.map(c => c.time);
     this.dataKey = key;
+    this.orderOverlay.setLastTime(this.times[this.times.length - 1]);
 
     if (sameSet && this.chartType !== 'heikin') {
       const from = Math.max(0, prev.length - 1);
@@ -260,7 +306,16 @@ export class ChartEngine {
     this.drawings.setData(this.times, this.display);
     this._recomputeIndicators();
 
-    if (!sameSet) this.resetView();
+    if (rolled && view) {
+      // Keep the bars the user is looking at; follow new bars when at the right edge
+      const dropped = lowerBound(prevTimes, this.times[0]);
+      const added = this.times.length - (prev.length - dropped);
+      const atEdge = view.to >= prev.length - 1.5;
+      const shift = -dropped + (atEdge ? added : 0);
+      this.chart.timeScale().setVisibleLogicalRange({ from: view.from + shift, to: view.to + shift });
+    } else if (!sameSet) {
+      this.resetView();
+    }
   }
 
   resetView() {

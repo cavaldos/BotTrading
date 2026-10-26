@@ -96,6 +96,27 @@ def export_volume(df: pd.DataFrame) -> List[dict]:
     ]
 
 
+def strategy_indicator_params(strategy_config: dict | None) -> dict:
+    """`run_indicators` keyword arguments matching the strategy settings (strategy.yaml)."""
+    cfg = strategy_config or {}
+    params: dict = {}
+    if cfg.get("swing_length") is not None:
+        params["swing_length"] = int(cfg["swing_length"])
+        params["swing_pivot_length"] = int(cfg["swing_length"])
+    if cfg.get("internal_length") is not None:
+        params["internal_length"] = int(cfg["internal_length"])
+    if cfg.get("mitigation_mode") is not None:
+        params["mitigation_mode"] = "CLOSE" if str(cfg["mitigation_mode"]).lower() == "close" else "HIGHLOW"
+    if cfg.get("eqhl_length") is not None:
+        params["eqhl_length"] = int(cfg["eqhl_length"])
+    if cfg.get("eqhl_threshold") is not None:
+        params["eqhl_threshold"] = float(cfg["eqhl_threshold"])
+    if cfg.get("fvg_atr_filter") is not None:
+        params["fvg_auto_threshold"] = bool(cfg["fvg_atr_filter"])
+    params["gann_swing_length"] = int(cfg.get("internal_length", 3) or 3)
+    return params
+
+
 def run_indicators(
     df: pd.DataFrame,
     include: Optional[Iterable[str]] = None,

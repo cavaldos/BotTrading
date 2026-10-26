@@ -1,6 +1,6 @@
 // Attention cues for a new bot signal and for order fills: a short chime, and a
 // system notification when the tab is in the background (permission is asked when connecting).
-import { ORDER_CHANGES, orderDetail, sideLabel, typeLabel } from './orderText';
+import { ORDER_CHANGES, orderDetail, shortReason, sideLabel, typeLabel } from './orderText';
 
 let audio = null;
 
@@ -28,47 +28,89 @@ function chime(tones = UP) {
   });
 }
 
-export function announceSignal(signal) {
+/** 'granted' | 'denied' | 'default' | 'unsupported' */
+export function notificationPermission() {
+  try {
+    return typeof Notification === 'undefined' ? 'unsupported' : Notification.permission;
+  } catch {
+    return 'unsupported';
+  }
+}
+
+/** Ask for desktop notifications; call it from a click. Resolves to the new permission. */
+export async function requestNotifications() {
+  try {
+    if (typeof Notification === 'undefined') return 'unsupported';
+    if (Notification.permission !== 'default') return Notification.permission;
+    return await Notification.requestPermission();
+  } catch {
+    return notificationPermission();
+  }
+}
+
+// The page is not in front: the tab is hidden or another window (the bot terminal) has focus
+const away = () => document.hidden || !document.hasFocus();
+
+function desktopNotice(title, options, onClick) {
+  if (!away() || notificationPermission() !== 'granted') return;
+  const n = new Notification(title, options);
+  n.onclick = () => {
+    window.focus();
+    onClick?.();
+    n.close();
+  };
+}
+
+/** New bot signal waiting for approval. `onClick` runs when the desktop notification is clicked. */
+export function announceSignal(signal, { onClick } = {}) {
   try {
     chime();
   } catch {
     // audio blocked until the user interacts with the page
   }
   try {
-    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      const n = new Notification(`${signal.symbol} ${signal.side} · ${signal.signalTimeframe}`, {
-        body: `Entry ${signal.entry} · SL ${signal.stopLoss} · TP ${signal.takeProfit}\nWaiting for approval`,
-        tag: `signal-${signal.id}`,
-      });
-      n.onclick = () => {
-        window.focus();
-        n.close();
-      };
-    }
+    const side = sideLabel(signal.side);
+    desktopNotice(`New signal: ${side} ${signal.symbol} ${signal.signalTimeframe || ''}`.trim(), {
+      body: `Entry ${signal.entry} · Stop ${signal.stopLoss} · Target ${signal.takeProfit}\nWaiting for your approval`,
+      tag: `signal-${signal.id}`,
+      // Stays on screen until clicked: the signal needs a decision
+      requireInteraction: true,
+    }, onClick);
   } catch {
     // notifications not supported
   }
 }
 
-export function announceOrder(order, change) {
-  const good = change === 'filled' || change === 'partial';
+/** An approved signal whose order the exchange refused. */
+export function announceSignalFailed(signal, { onClick } = {}) {
   try {
-    chime(good ? UP : DOWN);
+    chime(DOWN);
   } catch {
     // audio blocked until the user interacts with the page
   }
   try {
-    if (document.hidden && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-      const title = `${ORDER_CHANGES[change]?.title || 'Order update'}: ${sideLabel(order.side)} ${order.symbol}`;
-      const n = new Notification(title, {
-        body: `${typeLabel(order.orderType)} · ${orderDetail(order)}`,
-        tag: `order-${order.id}`,
-      });
-      n.onclick = () => {
-        window.focus();
-        n.close();
-      };
-    }
+    desktopNotice(`Order failed: ${sideLabel(signal.side)} ${signal.symbol} ${signal.signalTimeframe || ''}`.trim(), {
+      body: shortReason(signal.resultText) || 'The exchange did not accept the order',
+      tag: `signal-${signal.id}`,
+    }, onClick);
+  } catch {
+    // notifications not supported
+  }
+}
+
+export function announceOrder(order, change, { onClick } = {}) {
+  const bad = change === 'not_filled' || change === 'unknown' || change === 'cancelled';
+  try {
+    chime(bad ? DOWN : UP);
+  } catch {
+    // audio blocked until the user interacts with the page
+  }
+  try {
+    const title = `${ORDER_CHANGES[change]?.title || 'Order update'}: ${sideLabel(order.side)} ${order.symbol}`;
+    desktopNotice(title, {
+      body: `${typeLabel(order.orderType)} · ${orderDetail(order)}`,
+      tag: `order-${order.id}`,
+    }, onClick);
   } catch {
     // notifications not supported
   }

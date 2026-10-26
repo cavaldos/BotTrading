@@ -13,6 +13,8 @@ export const sourceLabel = (order) => (order.source === 'signal' ? `Bot ${order.
 
 /** Changes worth telling the user about (order SSE event `change`). */
 export const ORDER_CHANGES = {
+  // Also announced when the signal was approved on Telegram, or the bot trades without approval
+  placed: { title: 'Order placed', tone: 'accent' },
   filled: { title: 'Order filled', tone: 'up' },
   partial: { title: 'Order partly filled', tone: 'warn' },
   not_filled: { title: 'Order not filled', tone: 'down' },
@@ -52,4 +54,25 @@ export function orderTitle(order) {
   ];
   if (order.reason) parts.push(order.reason);
   return parts.join('\n');
+}
+
+/**
+ * One readable line from a bot / exchange result text, e.g. the multi-line
+ * "BYBIT / ❌ THẤT BẠI / └─ Lỗi: bybit {"retCode":10005,"retMsg":"Permission denied…"}"
+ * becomes "Permission denied, please check your API key permissions. (Bybit 10005)".
+ */
+export function shortReason(text) {
+  const raw = String(text || '');
+  const msg = /"retMsg"\s*:\s*"([^"]+)"/.exec(raw);
+  if (msg) {
+    const code = /"retCode"\s*:\s*(\d+)/.exec(raw);
+    return `${msg[1]}${code ? ` (Bybit ${code[1]})` : ''}`;
+  }
+  return raw
+    .split('\n')
+    .map(l => l.replace(/^(?:\s|└|├|─|❌|⚠️|✅|🟡)+/u, '').trim())
+    .filter(l => l && !/^(BYBIT|THẤT BẠI|KHÔNG ĐẶT LỆNH)$/i.test(l))
+    .map(l => l.split('Lỗi:').pop().trim())
+    .join(' · ')
+    .slice(0, 300);
 }

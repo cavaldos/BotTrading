@@ -30,7 +30,13 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
-from src.indicators.export import datetime_to_timestamp, export_candles, export_volume, run_indicators
+from src.indicators.export import (
+    datetime_to_timestamp,
+    export_candles,
+    export_volume,
+    run_indicators,
+    strategy_indicator_params,
+)
 from src.utils.convertTF import convert_timeframe
 
 
@@ -106,25 +112,6 @@ def _item_last_time(item: dict) -> Optional[float]:
     return max(times) if times else None
 
 
-def _indicator_params(strategy_config: dict) -> dict[str, Any]:
-    cfg = strategy_config or {}
-    params: dict[str, Any] = {}
-    if cfg.get("swing_length") is not None:
-        params["swing_length"] = int(cfg["swing_length"])
-        params["swing_pivot_length"] = int(cfg["swing_length"])
-    if cfg.get("internal_length") is not None:
-        params["internal_length"] = int(cfg["internal_length"])
-    if cfg.get("mitigation_mode") is not None:
-        params["mitigation_mode"] = "CLOSE" if str(cfg["mitigation_mode"]).lower() == "close" else "HIGHLOW"
-    if cfg.get("eqhl_length") is not None:
-        params["eqhl_length"] = int(cfg["eqhl_length"])
-    if cfg.get("eqhl_threshold") is not None:
-        params["eqhl_threshold"] = float(cfg["eqhl_threshold"])
-    if cfg.get("fvg_atr_filter") is not None:
-        params["fvg_auto_threshold"] = bool(cfg["fvg_atr_filter"])
-    return params
-
-
 def build_snapshot_payload(
     row: dict,
     data_folder: str,
@@ -167,8 +154,7 @@ def build_snapshot_payload(
     indicators = run_indicators(
         signal_closed,
         include=cfg.get("indicators") or None,
-        gann_swing_length=int((strategy_config or {}).get("internal_length", 3) or 3),
-        **_indicator_params(strategy_config or {}),
+        **strategy_indicator_params(strategy_config),
     )
 
     # Display the last N candles, including the still-forming one that holds the entry.

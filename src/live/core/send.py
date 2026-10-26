@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 import threading
@@ -497,6 +498,19 @@ def _follow_order(sig: Signal, bybit: dict, order_key: str) -> None:
     sig.tracked_id = tracked.id
 
 
+def _short_reason(text: str) -> str:
+    """One line for sent_orders.json / the web history from an order result message."""
+    text = str(text or "")
+    msg = re.search(r'"retMsg"\s*:\s*"([^"]+)"', text)
+    if msg:
+        code = re.search(r'"retCode"\s*:\s*(\d+)', text)
+        return f"{msg.group(1)}{f' (Bybit {code.group(1)})' if code else ''}"[:300]
+    lines = [ln.strip(" └├─❌⚠️").strip() for ln in str(text or "").splitlines()]
+    lines = [ln for ln in lines if ln and ln.upper() not in ("BYBIT", "THẤT BẠI", "KHÔNG ĐẶT LỆNH")]
+    reason = " · ".join(ln.split("Lỗi:", 1)[-1].strip() for ln in lines)
+    return reason[:300]
+
+
 def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, place_kwargs: dict):
     """Build the sender that puts the signal in the approval hub and posts the image to Discord."""
     symbol = str(row['Symbol']).strip()
@@ -523,7 +537,8 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
             problem = _late_entry_problem(kwargs['symbol'], kwargs['order_type'], kwargs['stop_loss'], kwargs['take_profit'])
             if problem:
                 result_text = f"❌ KHÔNG ĐẶT LỆNH\n└─ {problem}"
-                update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via)
+                update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via,
+                                  reason=problem)
                 send_custom_message(f"**{label}** ⚠️ {approved} — không đặt lệnh\n```\n{result_text}\n```")
                 return False, result_text
 
@@ -543,6 +558,8 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
             approved_via=sig.decided_via,
             order_mode=sig.order_type,
         )
+        if not success:
+            fields["reason"] = _short_reason(result_text)
         if sig.edited:
             fields.update(
                 edited=True,

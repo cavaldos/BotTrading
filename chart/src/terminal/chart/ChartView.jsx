@@ -23,6 +23,8 @@ export default function ChartView({ onEngine, handlers, children }) {
       onToolChange: call('onToolChange'),
       onTextEdit: call('onTextEdit'),
       onPanesChange: call('onPanesChange'),
+      onOrderDrag: call('onOrderDrag'),
+      onChartMenu: call('onChartMenu'),
     });
     onEngine(engine);
     return () => {

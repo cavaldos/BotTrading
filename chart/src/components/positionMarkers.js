@@ -11,62 +11,65 @@ const normalizeTradeType = (type) => {
   return null;
 };
 
-const createPositionMarker = (entryTime, tradeType, orderIndex) => {
+const createPositionMarker = (entryTime, tradeType, orderIndex, tag) => {
   const isLong = tradeType === 'LONG';
-  const label = orderIndex != null ? `#${orderIndex} ${tradeType}` : tradeType;
+  const base = orderIndex != null ? `#${orderIndex} ${tradeType}` : tradeType;
   return {
     time: entryTime,
     position: isLong ? 'belowBar' : 'aboveBar',
     color: isLong ? LONG_COLOR : SHORT_COLOR,
     shape: isLong ? 'arrowUp' : 'arrowDown',
-    text: label,
+    text: tag ? `${base} ${tag}` : base,
     size: 2,
   };
 };
 
+/**
+ * Label each entry arrow with its trade ("#3 LONG", plus `trade.tag` such as the
+ * signal timeframe). Several trades may enter on the same bar: arrows at one time
+ * take the labels of the trades at that time in order; missing arrows are added.
+ */
 export function applyPositionLabelsToMarkers(markers = [], trades = []) {
   if (!Array.isArray(trades) || trades.length === 0) {
     return Array.isArray(markers) ? markers : [];
   }
 
-  const entryTypeByTime = new Map();
+  const entriesByTime = new Map();
   trades.forEach((trade, index) => {
     const entryTime = Number(trade?.entryTime);
     const tradeType = normalizeTradeType(trade?.type);
     if (!Number.isFinite(entryTime) || !tradeType) {
       return;
     }
-
-    entryTypeByTime.set(entryTime, { tradeType, orderIndex: index + 1 });
+    const list = entriesByTime.get(entryTime) || [];
+    list.push({ tradeType, orderIndex: trade?.n ?? index + 1, tag: trade?.tag || '' });
+    entriesByTime.set(entryTime, list);
   });
 
+  const used = new Map();
   const labeledMarkers = (Array.isArray(markers) ? markers : []).map((marker) => {
     if (!isEntryMarker(marker)) {
       return marker;
     }
-
-    const entry = entryTypeByTime.get(Number(marker?.time));
-    if (!entry) {
+    const time = Number(marker?.time);
+    const list = entriesByTime.get(time);
+    if (!list) {
       return marker;
     }
-
+    const k = used.get(time) || 0;
+    used.set(time, k + 1);
+    const entry = list[Math.min(k, list.length - 1)];
     return {
       ...marker,
-      ...createPositionMarker(Number(marker.time), entry.tradeType, entry.orderIndex),
+      ...createPositionMarker(time, entry.tradeType, entry.orderIndex, entry.tag),
       size: marker?.size ?? 2,
     };
   });
 
-  const existingEntryTimes = new Set(
-    labeledMarkers
-      .filter((marker) => isEntryMarker(marker) && entryTypeByTime.has(Number(marker?.time)))
-      .map((marker) => Number(marker.time)),
-  );
-
-  entryTypeByTime.forEach(({ tradeType, orderIndex }, entryTime) => {
-    if (!existingEntryTimes.has(entryTime)) {
-      labeledMarkers.push(createPositionMarker(entryTime, tradeType, orderIndex));
-    }
+  entriesByTime.forEach((list, entryTime) => {
+    list.slice(used.get(entryTime) || 0).forEach(({ tradeType, orderIndex, tag }) => {
+      labeledMarkers.push(createPositionMarker(entryTime, tradeType, orderIndex, tag));
+    });
   });
 
   return labeledMarkers;

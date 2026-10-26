@@ -33,6 +33,7 @@ from src.live.core.order_tracker import OrderTracker, format_order_message, load
 from src.live.core.snapshot import SnapshotWorker, load_snapshot_config
 from src.live.core.telegram_approval import TelegramChannel, load_approval_config, send_telegram_text
 from src.live.web.orders import ManualOrderService, load_web_config
+from src.live.web.history import load_history
 from src.live.web.server import WebApiServer
 
 
@@ -731,6 +732,11 @@ class TradingServices:
             send_telegram_text(os.environ.get("TELEGRAM_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), text)
         send_custom_message(f"```\n{text}\n```")
 
+    def history(self) -> list:
+        """Order history for the web chart (bot signals + web orders, from the bot's files)."""
+        tracked = self.tracker.recent(limit=500) if self.tracker is not None else []
+        return load_history(LOG_FILE, str(WEB_CONFIG.get("manual_orders_file")), tracked)
+
     def on_order_change(self, change: str, order) -> None:
         """Order tracker listener: save the fill result of bot signals and announce it."""
         if change not in self.ANNOUNCED_CHANGES:
@@ -797,6 +803,7 @@ class TradingServices:
                     orders=orders,
                     tracker=self.tracker,
                     hub=self.hub,
+                    history=self.history,
                     on_log=lambda msg: state.add_log("Web", msg),
                     on_error=lambda msg: state.add_error("WEB", msg),
                 )

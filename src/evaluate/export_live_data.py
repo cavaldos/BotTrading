@@ -1,396 +1,544 @@
 """
-Export Live Trade Data to JSON for React Lightweight-Charts
-============================================================
-Exports OHLCV data and trades from res/logs/data and res/logs/output
-to JSON format for live trading visualization.
+Export the live bot's data for the web chart (Live tab).
 
-This script is designed to be called periodically during live trading
-to update the chart data in real-time.
+For every candle file the bot keeps in res/logs/data it writes to chart/public/data/live/:
+
+  SYMBOL_1m.json   entry-timeframe candles, the bot's trades of every signal timeframe,
+                   SMC indicators
+  SYMBOL_2m.json   one file per signal timeframe of strategy.yaml: candles resampled the
+  SYMBOL_3m.json   way the bot does, that timeframe's trades and the SMC indicators on
+  ...              closed candles with the strategy settings (what the bot looks at)
+  symbols.json     the files with `updatedAt`, last price and change; the chart polls it
+                   every few seconds and reloads the file on screen when it changed
+
+Trades come from the bot's output CSVs (res/logs/output/SYMBOL_TF_trades.csv). Each trade
+carries what the bot did with it (`bot`), read from sent_orders.json / skipped_orders.json:
+PENDING (waiting for approval), OPEN (order sent), EXPIRED, REJECTED, FAILED, NOT_FILLED,
+SKIPPED (with the reason), ...
+
+Runs as a loop (start.sh starts it) and only re-exports files whose inputs changed:
+    python -m src.evaluate.export_live_data              # loop, checks every 2 s
+    python -m src.evaluate.export_live_data --once       # one export, then exit
 """
 
 from __future__ import annotations
 
-import pandas as pd
-import numpy as np
+import argparse
 import json
+import math
 import os
 import time
-from glob import glob
+from bisect import bisect_right
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
 
-from src.config import load_live_config
+import pandas as pd
+
+from src.config import load_live_config, load_strategy_config
+from src.indicators.export import (
+    ALL_INDICATORS,
+    datetime_to_timestamp,
+    export_candles,
+    export_volume,
+    run_indicators,
+    strategy_indicator_params,
+)
+from src.utils.convertTF import convert_timeframe
 
 
 # ==================== CONFIGURATION ====================
-# Read runtime folders from src/config/live.yaml
+
 _CONFIG = load_live_config(include_strategy=False)
+_STRATEGY = load_strategy_config()
 
-# Folders for live trading data (from config or defaults)
-LIVE_DATA_DIR = _CONFIG.get("data", {}).get("folder", "res/logs/data")
-LIVE_TRADES_DIR = _CONFIG.get("output", {}).get("folder", "res/logs/output")
-OUTPUT_DIR = 'chart/public/data/live'
+LIVE_DATA_DIR = Path(_CONFIG.get("data", {}).get("folder", "res/logs/data"))
+LIVE_TRADES_DIR = Path(_CONFIG.get("output", {}).get("folder", "res/logs/output"))
+SENT_ORDERS_FILE = Path(_CONFIG.get("output", {}).get("log_file", "res/logs/sent_orders.json"))
+SKIPPED_ORDERS_FILE = Path("res/logs/skipped_orders.json")  # same file as src/live/core/send.py
+OUTPUT_DIR = Path("chart/public/data/live")
 
-# Colors configuration (matching TradingView style)
-COLORS = {
-    'bullish_candle': '#26a69a',
-    'bearish_candle': '#ef5350',
+POLL_SECONDS = 2.0
+MIN_INDICATOR_BARS = 30  # fewer closed candles than this: no SMC indicators
+
+UP = "#26a69a"
+DOWN = "#ef5350"
+ACCENT = "#2962ff"
+MUTED = "#787b86"
+WARN = "#ff9800"
+
+# What the bot did with a trade (sent_orders.json `status`): label shown on the chart, colour
+BOT_STATUS = {
+    "PENDING": ("Waiting approval", ACCENT),
+    "OPEN": ("Sent", ACCENT),
+    "PASSED": ("Sent", ACCENT),
+    "WIN": ("Sent · win", UP),
+    "LOSS": ("Sent · loss", DOWN),
+    "EXPIRED": ("Expired", MUTED),
+    "REJECTED": ("Rejected", MUTED),
+    "CANCELLED": ("Cancelled", MUTED),
+    "FAILED": ("Failed", DOWN),
+    "NOT_FILLED": ("Not filled", WARN),
 }
+FILL_LABELS = {"FILLED": ("Filled", UP), "PARTIAL": ("Partly filled", WARN)}
 
 
-def ensure_output_dir():
-    """Ensure output directory exists."""
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-
-def scan_data_files() -> list[dict]:
-    """
-    Scan res/logs/data/ directory for data files and match with trades files.
-    Returns list of dict with data_file, trades_file, symbol, timeframe.
-    """
-    if not os.path.exists(LIVE_DATA_DIR):
+def _tf_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
         return []
-    
-    data_files = glob(os.path.join(LIVE_DATA_DIR, '*.csv'))
-    results = []
-    
-    for data_file in data_files:
-        filename = os.path.basename(data_file)
-        # Parse filename: SYMBOL_TIMEFRAME.csv
-        name_without_ext = filename.replace('.csv', '')
-        parts = name_without_ext.rsplit('_', 1)
-        
-        if len(parts) != 2:
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
+def _tf_minutes(tf: str) -> int:
+    tf = str(tf).strip().lower()
+    if tf.endswith("m"):
+        return int(tf[:-1])
+    if tf.endswith("h"):
+        return int(tf[:-1]) * 60
+    if tf.endswith("d"):
+        return int(tf[:-1]) * 1440
+    raise ValueError(f"Invalid timeframe: {tf}")
+
+
+# Same timeframe logic as src/live/run.py
+ENTRY_TF = str(_STRATEGY.get("entry_timeframe", "") or "").strip()
+SIGNAL_TFS = _tf_list(_STRATEGY.get("signal_timeframe", _STRATEGY.get("indicator_timeframe", [])))
+STRATEGY_TF_MODE = bool(ENTRY_TF and SIGNAL_TFS)
+INDICATOR_PARAMS = strategy_indicator_params(_STRATEGY)
+
+
+# ==================== PLANNING ====================
+
+def _trades_file(symbol: str, tf: str) -> Path:
+    return LIVE_TRADES_DIR / f"{symbol}_{tf}_trades.csv"
+
+
+def plan_views() -> list[dict]:
+    """One chart file per (symbol, timeframe): the bot's candle files plus each signal timeframe."""
+    if not LIVE_DATA_DIR.exists():
+        return []
+    views: list[dict] = []
+    for data_file in sorted(LIVE_DATA_DIR.glob("*.csv")):
+        symbol, _, tf = data_file.stem.rpartition("_")
+        if not symbol or not tf:
             continue
-        
-        symbol, timeframe = parts
-        
-        # Look for matching trades file in output folder
-        trades_file = os.path.join(LIVE_TRADES_DIR, f'{name_without_ext}_trades.csv')
-        
-        if not os.path.exists(trades_file):
-            trades_file = None
-        
-        results.append({
-            'data_file': data_file,
-            'trades_file': trades_file,
-            'symbol': symbol,
-            'timeframe': timeframe,
-            'id': name_without_ext,
-        })
-    
-    return sorted(results, key=lambda x: (x['symbol'], x['timeframe']))
+        try:
+            source_minutes = _tf_minutes(tf)
+        except ValueError:
+            continue
+        base = {"symbol": symbol, "data_file": data_file, "source_tf": tf}
+        if STRATEGY_TF_MODE and tf == ENTRY_TF:
+            # Entry timeframe: every signal timeframe's trades on one chart
+            views.append({**base, "id": f"{symbol}_{tf}", "tf": tf, "resample": False,
+                          "trade_files": [_trades_file(symbol, s) for s in SIGNAL_TFS],
+                          "trades_from": SIGNAL_TFS, "tag_trades": True})
+            for signal_tf in SIGNAL_TFS:
+                if signal_tf == tf:
+                    continue
+                try:
+                    minutes = _tf_minutes(signal_tf)
+                except ValueError:
+                    continue
+                if minutes < source_minutes or minutes % source_minutes:
+                    continue
+                views.append({**base, "id": f"{symbol}_{signal_tf}", "tf": signal_tf, "resample": True,
+                              "trade_files": [_trades_file(symbol, signal_tf)]})
+        else:
+            views.append({**base, "id": f"{symbol}_{tf}", "tf": tf, "resample": False,
+                          "trade_files": [_trades_file(symbol, tf)]})
+    return views
 
 
-def datetime_to_timestamp(dt) -> int:
-    """Convert datetime to Unix timestamp (seconds)."""
-    if isinstance(dt, pd.Timestamp):
-        return int(dt.timestamp())
-    elif isinstance(dt, datetime):
-        return int(dt.timestamp())
-    elif isinstance(dt, np.datetime64):
-        return int(pd.Timestamp(dt).timestamp())
-    return int(dt)
+# ==================== INPUTS ====================
+
+def _signature(path: Path) -> Optional[tuple[int, int]]:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size
 
 
-def load_candle_data(data_file: str) -> pd.DataFrame:
-    """Load OHLCV data from CSV file."""
-    df = pd.read_csv(data_file)
-    df['Time'] = pd.to_datetime(df['Time'])
+def _read_json(path: Path) -> Any:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def load_bot_orders() -> dict[str, dict]:
+    """sent_orders.json + skipped_orders.json by order key (SYMBOL|TYPE|ENTRY_TIME|TF)."""
+    orders: dict[str, dict] = {}
+
+    skipped = _read_json(SKIPPED_ORDERS_FILE)
+    if isinstance(skipped, dict):
+        skipped = skipped.get("skipped_orders", [])
+    for item in skipped if isinstance(skipped, list) else []:
+        if isinstance(item, dict) and item.get("key"):
+            orders[item["key"]] = {
+                "status": "SKIPPED",
+                "label": "Skipped",
+                "reason": str(item.get("reason") or ""),
+                "decidedAt": item.get("skipped_at"),
+            }
+
+    sent = _read_json(SENT_ORDERS_FILE)
+    sent = sent.get("sent_orders", []) if isinstance(sent, dict) else []
+    for item in sent:
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        status = str(item.get("status") or "OPEN").upper()
+        label, color = BOT_STATUS.get(status, (status.title(), MUTED))
+        fill = str(item.get("fill_status") or "").upper()
+        if status == "OPEN" and fill in FILL_LABELS:
+            label, color = FILL_LABELS[fill]
+        orders[item["key"]] = {
+            "status": status,
+            "label": label,
+            "color": color,
+            "fill": fill or None,
+            "sentAt": item.get("sent_at"),
+            "decidedAt": item.get("decided_at") or item.get("approved_at"),
+            "orderId": item.get("order_id"),
+            "risk": item.get("risk_per_trade"),
+        }
+    return orders
+
+
+def load_candles(path: Path) -> pd.DataFrame:
+    df = pd.read_csv(path)
     df.columns = df.columns.str.strip()
+    df["Time"] = pd.to_datetime(df["Time"])
+    df = df.sort_values("Time").reset_index(drop=True)
+    if df.empty or df[["Open", "High", "Low", "Close"]].iloc[-1].isna().any():
+        raise ValueError(f"{path.name} is empty or still being written")
     return df
 
 
-def load_trades_data(trades_file: str | None) -> pd.DataFrame | None:
-    """Load trades data from CSV file."""
-    if not trades_file or not os.path.exists(trades_file):
-        return None
-    
+def load_trades(files: list[Path]) -> pd.DataFrame:
+    frames = []
+    for path in files:
+        if not path.exists():
+            continue
+        df = pd.read_csv(path, dtype={"Entry_Time": str, "Signal_Timeframe": str})
+        df.columns = df.columns.str.strip()
+        if not df.empty:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+    trades = pd.concat(frames, ignore_index=True)
+    trades["_entry"] = pd.to_datetime(trades["Entry_Time"])
+    sort_cols = ["_entry", "Signal_Timeframe"] if "Signal_Timeframe" in trades.columns else ["_entry"]
+    return trades.sort_values(sort_cols, kind="stable").reset_index(drop=True)
+
+
+# ==================== CONVERSION ====================
+
+def _num(value: Any) -> Optional[float]:
     try:
-        trades_df = pd.read_csv(trades_file)
-        trades_df.columns = trades_df.columns.str.strip()
-        trades_df['Entry_Time'] = pd.to_datetime(trades_df['Entry_Time'])
-        
-        # Exit_Time might be empty for open trades
-        if 'Exit_Time' in trades_df.columns:
-            trades_df['Exit_Time'] = pd.to_datetime(trades_df['Exit_Time'], errors='coerce')
-        
-        return trades_df
-    except Exception as e:
-        print(f"Error loading trades: {e}")
+        f = float(value)
+    except (TypeError, ValueError):
         return None
+    return f if math.isfinite(f) else None
 
 
-def export_candles(df: pd.DataFrame) -> list:
-    """Export candlestick data in lightweight-charts format."""
-    candles = []
-    for _, row in df.iterrows():
-        candles.append({
-            'time': datetime_to_timestamp(row['Time']),
-            'open': float(row['Open']),
-            'high': float(row['High']),
-            'low': float(row['Low']),
-            'close': float(row['Close']),
-        })
-    return candles
+def _text(value: Any) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return ""
+    return str(value).strip()
 
 
-def export_volume(df: pd.DataFrame) -> list:
-    """Export volume data in lightweight-charts histogram format."""
-    volume = []
-    for _, row in df.iterrows():
-        is_bullish = row['Close'] >= row['Open']
-        volume.append({
-            'time': datetime_to_timestamp(row['Time']),
-            'value': float(row['Volume']),
-            'color': COLORS['bullish_candle'] if is_bullish else COLORS['bearish_candle'],
-        })
-    return volume
+def _snap(ts: int, candle_times: list[int]) -> int:
+    """Time of the candle that contains `ts`."""
+    i = bisect_right(candle_times, ts) - 1
+    return candle_times[i] if i >= 0 else candle_times[0]
 
 
-def export_trades(trades_df: pd.DataFrame | None) -> list:
-    """
-    Export trades data with entry/exit info.
-    Handles both closed trades and open trades (without exit info).
-    """
-    if trades_df is None or trades_df.empty:
-        return []
-    
-    trades = []
-    for idx, row in trades_df.iterrows():
-        # Check if trade is closed (has Exit_Time and Exit_Price)
-        is_closed = (
-            'Exit_Time' in row and 
-            pd.notna(row.get('Exit_Time')) and
-            'Exit_Price' in row and
-            pd.notna(row.get('Exit_Price'))
-        )
-        
-        trade_data = {
-            'id': int(idx),
-            'type': row['Type'],
-            'entryTime': datetime_to_timestamp(row['Entry_Time']),
-            'entryPrice': float(row['Entry_Price']),
-            'stopLoss': float(row['Stop_Loss']),
-            'takeProfit': float(row['Take_Profit']),
-            'status': 'closed' if is_closed else 'open',
-        }
-        
-        if is_closed:
-            is_win = row.get('Result', '') != 'Loss'
-            trade_data.update({
-                'exitTime': datetime_to_timestamp(row['Exit_Time']),
-                'exitPrice': float(row['Exit_Price']),
-                'result': 'Win' if is_win else 'Loss',
-                'pnlPercent': float(row['PnL_%']) if 'PnL_%' in row and pd.notna(row.get('PnL_%')) else 0,
-            })
+def export_trades(trades_df: pd.DataFrame, candle_times: list[int], bot_orders: dict[str, dict],
+                  tag_trades: bool) -> tuple[list[dict], list[dict]]:
+    """Trades and their markers (entry arrow, exit dot, bot decision) in chart format."""
+    trades: list[dict] = []
+    markers: list[dict] = []
+    if trades_df.empty or not candle_times:
+        return trades, markers
+
+    for idx, row in enumerate(trades_df.to_dict("records")):
+        trade_type = _text(row.get("Type")).upper()
+        entry_price = _num(row.get("Entry_Price"))
+        stop_loss = _num(row.get("Stop_Loss"))
+        if trade_type not in ("LONG", "SHORT") or entry_price is None or stop_loss is None:
+            continue
+        take_profit = _num(row.get("Take_Profit"))
+        if take_profit is None:
+            take_profit = entry_price
+        is_long = trade_type == "LONG"
+        signal_tf = _text(row.get("Signal_Timeframe"))
+        entry_raw = datetime_to_timestamp(pd.Timestamp(row["_entry"]))
+        entry_time = _snap(entry_raw, candle_times)
+
+        result = _text(row.get("Result")).title()
+        exit_text = _text(row.get("Exit_Time"))
+        exit_price = _num(row.get("Exit_Price"))
+        is_open = result not in ("Win", "Loss") or not exit_text or exit_price is None
+        if is_open:
+            # Still running: draw the box up to the last candle
+            exit_raw, exit_time, exit_price, result = None, candle_times[-1], None, "Pending"
         else:
-            # For open trades, result is pending
-            trade_data['result'] = 'Pending'
-        
-        trades.append(trade_data)
-    
-    return trades
+            exit_raw = datetime_to_timestamp(pd.Timestamp(exit_text))
+            exit_time = _snap(exit_raw, candle_times)
 
+        key = f"{_text(row.get('Symbol'))}|{trade_type}|{_text(row.get('Entry_Time'))}"
+        bot = bot_orders.get(f"{key}|{signal_tf}") if signal_tf else None
+        bot = bot or bot_orders.get(key)
 
-def export_markers(trades_df: pd.DataFrame | None) -> list:
-    """
-    Export trade markers for lightweight-charts.
-    Creates entry markers for all trades, exit markers only for closed trades.
-    """
-    if trades_df is None or trades_df.empty:
-        return []
-    
-    markers = []
-    
-    for idx, row in trades_df.iterrows():
-        is_long = row['Type'] == 'LONG'
-        
-        # Entry marker (always present)
-        markers.append({
-            'time': datetime_to_timestamp(row['Entry_Time']),
-            'position': 'belowBar' if is_long else 'aboveBar',
-            'color': '#26a69a' if is_long else '#ef5350',
-            'shape': 'arrowUp' if is_long else 'arrowDown',
-            'text': f"{'L' if is_long else 'S'}{idx + 1}",
-            'size': 2,
-        })
-        
-        # Exit marker (only for closed trades)
-        is_closed = (
-            'Exit_Time' in row and 
-            pd.notna(row.get('Exit_Time')) and
-            'Exit_Price' in row and
-            pd.notna(row.get('Exit_Price'))
-        )
-        
-        if is_closed:
-            is_win = row.get('Result', '') != 'Loss'
-            markers.append({
-                'time': datetime_to_timestamp(row['Exit_Time']),
-                'position': 'aboveBar' if is_win else 'belowBar',
-                'color': '#26a69a' if is_win else '#ef5350',
-                'shape': 'circle',
-                'text': 'W' if is_win else 'X',
-                'size': 1,
-            })
-    
-    return markers
+        zone = None
+        zone_high, zone_low = _num(row.get("Zone_High")), _num(row.get("Zone_Low"))
+        if zone_high is not None and zone_low is not None:
+            zone = {"high": zone_high, "low": zone_low, "type": _text(row.get("Zone_Type")),
+                    "time": _text(row.get("Zone_Time"))}
 
-
-def calculate_summary(trades_df: pd.DataFrame | None) -> dict:
-    """Calculate trade summary statistics."""
-    if trades_df is None or trades_df.empty:
-        return {
-            'total': 0,
-            'wins': 0,
-            'losses': 0,
-            'open': 0,
-            'winRate': 0,
+        trade = {
+            "id": len(trades),
+            "type": trade_type,
+            "timeframe": signal_tf or None,
+            "entryTime": entry_time,
+            "entryTimeRaw": entry_raw,
+            "exitTime": exit_time,
+            "exitTimeRaw": exit_raw,
+            "entryPrice": entry_price,
+            "exitPrice": exit_price,
+            "stopLoss": stop_loss,
+            "takeProfit": take_profit,
+            "status": "open" if is_open else "closed",
+            "result": result,
+            "pnlR": _num(row.get("PnL_R")),
+            "zone": zone,
+            "bot": bot,
         }
-    
-    total = len(trades_df)
-    
-    # Count closed trades
-    closed_trades = trades_df[
-        trades_df['Exit_Time'].notna() if 'Exit_Time' in trades_df.columns else pd.Series([False] * len(trades_df))
-    ]
-    
-    open_count = total - len(closed_trades)
-    wins = len(closed_trades[closed_trades['Result'] != 'Loss']) if 'Result' in closed_trades.columns else 0
-    losses = len(closed_trades) - wins
-    win_rate = (wins / len(closed_trades) * 100) if len(closed_trades) > 0 else 0
-    
+        if tag_trades and signal_tf:
+            trade["tag"] = signal_tf
+        trades.append(trade)
+
+        n = len(trades)
+        markers.append({
+            "time": entry_time,
+            "position": "belowBar" if is_long else "aboveBar",
+            "color": UP if is_long else DOWN,
+            "shape": "arrowUp" if is_long else "arrowDown",
+            "text": f"{'L' if is_long else 'S'}{n}",
+            "size": 2,
+        })
+        if not is_open:
+            win = result == "Win"
+            markers.append({
+                "time": exit_time,
+                "position": "aboveBar" if win else "belowBar",
+                "color": UP if win else DOWN,
+                "shape": "circle",
+                "text": "W" if win else "X",
+                "size": 1,
+            })
+        # Orders the bot actually sent (or asked approval for); skipped ones stay unlabeled
+        if bot and bot["status"] != "SKIPPED":
+            markers.append({
+                "time": entry_time,
+                "position": "belowBar" if is_long else "aboveBar",
+                "color": bot.get("color") or ACCENT,
+                "shape": "square",
+                "text": f"Bot: {bot['label']}",
+                "size": 1,
+            })
+    return trades, markers
+
+
+def summarize(trades: list[dict]) -> dict:
+    wins = sum(1 for t in trades if t["result"] == "Win")
+    losses = sum(1 for t in trades if t["result"] == "Loss")
+    closed = wins + losses
     return {
-        'total': total,
-        'wins': wins,
-        'losses': losses,
-        'open': open_count,
-        'winRate': round(win_rate, 1),
+        "total": len(trades),
+        "wins": wins,
+        "losses": losses,
+        "open": len(trades) - closed,
+        "winRate": round(wins / closed * 100, 1) if closed else 0,
     }
 
 
-def export_symbol(symbol_info: dict, verbose: bool = False) -> dict | None:
-    """Export a single symbol to JSON file."""
+def closed_candles(df: pd.DataFrame, tf: str, source_df: pd.DataFrame, source_tf: str) -> pd.DataFrame:
+    """Drop the last resampled candle while its source candles are not all in (like the bot)."""
+    covered_until = source_df["Time"].iloc[-1] + pd.Timedelta(minutes=_tf_minutes(source_tf))
+    return df[df["Time"] + pd.Timedelta(minutes=_tf_minutes(tf)) <= covered_until].reset_index(drop=True)
+
+
+def _clean(value: Any) -> Any:
+    """NaN / inf -> None (browsers cannot parse NaN in JSON)."""
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {k: _clean(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    return value
+
+
+def write_json_atomic(path: Path, payload: Any) -> None:
+    """Write next to the target, then rename: the chart never reads a half-written file."""
     try:
-        # Load data
-        df = load_candle_data(symbol_info['data_file'])
-        trades_df = load_trades_data(symbol_info['trades_file'])
-        
-        if verbose:
-            print(f"  {symbol_info['id']}: {len(df)} candles", end='')
-            if trades_df is not None:
-                print(f", {len(trades_df)} trades")
-            else:
-                print(" (no trades)")
-        
-        # Build export object (no order blocks for live trading)
-        chart_data = {
-            'candles': export_candles(df),
-            'volume': export_volume(df),
-            'trades': export_trades(trades_df),
-            'markers': export_markers(trades_df),
-            'summary': calculate_summary(trades_df),
-            'metadata': {
-                'symbol': symbol_info['symbol'],
-                'timeframe': symbol_info['timeframe'],
-                'id': symbol_info['id'],
-                'dataPoints': len(df),
-                'exportedAt': datetime.now().isoformat(),
-                'isLive': True,
-            }
-        }
-        
-        # Save to JSON
-        output_file = os.path.join(OUTPUT_DIR, f"{symbol_info['id']}.json")
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(chart_data, f)
-        
-        return {
-            'id': symbol_info['id'],
-            'symbol': symbol_info['symbol'],
-            'timeframe': symbol_info['timeframe'],
-            'dataPoints': len(df),
-            'trades': len(chart_data['trades']),
-            'winRate': chart_data['summary']['winRate'],
-        }
-    except Exception as e:
-        if verbose:
-            print(f"  Error exporting {symbol_info['id']}: {e}")
-        return None
+        text = json.dumps(payload, separators=(",", ":"), allow_nan=False)
+    except ValueError:
+        text = json.dumps(_clean(payload), separators=(",", ":"), allow_nan=False)
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
-def export_symbols_list(symbols: list[dict]):
-    """Export list of available symbols to symbols.json."""
-    output_file = os.path.join(OUTPUT_DIR, 'symbols.json')
-    with open(output_file, 'w', encoding='utf-8') as f:
-        json.dump({
-            'symbols': symbols,
-            'exportedAt': datetime.now().isoformat(),
-            'isLive': True,
-        }, f, indent=2)
+def export_view(view: dict, bot_orders: dict[str, dict]) -> dict:
+    """Write one chart file; returns its symbols.json entry. Raises when an input is unreadable."""
+    source_df = load_candles(view["data_file"])
+    if view["resample"]:
+        df = convert_timeframe(source_df, view["tf"]).reset_index(drop=True)
+        indicator_df = closed_candles(df, view["tf"], source_df, view["source_tf"])
+    else:
+        df = source_df
+        indicator_df = source_df
+    if df.empty:
+        raise ValueError(f"no candles for {view['id']}")
+
+    candles = export_candles(df)
+    candle_times = [c["time"] for c in candles]
+    trades, markers = export_trades(load_trades(view["trade_files"]), candle_times, bot_orders,
+                                    view.get("tag_trades", False))
+    if len(indicator_df) >= MIN_INDICATOR_BARS:
+        indicators = run_indicators(indicator_df, **INDICATOR_PARAMS)
+    else:
+        indicators = {key: [] for key in ALL_INDICATORS}
+
+    summary = summarize(trades)
+    now = time.time()
+    payload = {
+        "candles": candles,
+        "volume": export_volume(df),
+        "trades": trades,
+        "markers": markers,
+        "summary": summary,
+        **indicators,
+        "metadata": {
+            "symbol": view["symbol"],
+            "timeframe": view["tf"],
+            "id": view["id"],
+            "dataPoints": len(df),
+            "source": f"{view['data_file'].name}{' -> ' + view['tf'] if view['resample'] else ''}",
+            "tradesFrom": view.get("trades_from") or [view["tf"]],
+            "indicatorBars": len(indicator_df),
+            "exportedAt": datetime.now().isoformat(timespec="seconds"),
+            "isLive": True,
+        },
+    }
+    write_json_atomic(OUTPUT_DIR / f"{view['id']}.json", payload)
+
+    first_open, last_close = candles[0]["open"], candles[-1]["close"]
+    entry = {
+        "id": view["id"],
+        "symbol": view["symbol"],
+        "timeframe": view["tf"],
+        "dataPoints": len(df),
+        "trades": summary["total"],
+        "winRate": summary["winRate"],
+        "updatedAt": round(now, 3),
+        "lastPrice": last_close,
+        "changePct": round((last_close - first_open) / first_open * 100, 4) if first_open else 0,
+        "indicators": {key: len(items) for key, items in indicators.items()},
+    }
+    if view.get("trades_from"):
+        # Holds the trades of the other files too: the chart does not count them twice
+        entry["tradesFrom"] = view["trades_from"]
+    return entry
 
 
-def export_all(verbose: bool = False) -> list[dict]:
-    """
-    Export all available symbol data to JSON files.
-    
-    Args:
-        verbose: If True, print progress messages
-    
-    Returns:
-        List of exported symbol info dicts
-    """
-    ensure_output_dir()
-    
-    # Scan for data files
-    symbol_infos = scan_data_files()
-    
-    if not symbol_infos:
-        if verbose:
-            print("No data files found in", LIVE_DATA_DIR)
-        return []
-    
-    if verbose:
-        print(f"Found {len(symbol_infos)} symbol(s)")
-    
-    # Export each symbol
-    exported_symbols = []
-    for info in symbol_infos:
-        result = export_symbol(info, verbose=verbose)
-        if result:
-            exported_symbols.append(result)
-    
-    # Export symbols list
-    export_symbols_list(exported_symbols)
-    
-    return exported_symbols
+def write_symbols(entries: dict[str, dict]) -> None:
+    symbols = sorted(entries.values(), key=lambda e: (e["symbol"], _tf_minutes(e["timeframe"])))
+    write_json_atomic(OUTPUT_DIR / "symbols.json", {
+        "symbols": symbols,
+        "exportedAt": datetime.now().isoformat(timespec="seconds"),
+        "isLive": True,
+    })
 
 
-def main():
-    """Main function - export all data with verbose output."""
-    print("=" * 60)
-    print("Export Live Trade Data to JSON")
-    print("=" * 60)
-    print(f"\nData source: {LIVE_DATA_DIR}")
-    print(f"Trades source: {LIVE_TRADES_DIR}")
-    print(f"Output: {OUTPUT_DIR}")
-    print(f"\nRunning continuously every 30 seconds...")
-    print("Press Ctrl+C to stop.\n")
-    
+# ==================== RUNNING ====================
+
+class LiveExporter:
+    """Re-exports a chart file only when its candle file, trades files or the bot logs changed."""
+
+    def __init__(self) -> None:
+        self.signatures: dict[str, tuple] = {}
+        self.entries: dict[str, dict] = {}
+        self.errors: dict[str, str] = {}
+
+    def run_once(self) -> tuple[int, list[str]]:
+        """Returns (files written, error messages)."""
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        views = plan_views()
+        if not views:
+            return 0, []  # bot just started and cleared its data: keep the last files on screen
+
+        shared = (_signature(SENT_ORDERS_FILE), _signature(SKIPPED_ORDERS_FILE))
+        bot_orders: Optional[dict[str, dict]] = None
+        written, errors = 0, []
+        for view in views:
+            sig = (tuple(_signature(p) for p in [view["data_file"], *view["trade_files"]]), shared)
+            if self.signatures.get(view["id"]) == sig:
+                continue
+            if bot_orders is None:
+                bot_orders = load_bot_orders()
+            try:
+                self.entries[view["id"]] = export_view(view, bot_orders)
+            except Exception as exc:  # file being written by the bot: try again next time
+                message = f"{view['id']}: {exc}"
+                if self.errors.get(view["id"]) != message:
+                    errors.append(message)
+                self.errors[view["id"]] = message
+                continue
+            self.errors.pop(view["id"], None)
+            self.signatures[view["id"]] = sig
+            written += 1
+
+        ids = {v["id"] for v in views}
+        dropped = [i for i in self.entries if i not in ids]
+        for i in dropped:
+            self.entries.pop(i, None)
+            self.signatures.pop(i, None)
+        if (written or dropped) and self.entries:
+            write_symbols(self.entries)
+        return written, errors
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Export live bot data for the web chart")
+    parser.add_argument("--once", action="store_true", help="export once and exit")
+    parser.add_argument("--interval", type=float, default=POLL_SECONDS, help="seconds between checks (loop mode)")
+    args = parser.parse_args()
+
+    mode = f"timeframes {ENTRY_TF} + signals {','.join(SIGNAL_TFS)}" if STRATEGY_TF_MODE else "data file timeframes"
+    print(f"Live chart export: {LIVE_DATA_DIR} + {LIVE_TRADES_DIR} -> {OUTPUT_DIR} ({mode})", flush=True)
+    exporter = LiveExporter()
     try:
         while True:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n[{timestamp}] Exporting data...")
-            
-            exported = export_all(verbose=True)
-            
-            print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Exported {len(exported)} symbol(s)")
-            print("Waiting 30 seconds until next export...\n")
-            
-            time.sleep(30)
+            started = time.time()
+            written, errors = exporter.run_once()
+            stamp = datetime.now().strftime("%H:%M:%S")
+            for message in errors:
+                print(f"[{stamp}] Not exported (will retry): {message}", flush=True)
+            if written:
+                print(f"[{stamp}] Exported {written} file(s) in {time.time() - started:.1f}s", flush=True)
+            if args.once:
+                break
+            time.sleep(max(0.2, args.interval))
     except KeyboardInterrupt:
-        print("\n\nExport stopped by user.")
-        print("=" * 60)
+        print("Export stopped.")
 
 
 if __name__ == "__main__":

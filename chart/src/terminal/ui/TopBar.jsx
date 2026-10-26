@@ -136,23 +136,27 @@ function ChartTypeMenu({ value, onChange }) {
   );
 }
 
-function LiveStatus({ lastUpdate, autoRefresh, onToggle, onRefresh, compact }) {
+function LiveStatus({ lastUpdate, autoRefresh, onToggle, onRefresh, offline, compact }) {
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick(n => n + 1), 1000);
     return () => clearInterval(t);
   }, []);
+  let title = autoRefresh
+    ? 'Updates as soon as the bot exports new candles (click to pause)'
+    : 'Auto refresh paused (click to resume)';
+  if (offline && autoRefresh) title = `${offline}. The chart shows the last data it got.`;
   return (
     <>
       <button
         type="button"
-        className={`tv-live-badge ${autoRefresh ? '' : 'is-paused'}`}
+        className={`tv-live-badge ${autoRefresh ? '' : 'is-paused'} ${offline && autoRefresh ? 'is-offline' : ''}`}
         onClick={onToggle}
         aria-pressed={autoRefresh}
-        title={autoRefresh ? 'Auto refresh every 5s (click to pause)' : 'Auto refresh paused (click to resume)'}
+        title={title}
       >
         <span className="tv-live-dot" />
-        {autoRefresh ? 'LIVE' : 'PAUSED'}
+        {!autoRefresh ? 'PAUSED' : offline ? 'OFFLINE' : 'LIVE'}
       </button>
       <span className="tv-status tv-hide-narrow" aria-live="off">Updated {formatAgo(lastUpdate)}</span>
       {!compact && (
@@ -161,6 +165,26 @@ function LiveStatus({ lastUpdate, autoRefresh, onToggle, onRefresh, compact }) {
         </button>
       )}
     </>
+  );
+}
+
+const BOT_LABELS = {
+  login: ['Connect bot', 'Connect to the bot to get new signals and approve them here'],
+  connecting: ['Bot', 'Connecting to the bot…'],
+  online: ['Bot', 'Connected to the bot: new signals show up here as soon as they come'],
+  offline: ['Bot offline', 'The bot is not reachable, retrying…'],
+};
+
+/** Connection to the bot (signals, approvals); opens the Trade panel. */
+function BotButton({ conn, pending, onClick, compact }) {
+  const [label, title] = BOT_LABELS[conn] || BOT_LABELS.offline;
+  const tip = pending ? `${pending} signal${pending > 1 ? 's' : ''} waiting for approval` : title;
+  return (
+    <button type="button" className={`tv-btn tv-bot-btn is-${conn}`} onClick={onClick} title={tip} aria-label={`${label}. ${tip}`}>
+      {conn !== 'login' && <span className="tv-trade-dot" aria-hidden="true" />}
+      {(!compact || conn === 'login') && label}
+      {pending > 0 && <span className="tv-count" aria-hidden="true">{pending}</span>}
+    </button>
   );
 }
 
@@ -255,7 +279,7 @@ function MoreMenu({ onRefresh, onUndo, canUndo, onScreenshot, onGoTo }) {
 
 export default function TopBar({
   symbol, tf, tfOptions, onTf, chartType, onChartType, source, onSource,
-  onOpenSymbol, onOpenIndicators, onGoTo, live, onScreenshot, onUndo, canUndo, compact,
+  onOpenSymbol, onOpenIndicators, onGoTo, live, bot, onScreenshot, onUndo, canUndo, compact,
 }) {
   return (
     <header className="tv-topbar" aria-label="Chart toolbar">
@@ -285,6 +309,7 @@ export default function TopBar({
         </div>
       )}
       <span className="tv-spacer" />
+      {bot && <BotButton {...bot} compact={compact} />}
       {live && <LiveStatus {...live} compact={compact} />}
       {compact ? (
         <MoreMenu onRefresh={live?.onRefresh} onUndo={onUndo} canUndo={canUndo} onScreenshot={onScreenshot} onGoTo={onGoTo} />

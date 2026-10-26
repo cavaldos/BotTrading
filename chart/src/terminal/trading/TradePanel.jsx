@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { formatPrice } from '../lib/format';
 import { Dialog } from '../ui/Dialog';
 import { apiImageUrl } from './api';
-import { countdown, isOpenOrder, orderDetail, orderTitle, sideLabel, typeLabel } from './orderText';
+import { notificationPermission, requestNotifications } from './notify';
+import { countdown, isOpenOrder, orderDetail, orderTitle, shortReason, sideLabel, typeLabel } from './orderText';
 import { useTicker } from './useTrading';
+import { useSignalDecision } from './useSignalDecision';
 
 const SIGNAL_STATUS = {
   PENDING: { label: 'Waiting', tone: 'accent' },
@@ -22,8 +24,6 @@ const ORDER_STATUS = {
   CANCELLED: { label: 'Cancelled', tone: 'muted' },
   UNKNOWN: { label: 'Unknown', tone: 'warn' },
 };
-
-const CONFIRM_MS = 3000;
 
 function clock(epochSeconds) {
   if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return '';
@@ -107,42 +107,13 @@ function useSignalImage(signal) {
 
 function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdit, onImage }) {
   const image = useSignalImage(signal);
-  const [confirming, setConfirming] = useState(false);
-  const [busy, setBusy] = useState(null);
-  const [error, setError] = useState(null);
-  const confirmTimer = useRef(null);
+  const { confirming, busy, error, approve, reject } = useSignalDecision(signal.id, onDecide);
   useTicker(signal.status === 'PENDING');
-  useEffect(() => () => clearTimeout(confirmTimer.current), []);
 
   const isLong = signal.side === 'LONG';
   const left = signal.expiresAt * 1000 - serverNow();
   const total = (timeoutMinutes || 5) * 60000;
   const pending = signal.status === 'PENDING';
-
-  const decide = async (action) => {
-    setBusy(action);
-    setError(null);
-    try {
-      const res = await onDecide(signal.id, action);
-      if (!res?.ok) setError(res?.message || 'Not applied');
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setBusy(null);
-      setConfirming(false);
-    }
-  };
-
-  const approve = () => {
-    if (!confirming) {
-      setConfirming(true);
-      clearTimeout(confirmTimer.current);
-      confirmTimer.current = setTimeout(() => setConfirming(false), CONFIRM_MS);
-      return;
-    }
-    clearTimeout(confirmTimer.current);
-    decide('approve');
-  };
 
   return (
     <article className={`tv-sig ${isLong ? 'is-long' : 'is-short'}`} aria-label={`${signal.symbol} ${signal.side} signal`}>
@@ -173,10 +144,16 @@ function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdi
         <div><dt>R:R</dt><dd>{signal.rr ?? '—'}</dd></div>
         <div><dt>Risk</dt><dd>${signal.riskPerTrade}</dd></div>
       </dl>
+      {signal.status === 'FAILED' && (
+        <p className="tv-trade-error tv-sig-note" role="alert">
+          {shortReason(signal.resultText) || 'The exchange did not accept the order.'}
+        </p>
+      )}
       {signal.status === 'PLACING' && (
         <p className="tv-muted tv-sig-note">Placing order (approved on {signal.decidedVia === 'web' ? 'the web' : `Telegram by ${signal.decidedBy}`})…</p>
       )}
-      {error && <p className="tv-trade-error" role="alert">{error}</p>}
+      {/* A failed order already shows its reason above */}
+      {error && signal.status !== 'FAILED' && <p className="tv-trade-error" role="alert">{error}</p>}
       <div className="tv-sig-actions">
         <button type="button" className="tv-btn tv-btn--ghost" onClick={() => onShow(signal)}>Show on chart</button>
         {pending && (
@@ -184,7 +161,7 @@ function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdi
             <button type="button" className="tv-btn tv-btn--ghost" onClick={() => onEdit(signal)} disabled={!!busy}>
               Edit SL/TP
             </button>
-            <button type="button" className="tv-btn tv-btn--ghost" onClick={() => decide('reject')} disabled={!!busy}>
+            <button type="button" className="tv-btn tv-btn--ghost" onClick={reject} disabled={!!busy}>
               {busy === 'reject' ? 'Rejecting…' : 'Reject'}
             </button>
             <button
@@ -205,19 +182,92 @@ function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdi
 
 // ---- history ----------------------------------------------------------------------------
 
-function SignalHistory({ items }) {
-  if (!items.length) return <div className="tv-empty">No decided signals yet.</div>;
+// What happened to each bot signal / web order (GET /api/history)
+const HISTORY_STATUS = {
+  PENDING: { label: 'Waiting', tone: 'accent' },
+  PLACING: { label: 'Placing…', tone: 'warn' },
+  WAITING: { label: 'Waiting fill', tone: 'accent' },
+  PARTIAL: { label: 'Partly filled', tone: 'warn' },
+  FILLED: { label: 'Filled', tone: 'up' },
+  PLACED: { label: 'Placed', tone: 'up' },
+  WIN: { label: 'Win', tone: 'up' },
+  LOSS: { label: 'Loss', tone: 'down' },
+  NOT_FILLED: { label: 'Not filled', tone: 'down' },
+  CANCELLED: { label: 'Cancelled', tone: 'muted' },
+  UNKNOWN: { label: 'Unknown', tone: 'warn' },
+  FAILED: { label: 'Failed', tone: 'down' },
+  EXPIRED: { label: 'Expired', tone: 'muted' },
+  REJECTED: { label: 'Rejected', tone: 'muted' },
+};
+// Reached the exchange
+const PLACED = ['WAITING', 'PARTIAL', 'FILLED', 'PLACED', 'WIN', 'LOSS', 'NOT_FILLED', 'CANCELLED', 'UNKNOWN'];
+
+const HISTORY_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'placed', label: 'Placed' },
+  { id: 'missed', label: 'Not placed' },
+];
+
+function when(epochSeconds) {
+  if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return '';
+  const d = new Date(epochSeconds * 1000);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${time}`;
+}
+
+function historyDetail(item) {
+  const parts = [];
+  if (item.fillPrice) parts.push(`filled ${formatPrice(item.fillPrice)}`);
+  else if (item.entry) parts.push(`${item.orderType === 'limit' ? 'limit' : 'entry'} ${formatPrice(item.entry)}`);
+  if (item.source === 'web') parts.push('web order');
+  else if (item.via) parts.push(`${item.status === 'REJECTED' ? 'rejected' : 'approved'} on ${item.via === 'web' ? 'the web' : 'Telegram'}`);
+  return parts.join(' · ');
+}
+
+/** Bot signals and web orders; a click shows the order on the chart. */
+function OrderHistory({ items, focusedId, onFocus }) {
+  const [filter, setFilter] = useState('all');
+  const shown = items.filter(i => (filter === 'all' ? true : filter === 'placed' ? PLACED.includes(i.status) : !PLACED.includes(i.status)));
   return (
-    <ul className="tv-trade-list">
-      {items.map(s => (
-        <li key={s.id} className="tv-trade-row" title={s.resultText || undefined}>
-          <span className="num tv-muted">{clock(s.decidedAt || s.createdAt)}</span>
-          <b>{s.symbol}</b>
-          <SideTag side={s.side} />
-          <StatusTag map={SIGNAL_STATUS} status={s.status} />
-        </li>
-      ))}
-    </ul>
+    <>
+      <div className="tv-filter tv-hist-filter" role="group" aria-label="Filter history">
+        {HISTORY_FILTERS.map(f => (
+          <button key={f.id} type="button" className="tv-chip" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>
+            {f.label}
+          </button>
+        ))}
+      </div>
+      {shown.length === 0 && (
+        <div className="tv-empty">{items.length ? 'Nothing for this filter.' : 'No orders yet. Signals you approve or reject and orders from the web show up here.'}</div>
+      )}
+      <ul className="tv-hist" aria-label="Order history">
+        {shown.map(i => {
+          const def = HISTORY_STATUS[i.status] || { label: i.status, tone: 'muted' };
+          return (
+            <li key={i.id}>
+              <button
+                type="button"
+                className={`tv-hist-row ${focusedId === i.id ? 'is-active' : ''}`}
+                aria-current={focusedId === i.id}
+                onClick={() => onFocus(i)}
+                title={i.reason || undefined}
+              >
+                <span className="tv-hist-main">
+                  <span className="num tv-muted">{when(i.time)}</span>
+                  <b>{i.symbol}</b>
+                  {i.timeframe && <span className="tv-muted">{i.timeframe}</span>}
+                  <SideTag side={i.side} />
+                  <span className={`tv-tag tv-tag--${def.tone}`}>{def.label}</span>
+                </span>
+                <span className="tv-hist-sub num">{historyDetail(i)}</span>
+                {i.reason && <span className={`tv-hist-sub ${i.status === 'FAILED' ? 'tv-down' : 'tv-muted'}`}>{i.reason}</span>}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </>
   );
 }
 
@@ -277,21 +327,43 @@ function OrderList({ items, serverNow, onCancel, onShow }) {
   );
 }
 
+// ---- desktop alerts --------------------------------------------------------------------
+
+/** Desktop notifications reach you while the bot terminal (or another app) is in front. */
+function DesktopAlerts() {
+  const [permission, setPermission] = useState(notificationPermission);
+  if (permission === 'granted' || permission === 'unsupported') return null;
+  if (permission === 'denied') {
+    return (
+      <p className="tv-trade-hint tv-trade-warn tv-trade-alerts">
+        Desktop alerts are blocked for this site. Allow notifications in the browser&apos;s site settings to be told about new signals while another window is in front.
+      </p>
+    );
+  }
+  return (
+    <div className="tv-trade-alerts">
+      <span className="tv-muted">Get a desktop alert for new signals while another window is in front.</span>
+      <button type="button" className="tv-btn tv-btn--xs tv-btn--primary" onClick={() => requestNotifications().then(setPermission)}>
+        Turn on
+      </button>
+    </div>
+  );
+}
+
 // ---- panel ------------------------------------------------------------------------------
 
-export default function TradePanel({ trading, activeSymbol, onShowSignal, onEditSignal, onShowOrder, onNewOrder }) {
+export default function TradePanel({ trading, activeSymbol, onShowSignal, onEditSignal, onShowOrder, onNewOrder, onFocusHistory, focusedHistoryId }) {
   const { conn, error, signals, orders, config, approval } = trading;
   const [viewer, setViewer] = useState(null);
 
   if (conn === 'login') return <LoginForm error={error} onLogin={trading.login} />;
 
-  const pending = signals
-    .filter(s => s.status === 'PENDING' || s.status === 'PLACING')
+  // Waiting signals, plus the ones whose order failed in the last 5 minutes (tagged Failed, with the reason)
+  const failedSince = trading.serverNow() - 5 * 60000;
+  const cards = signals
+    .filter(s => s.status === 'PENDING' || s.status === 'PLACING' || (s.status === 'FAILED' && s.decidedAt * 1000 > failedSince))
     .sort((a, b) => a.createdAt - b.createdAt);
-  const decided = signals
-    .filter(s => s.status !== 'PENDING' && s.status !== 'PLACING')
-    .sort((a, b) => (b.decidedAt || b.createdAt) - (a.decidedAt || a.createdAt))
-    .slice(0, 15);
+  const pending = cards.filter(s => s.status !== 'FAILED');
   const canTrade = conn === 'online' && config?.symbols?.includes(activeSymbol);
   const openOrders = orders.filter(isOpenOrder);
   const shownOrders = [
@@ -310,6 +382,7 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onEdit
         </span>
         <button type="button" className="tv-btn tv-btn--xs" onClick={trading.logout}>Log out</button>
       </div>
+      <DesktopAlerts />
 
       <section aria-labelledby="trade-pending">
         <h3 id="trade-pending" className="tv-trade-h">
@@ -319,10 +392,10 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onEdit
         {!approval.enabled && conn === 'online' && (
           <div className="tv-empty">Approval is off on the bot (approval.enabled: false): signals are traded automatically.</div>
         )}
-        {approval.enabled && pending.length === 0 && (
+        {approval.enabled && cards.length === 0 && (
           <div className="tv-empty">No signals waiting. New bot signals show up here and on Telegram.</div>
         )}
-        {pending.map(s => (
+        {cards.map(s => (
           <SignalCard
             key={s.id}
             signal={s}
@@ -345,7 +418,7 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onEdit
         <p className="tv-muted tv-trade-hint">
           {conn === 'online' && activeSymbol && !config?.symbols?.includes(activeSymbol)
             ? `${activeSymbol} is not one of the bot symbols.`
-            : 'Or draw a Long/Short position on the chart, select it and press Trade.'}
+            : 'Or right-click the chart at a price. Then drag the entry, stop and target lines on the chart.'}
         </p>
       </section>
 
@@ -358,12 +431,12 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onEdit
       </section>
 
       <section aria-labelledby="trade-history">
-        <h3 id="trade-history" className="tv-trade-h">Signal history</h3>
-        <SignalHistory items={decided} />
+        <h3 id="trade-history" className="tv-trade-h">History</h3>
+        <OrderHistory items={trading.history || []} focusedId={focusedHistoryId} onFocus={onFocusHistory} />
       </section>
 
       {/* The image URL belongs to its card: close with it when the signal is decided */}
-      {viewer && pending.some(s => s.id === viewer.sig.id) && (
+      {viewer && cards.some(s => s.id === viewer.sig.id) && (
         <Dialog title={`${viewer.sig.symbol} ${viewer.sig.signalTimeframe} · ${viewer.sig.side}`} onClose={() => setViewer(null)} size="lg">
           <div className="tv-sig-viewer">
             <img src={viewer.url} alt={`${viewer.sig.symbol} ${viewer.sig.side} setup`} />

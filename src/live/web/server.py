@@ -16,8 +16,10 @@ to it, so a public chart link still needs the token to see or place anything.
   POST /api/orders/preview               size / checks for an order (nothing placed)
   POST /api/orders                       place a manual order ({..., confirm: true, clientId})
   GET  /api/orders                       orders followed on the exchange (signals + manual)
+  GET  /api/history                      bot signals and web orders from the bot's files
+                                         (survives restarts, see src/live/web/history.py)
   POST /api/orders/<id>/cancel           cancel a limit order still waiting to fill
-  GET  /api/events                       server-sent events: snapshot, signal, order
+  GET  /api/events                       server-sent events: snapshot (with history), signal, order
                                          (order events carry `change`: placed, partial,
                                          filled, not_filled, cancelled, unknown, update)
 """
@@ -52,6 +54,7 @@ class WebApiServer:
         orders: ManualOrderService,
         tracker: OrderTracker,
         hub: Optional[ApprovalHub] = None,
+        history: Optional[Callable[[], list]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -63,6 +66,7 @@ class WebApiServer:
         self.orders = orders
         self.tracker = tracker
         self.hub = hub
+        self.history = history or (lambda: [])
         self.on_log = on_log or (lambda msg: None)
         self.on_error = on_error or (lambda msg: print(f"Web API error: {msg}"))
         self.stopping = threading.Event()
@@ -118,9 +122,17 @@ class WebApiServer:
     def _on_order_event(self, event: str, order: TrackedOrder) -> None:
         self.broadcast("order", {"change": event, "order": order.to_dict(), "serverTime": time.time()})
 
+    def safe_history(self) -> list:
+        try:
+            return self.history()
+        except Exception as exc:  # a broken log file must not break the event stream
+            self.on_error(f"history: {exc}")
+            return []
+
     def snapshot(self) -> dict:
         signals = self.hub.snapshot() if self.hub is not None else {"pending": [], "recent": []}
         return {
+            "history": self.safe_history(),
             "serverTime": time.time(),
             "approval": self.hub is not None,
             "timeoutMinutes": self.hub.timeout_minutes if self.hub is not None else None,
@@ -202,6 +214,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send_json(200, self.app.snapshot()["signals"])
             if path == "/api/orders":
                 return self._send_json(200, self.app.tracker.recent())
+            if path == "/api/history":
+                return self._send_json(200, self.app.safe_history())
             if path == "/api/events":
                 return self._stream_events()
             match = _SIGNAL_IMAGE.match(path)

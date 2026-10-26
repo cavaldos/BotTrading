@@ -22,10 +22,14 @@ export const SOURCES = {
     id: 'live',
     label: 'Live',
     base: '/data/live',
+    // Files of the bot's timeframes hold their SMC indicators (src/evaluate/export_live_data.py)
+    smcInline: true,
     hasTrades: true,
     live: true,
-    refreshMs: 5000,
-    symbolsRefreshMs: 30000,
+    // symbols.json is small and says which file changed (`updatedAt`); the file on screen
+    // is reloaded when it changes, and at least every refreshMs
+    symbolsRefreshMs: 3000,
+    refreshMs: 30000,
   },
 };
 
@@ -39,21 +43,41 @@ async function fetchJson(url, { bust = false, signal } = {}) {
   return res.json();
 }
 
-/** symbols.json of a source, refreshed periodically for live data. */
+/**
+ * symbols.json of a source, refreshed periodically for live data.
+ * A failed refresh keeps the last list (error is set) so the chart stays usable.
+ */
 export function useSymbolList(sourceId) {
   const source = SOURCES[sourceId] || SOURCES.backtest;
   const [state, setState] = useState({ symbols: [], loading: true, error: null, sourceId });
 
   useEffect(() => {
     let cancelled = false;
+    let lastText = null;
     const load = (initial) => {
       if (initial) setState({ symbols: [], loading: true, error: null, sourceId });
-      fetchJson(`${source.base}/symbols.json`, { bust: !!source.live })
-        .then(json => {
-          if (!cancelled) setState({ symbols: Array.isArray(json.symbols) ? json.symbols : [], loading: false, error: null, sourceId });
+      const url = source.live ? `${source.base}/symbols.json?t=${Date.now()}` : `${source.base}/symbols.json`;
+      fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error(`symbols.json: HTTP ${res.status}`);
+          if (!(res.headers.get('content-type') || '').includes('json')) throw new Error('symbols.json is not exported yet');
+          return res.text();
+        })
+        .then(text => {
+          if (cancelled) return;
+          // Polled every few seconds: only re-render when the exporter wrote something new
+          if (text === lastText) {
+            setState(s => (s.error ? { ...s, error: null } : s));
+            return;
+          }
+          const json = JSON.parse(text);
+          lastText = text;
+          setState({ symbols: Array.isArray(json.symbols) ? json.symbols : [], loading: false, error: null, sourceId });
         })
         .catch(err => {
-          if (!cancelled) setState(s => ({ ...s, loading: false, error: err.message, sourceId }));
+          if (cancelled) return;
+          const message = err instanceof TypeError ? 'The chart server is not reachable (is start.sh still running?)' : err.message;
+          setState(s => ({ ...s, loading: false, error: message, sourceId }));
         });
     };
     load(true);
@@ -74,10 +98,15 @@ function hasSmc(json) {
 /**
  * Loads one data file (and SMC overlays when wanted), refreshing live data.
  * tfOption: { tf, seconds, native, baseId } from buildTimeframeOptions.
+ * version: the file's `updatedAt` in symbols.json (live); a new value reloads the file.
  */
-export function useChartFile(sourceId, tfOption, { wantSmc = false, autoRefresh = true } = {}) {
+export function useChartFile(sourceId, tfOption, { wantSmc = false, autoRefresh = true, version = null } = {}) {
   const source = SOURCES[sourceId] || SOURCES.backtest;
   const baseId = tfOption?.baseId || null;
+  // Primitive copies: the option object is rebuilt whenever the symbol list refreshes
+  const native = !!tfOption?.native;
+  const seconds = tfOption?.seconds || null;
+  const versionRef = useRef(version);
   // `raw` / `smc` hold the last finished request; a mismatching id means "loading"
   const [raw, setRaw] = useState({ id: null, json: null, error: null, lastUpdate: null });
   const [smc, setSmc] = useState({ id: null, json: null, error: null });
@@ -97,10 +126,20 @@ export function useChartFile(sourceId, tfOption, { wantSmc = false, autoRefresh 
 
   useEffect(() => {
     currentIdRef.current = baseId;
+    versionRef.current = version;
     const ctrl = new AbortController();
     fetchRaw(ctrl.signal);
     return () => ctrl.abort();
+    // version is only recorded here; the effect below reloads on a new version
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [baseId, fetchRaw]);
+
+  // Live: reload as soon as the exporter wrote a new version of this file
+  useEffect(() => {
+    if (!source.live || !autoRefresh || !baseId || version == null || versionRef.current === version) return;
+    versionRef.current = version;
+    fetchRaw();
+  }, [source, autoRefresh, baseId, version, fetchRaw]);
 
   useEffect(() => {
     if (!source.live || !autoRefresh || !baseId) return undefined;
@@ -111,7 +150,7 @@ export function useChartFile(sourceId, tfOption, { wantSmc = false, autoRefresh 
   // SMC overlays always come from the file of the timeframe on screen (SYMBOL_TF),
   // never from the smaller base timeframe a resampled view was built from.
   const smcId = baseId && tfOption?.tf ? `${baseId.replace(/_[^_]+$/, '')}_${tfOption.tf}` : null;
-  const inlineSmc = !!tfOption?.native && smcId === baseId;
+  const inlineSmc = native && smcId === baseId;
   const smcUrl = source.smcBase && smcId && !(inlineSmc && source.smcInline)
     ? `${source.smcBase}/${encodeURIComponent(smcId)}.json`
     : null;
@@ -138,13 +177,13 @@ export function useChartFile(sourceId, tfOption, { wantSmc = false, autoRefresh 
     const volume = Array.isArray(json.volume) ? json.volume : [];
     const trades = Array.isArray(json.trades) ? json.trades : [];
     const markers = Array.isArray(json.markers) ? json.markers : [];
-    if (tfOption && !tfOption.native) {
-      const r = resampleCandles(candles, volume, tfOption.seconds);
-      const t = resampleTrades(trades, markers, tfOption.seconds);
+    if (seconds && !native) {
+      const r = resampleCandles(candles, volume, seconds);
+      const t = resampleTrades(trades, markers, seconds);
       return { candles: r.candles, volume: r.volume, trades: t.trades, markers: t.markers, summary: json.summary, metadata: json.metadata };
     }
     return { candles, volume: volumeFromCandles(candles, volume), trades, markers, summary: json.summary, metadata: json.metadata };
-  }, [json, tfOption]);
+  }, [json, native, seconds]);
 
   let smcData = null;
   let smcState = { loading: false, error: null };

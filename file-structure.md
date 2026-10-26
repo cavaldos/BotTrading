@@ -16,7 +16,7 @@ src/
 │   ├── __init__.py
 │   ├── analyze_trades.py
 │   ├── export_chart_data.py
-│   ├── export_live_data.py
+│   ├── export_live_data.py      # Live chart files: candles, SMC indicators, bot trades + status (loop, start.sh)
 │   ├── verify_look_bias.py
 │   └── verify_trades.py
 ├── indicators/

@@ -1,43 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { formatShortDateTime, formatDateTime, formatSigned, formatPrice } from '../lib/format';
 import { IconChevronDown, IconChevronRight } from './icons';
 
-// Last price / change for the live watchlist. Live files are small, so each
-// symbol's file is fetched while the watchlist is visible.
-function useLiveQuotes(groups, enabled) {
-  const [quotes, setQuotes] = useState({});
-  useEffect(() => {
-    if (!enabled || groups.length === 0) return undefined;
-    let cancelled = false;
-    const load = () => {
-      groups.forEach(g => {
-        const id = g.tfs[0]?.id;
-        if (!id) return;
-        fetch(`/data/live/${encodeURIComponent(id)}.json?t=${Date.now()}`)
-          .then(r => (r.ok ? r.json() : null))
-          .then(json => {
-            const c = json?.candles;
-            if (cancelled || !c?.length) return;
-            const last = c[c.length - 1].close;
-            // Change vs the first candle of the file (the visible session)
-            const first = c[0].open;
-            setQuotes(q => ({ ...q, [g.symbol]: { last, chg: first ? ((last - first) / first) * 100 : 0 } }));
-          })
-          .catch(() => {});
-      });
-    };
-    load();
-    const t = setInterval(load, 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [groups, enabled]);
-  return quotes;
-}
-
-function Watchlist({ groups, symbol, onSymbol, sourceId, currentQuote, baseTf }) {
-  const quotes = useLiveQuotes(groups, sourceId === 'live');
+// Live quotes come with the symbol list (symbols.json lastPrice / changePct): { [symbol]: { last, chg } }
+function Watchlist({ groups, symbol, onSymbol, sourceId, currentQuote, quotes = {}, baseTf }) {
   const isBacktest = sourceId === 'backtest';
   // Backtest numbers are per file: show the timeframe being viewed (its source file when resampled)
   const cols = isBacktest ? [`Trades ${baseTf || ''}`.trim(), 'Win %'] : sourceId === 'live' ? ['Last', 'Chg %'] : ['Bars', 'TFs'];
@@ -61,7 +27,7 @@ function Watchlist({ groups, symbol, onSymbol, sourceId, currentQuote, baseTf })
           }
         } else if (sourceId === 'live') {
           const q = g.symbol === symbol && currentQuote ? currentQuote : quotes[g.symbol];
-          if (q) {
+          if (q && Number.isFinite(q.last)) {
             a = formatPrice(q.last);
             b = formatSigned(q.chg, 2, '%');
             bClass = q.chg >= 0 ? 'tv-up' : 'tv-down';
@@ -120,6 +86,9 @@ function TradeListPanel({ rows, filter, onFilter, selectedId, onSelect, showOpen
       <div ref={listRef} role="list" aria-label="Trades">
         {rows.map(r => {
           const isLong = r.type === 'LONG';
+          // Live: what the bot did with this trade (sent for approval, expired, ...)
+          const bot = r.bot && r.bot.status !== 'SKIPPED' ? r.bot : null;
+          const botText = r.bot ? `Bot: ${r.bot.label}${r.bot.reason ? ` (${r.bot.reason})` : ''}` : undefined;
           return (
             <button
               key={r.key}
@@ -128,9 +97,14 @@ function TradeListPanel({ rows, filter, onFilter, selectedId, onSelect, showOpen
               className={`tv-tl-row ${r.key === selectedId ? 'is-active' : ''}`}
               onClick={() => onSelect(r)}
               aria-current={r.key === selectedId}
+              title={botText}
             >
               <span className="tv-muted num">#{r.n}</span>
-              <span className={isLong ? 'tv-up' : 'tv-down'}>{isLong ? 'Long' : 'Short'}</span>
+              <span className={`tv-tl-side ${isLong ? 'tv-up' : 'tv-down'}`}>
+                {isLong ? 'Long' : 'Short'}
+                {r.timeframe && <small className="tv-muted"> {r.timeframe}</small>}
+                {bot && <i className="tv-tl-bot" style={{ background: bot.color }} aria-label={botText} />}
+              </span>
               <span className="num tv-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }} title={formatDateTime(r.entryTimeRaw ?? r.entryTime)}>{formatShortDateTime(r.entryTimeRaw ?? r.entryTime)}</span>
               <span className={`num ${r.r == null ? 'tv-muted' : r.r > 0 ? 'tv-up' : 'tv-down'}`}>
                 {r.r == null ? 'open' : formatSigned(r.r, 2, 'R')}

@@ -186,6 +186,7 @@
 }
 
 .tv-live-badge.is-paused { background: var(--tv-hover); color: var(--tv-muted); }
+.tv-live-badge.is-offline { background: rgba(255, 152, 0, 0.16); color: var(--tv-warn); }
 
 .tv-live-dot {
   width: 7px;
@@ -195,7 +196,7 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .tv-live-badge:not(.is-paused) .tv-live-dot { animation: tv-pulse 1.6s ease-in-out infinite; }
+  .tv-live-badge:not(.is-paused):not(.is-offline) .tv-live-dot { animation: tv-pulse 1.6s ease-in-out infinite; }
 }
 
 @keyframes tv-pulse {
@@ -635,7 +636,7 @@
 
 .tv-tl-row {
   display: grid;
-  grid-template-columns: 38px 56px minmax(0, 1fr) 54px;
+  grid-template-columns: 38px 76px minmax(0, 1fr) 54px;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -649,6 +650,9 @@
 .tv-tl-row:hover { background: var(--tv-hover); }
 .tv-tl-row.is-active { background: rgba(41, 98, 255, 0.12); border-left-color: var(--tv-accent); }
 .tv-tl-row span:last-child { text-align: right; }
+.tv-tl-side { display: flex; align-items: center; gap: 3px; min-width: 0; white-space: nowrap; }
+.tv-tl-side small { font-size: 11px; }
+.tv-tl-bot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; }
 
 .tv-filter {
   display: flex;
@@ -1289,7 +1293,6 @@
   .tv-dialog-body { padding: 12px 16px; }
   .tv-dialog-foot { flex-wrap: wrap; padding: 10px 16px calc(10px + env(safe-area-inset-bottom)); }
   .tv-dialog-foot .tv-btn { flex: 1 1 0; height: 40px; }
-  .tv-order-expiry { flex: 1 0 100%; }
   .tv-search { padding: 0 16px; }
   .tv-field { grid-template-columns: minmax(0, 1fr) 150px; }
 

@@ -25,10 +25,14 @@ import { IconToEnd, IconWatchlist, IconTrades, IconOrder } from './ui/icons';
 import { TOOL_DEFS } from './drawings/tools';
 import { matches, NARROW, PHONE, SHORT, useMediaQuery, useWindowHeight } from './lib/useMediaQuery';
 import TradePanel from './trading/TradePanel';
-import OrderDialog from './trading/OrderDialog';
+import OrderTicket from './trading/OrderTicket';
+import { defaultLevels, num, useOrderDraft } from './trading/useOrderDraft';
+import ChartMenu from './ui/ChartMenu';
+import { formatNumber, formatPrice } from './lib/format';
 import OrderAlerts from './trading/OrderAlerts';
+import SignalAlerts from './trading/SignalAlerts';
 import { useTrading } from './trading/useTrading';
-import { announceOrder, announceSignal } from './trading/notify';
+import { announceOrder, announceSignal, announceSignalFailed } from './trading/notify';
 import { isOpenOrder } from './trading/orderText';
 import './trading/trading.css';
 
@@ -57,10 +61,21 @@ function groupSymbols(symbols) {
   return [...map.values()]
     .map(g => {
       const tfs = g.tfs.sort((a, b) => (tfToSeconds(a.tf) || 0) - (tfToSeconds(b.tf) || 0));
-      const trades = tfs.reduce((n, t) => n + (t.trades || 0), 0);
+      // Live entry-timeframe files repeat the trades of the signal timeframes (`tradesFrom`)
+      const trades = tfs.reduce((n, t) => n + (t.tradesFrom ? 0 : t.trades || 0), 0);
       return { ...g, tfs, meta: trades ? `${trades} trades` : `${tfs.length} timeframe${tfs.length > 1 ? 's' : ''}` };
     })
     .sort((a, b) => a.symbol.localeCompare(b.symbol));
+}
+
+/** Live watchlist prices from symbols.json: the smallest timeframe of each symbol. */
+function liveQuotes(groups) {
+  const quotes = {};
+  groups.forEach(g => {
+    const t = g.tfs.find(x => Number.isFinite(x.lastPrice));
+    if (t) quotes[g.symbol] = { last: t.lastPrice, chg: Number(t.changePct) || 0 };
+  });
+  return quotes;
 }
 
 function tradeMarkers(markers, rows) {
@@ -197,26 +212,44 @@ export default function TerminalPage() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [panesVersion, setPanesVersion] = useState(0);
   const [toast, setToast] = useState(null);
-  const [orderTicket, setOrderTicket] = useState(null);
-  const [orderDraft, setOrderDraft] = useState(null);
+  // Right-click menu on the chart: { clientX, clientY, price }
+  const [chartMenu, setChartMenu] = useState(null);
   const [orderAlerts, setOrderAlerts] = useState([]);
   const [focusSignalId, setFocusSignalId] = useState(null);
+  // Order picked in the Trade panel history: { item, pending, found } (found = its trade is in the chart file)
+  const [historyFocus, setHistoryFocus] = useState(null);
+  // Signal cards hidden from the chart (they stay in the Trade panel)
+  const [hiddenSignals, setHiddenSignals] = useState(() => new Set());
+  // Latest show functions for desktop notification clicks (defined further down)
+  const showRef = useRef({});
   // Stable so open dialogs keep focus while live data refreshes the page
   const closeDialog = useCallback(() => setDialog(null), []);
+  const closeChartMenu = useCallback(() => setChartMenu(null), []);
 
   // ---- bot connection (signals to approve, manual orders) -------------------------
   const trading = useTrading({
     onSignal: (sig) => {
       setToast(`New signal: ${sig.symbol} ${sig.side === 'LONG' ? 'Long' : 'Short'} · waiting for approval`);
-      announceSignal(sig);
+      announceSignal(sig, { onClick: () => showRef.current.signal?.(sig) });
       if (!matches(NARROW)) {
         setRightTab('trade');
         setRightOpen(true);
       }
     },
-    // Fill / no fill: a card that stays until dismissed (one per order, newest last)
+    // Approved (here or on Telegram) but the exchange refused the order: its card shows why
+    onSignalFailed: (sig) => {
+      announceSignalFailed(sig, { onClick: () => showRef.current.signal?.(sig) });
+      setToast(`Order failed: ${sig.side === 'LONG' ? 'Long' : 'Short'} ${sig.symbol}`);
+      setHiddenSignals(set => {
+        if (!set.has(sig.id)) return set;
+        const next = new Set(set);
+        next.delete(sig.id);
+        return next;
+      });
+    },
+    // Placed / filled / not filled: a card that stays until dismissed (one per order, newest last)
     onOrderChange: (order, change) => {
-      announceOrder(order, change);
+      announceOrder(order, change, { onClick: () => showRef.current.order?.(order) });
       setOrderAlerts(list => [
         ...list.filter(a => a.order.id !== order.id),
         { id: `${order.id}:${change}`, order, change },
@@ -224,6 +257,10 @@ export default function TerminalPage() {
     },
   });
   const pendingCount = trading.signals.filter(s => s.status === 'PENDING').length;
+  // Order being prepared: ticket next to the chart + draggable lines on it
+  const ticket = useOrderDraft(trading);
+  const ticketDraft = ticket.draft;
+  const ticketSignalId = ticketDraft?.signalId || null;
 
   useEffect(() => {
     const base = document.title.replace(/^\(\d+\) /, '');
@@ -232,8 +269,12 @@ export default function TerminalPage() {
 
   // ---- data -------------------------------------------------------------------
   const wantSmc = Object.values(smcVisibility).some(Boolean);
-  const file = useChartFile(source, tfOption, { wantSmc, autoRefresh });
+  // Live: symbols.json tells when the file on screen was re-exported
+  const fileVersion = group?.tfs.find(t => t.id === tfOption?.baseId)?.updatedAt ?? null;
+  const file = useChartFile(source, tfOption, { wantSmc, autoRefresh, version: fileVersion });
   const data = file.data;
+  const lastBar = data?.candles?.[data.candles.length - 1];
+  const livePrice = source === 'live' && lastBar ? lastBar.close : null;
   const rows = useMemo(() => enrichTrades(data?.trades, commission), [data, commission]);
   const filteredRows = useMemo(() => filterRows(rows, tradeFilter), [rows, tradeFilter]);
   const markers = useMemo(() => tradeMarkers(data?.markers, filteredRows), [data, filteredRows]);
@@ -251,11 +292,11 @@ export default function TerminalPage() {
     engine.setTrades(filteredRows, markers);
   }, [engine, data, filteredRows, markers]);
 
+  const barDuration = tfOption?.seconds || tfToSeconds(tfOption?.tf) || 60;
   useEffect(() => {
     if (!engine || !data) return;
-    const barDuration = tfOption?.seconds || tfToSeconds(tfOption?.tf) || 60;
     engine.setSmcPrimitives(file.smc ? buildSmcPrimitives(file.smc, smcVisibility, { barDuration, candles: data.candles }) : []);
-  }, [engine, data, file.smc, smcVisibility, tfOption]);
+  }, [engine, data, file.smc, smcVisibility, barDuration]);
 
   useEffect(() => {
     if (!engine) return;
@@ -277,12 +318,17 @@ export default function TerminalPage() {
     engine.drawings.setDrawings(saved);
   }, [engine, activeSymbol]);
 
+  const historyLines = historyFocus && !historyFocus.pending && !historyFocus.found && historyFocus.item.symbol === activeSymbol
+    ? historyFocus.item
+    : null;
+
   // Entry / stop / target lines of the signals waiting on this symbol (and the one opened from the panel)
   useEffect(() => {
     if (!engine) return;
     const lines = [];
     trading.signals
-      .filter(s => s.symbol === activeSymbol && (s.status === 'PENDING' || s.status === 'PLACING' || s.id === focusSignalId))
+      .filter(s => s.symbol === activeSymbol && s.id !== ticketSignalId
+        && (s.status === 'PENDING' || s.status === 'PLACING' || s.id === focusSignalId))
       .forEach(s => {
         const tag = `${s.side === 'LONG' ? 'Long' : 'Short'} ${s.signalTimeframe}`.trim();
         lines.push(
@@ -301,16 +347,58 @@ export default function TerminalPage() {
           { price: o.takeProfit, color: '#089981', title: 'Order target', dashed: false },
         );
       });
-    // Levels being edited in the order ticket
-    if (orderDraft && orderTicket?.symbol === activeSymbol) {
+    // History order without a trade box in the chart file (web order, or older than the data)
+    if (historyLines) {
+      const tag = `${historyLines.side === 'LONG' ? 'Long' : 'Short'} ${String(historyLines.status || '').toLowerCase().replace('_', ' ')}`;
       lines.push(
-        { price: orderDraft.entry, color: '#ff9800', title: 'New entry', width: 2 },
-        { price: orderDraft.stopLoss, color: '#f23645', title: 'New stop', width: 2 },
-        { price: orderDraft.takeProfit, color: '#089981', title: 'New target', width: 2 },
+        { price: historyLines.fillPrice || historyLines.entry, color: '#ff9800', title: tag, dashed: false },
+        { price: historyLines.stopLoss, color: '#f23645', title: 'Stop', dashed: false },
+        { price: historyLines.takeProfit, color: '#089981', title: 'Target', dashed: false },
       );
     }
     engine.setSignalLines(lines);
-  }, [engine, trading.signals, trading.orders, activeSymbol, focusSignalId, orderDraft, orderTicket]);
+  }, [engine, trading.signals, trading.orders, activeSymbol, focusSignalId, ticketSignalId, historyLines]);
+
+  // The order being prepared, with draggable entry / stop / target lines
+  const draftOnChart = ticketDraft && ticketDraft.symbol === activeSymbol ? ticketDraft : null;
+  const marketPrice = ticket.preview?.price ?? livePrice;
+  useEffect(() => {
+    if (!engine) return;
+    if (!draftOnChart) {
+      engine.setOrderDraft(null);
+      return;
+    }
+    const pv = ticket.previewFresh ? ticket.preview : null;
+    const base = draftOnChart.symbol.replace(/USDT$/, '');
+    engine.setOrderDraft({
+      side: draftOnChart.side,
+      orderType: draftOnChart.orderType,
+      entry: num(draftOnChart.entry),
+      lastPrice: marketPrice,
+      stopLoss: num(draftOnChart.stopLoss),
+      takeProfit: num(draftOnChart.takeProfit),
+      extra: pv ? {
+        entry: `${pv.quantity} ${base}`,
+        stopLoss: `−$${formatNumber(pv.riskUsd)}`,
+        takeProfit: `+$${formatNumber(pv.rewardUsd)}`,
+      } : {},
+    });
+  }, [engine, draftOnChart, marketPrice, ticket.preview, ticket.previewFresh]);
+
+  // New orders without levels get a stop / target from the recent bars once the live data is on screen
+  useEffect(() => {
+    const d = ticketDraft;
+    const candles = data?.candles;
+    if (!d?.autoLevels || source !== 'live' || d.symbol !== activeSymbol || !candles?.length || !engine) return;
+    const entry = d.orderType === 'limit' && num(d.entry) ? num(d.entry) : candles[candles.length - 1].close;
+    const lv = defaultLevels(d.side, entry, candles);
+    ticket.update({
+      autoLevels: false,
+      stopLoss: num(d.stopLoss) ?? engine.roundPrice(lv.stopLoss),
+      takeProfit: num(d.takeProfit) ?? engine.roundPrice(lv.takeProfit),
+      ...(d.orderType === 'limit' && !num(d.entry) ? { entry } : {}),
+    });
+  }, [ticketDraft, source, activeSymbol, data, engine, ticket]);
 
   useEffect(() => { engine?.drawings.setTool(tool); }, [engine, tool]);
   useEffect(() => { engine?.setCompact(phone); }, [engine, phone]);
@@ -341,6 +429,16 @@ export default function TerminalPage() {
       if (pos) setTextEdit({ id: d.id, initial: d.style?.text || '', ...pos });
     },
     onPanesChange: () => setPanesVersion(v => v + 1),
+    // Lines of the order ticket dragged on the chart
+    onOrderDrag: (lv) => {
+      ticket.update({
+        orderType: lv.orderType,
+        ...(lv.orderType === 'limit' ? { entry: lv.entry } : {}),
+        ...(Number.isFinite(lv.stopLoss) ? { stopLoss: lv.stopLoss } : {}),
+        ...(Number.isFinite(lv.takeProfit) ? { takeProfit: lv.takeProfit } : {}),
+      });
+    },
+    onChartMenu: (m) => setChartMenu(m),
   };
 
   const selectTrade = useCallback((row) => {
@@ -348,6 +446,26 @@ export default function TerminalPage() {
     setSelectedKey(row.key);
     engine?.focusTrade(row);
   }, [engine]);
+
+  // History click: once the order's symbol / timeframe is on screen, focus its trade (or its prices)
+  useEffect(() => {
+    const f = historyFocus;
+    if (!f?.pending || !engine || source !== 'live' || !data?.candles?.length) return;
+    const it = f.item;
+    if (activeSymbol !== it.symbol || data.metadata?.symbol !== it.symbol) return;
+    const wantTf = it.timeframe ? normalizeTf(it.timeframe) : null;
+    if (wantTf && tfOptions.some(o => o.tf === wantTf) && activeTf !== wantTf) return;
+    const row = it.source === 'signal' && Number.isFinite(it.entryTime)
+      ? rows.find(r => r.type === it.side && r.entryTimeRaw === it.entryTime && (!r.timeframe || !it.timeframe || r.timeframe === it.timeframe))
+      : null;
+    const at = it.entryTime || it.time;
+    // Runs once per click, after the symbol's data has loaded (it cannot be done in the click handler)
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (row) selectTrade(row);
+    else engine.focusTrade({ entryTime: at, entryPrice: it.fillPrice || it.entry, stopLoss: it.stopLoss, takeProfit: it.takeProfit });
+    setHistoryFocus({ item: it, pending: false, found: !!row });
+    if (!row && at < data.candles[0].time) setToast('This order is older than the chart data: only its prices are shown');
+  }, [historyFocus, engine, source, data, activeSymbol, activeTf, tfOptions, rows, selectTrade]);
 
   // ---- indicator actions ------------------------------------------------------------
   const addIndicator = (type) => {
@@ -364,7 +482,7 @@ export default function TerminalPage() {
   // ---- keyboard shortcuts --------------------------------------------------------------
   const keyState = useRef({});
   useLayoutEffect(() => {
-    keyState.current = { engine, dialog: dialog || settingsUid || orderTicket, filteredRows, selectedKey, selectTrade, textEdit };
+    keyState.current = { engine, dialog: dialog || settingsUid, filteredRows, selectedKey, selectTrade, textEdit, closeTicket: ticketDraft ? ticket.close : null };
   });
   useEffect(() => {
     const onKey = (e) => {
@@ -399,6 +517,11 @@ export default function TerminalPage() {
           setTool(null);
           return;
         }
+        if (s.closeTicket) {
+          s.closeTicket();
+          return;
+        }
+        setHistoryFocus(null);
         if (s.selectedKey) setSelectedKey(null);
         return;
       }
@@ -482,8 +605,12 @@ export default function TerminalPage() {
   }, [file.smc, group, tfOption]);
 
   let smcNote = null;
-  if (source === 'live' && !file.smc) smcNote = 'Live files do not include SMC data. Switch to Backtest or SMC data to see these overlays.';
-  else if (file.smcState.loading) smcNote = 'Loading SMC data…';
+  if (source === 'live' && !file.smc) {
+    const natives = (group?.tfs || []).map(t => t.tf).join(', ');
+    smcNote = tfOption && !tfOption.native
+      ? `On Live, SMC overlays come with the bot's timeframes (${natives}). Pick one of them to see the overlays.`
+      : 'This live file has no SMC data yet. The live export (started by start.sh) adds it on its next update.';
+  } else if (file.smcState.loading) smcNote = 'Loading SMC data…';
   else if (file.smcState.error) {
     smcNote = `${file.smcState.error}. SMC overlays only show on timeframes with their own SMC file `
       + `(export: python -m src.indicators.main --tfs ${tfOption?.tf || '1h'}).`;
@@ -502,10 +629,12 @@ export default function TerminalPage() {
     ? 'SMC data files have no trades. Switch to Backtest to use the Strategy Tester.'
     : rows.length === 0 && data ? 'No trades in this file yet.' : null;
 
+  // With data on screen a failed refresh only shows in the LIVE badge (OFFLINE)
+  const liveOffline = source === 'live' && data ? (symbolList.error || file.error || null) : null;
   let chartMessage = null;
-  if (symbolList.error) {
+  if (symbolList.error && groups.length === 0) {
     chartMessage = (<div><strong>Could not load the symbol list</strong>{symbolList.error}</div>);
-  } else if (!symbolList.loading && groups.length === 0) {
+  } else if (!symbolList.loading && !symbolList.error && groups.length === 0) {
     chartMessage = (<div><strong>No symbols</strong>{`${sourceDef.base}/symbols.json lists no data files.`}</div>);
   } else if (file.error && !data) {
     chartMessage = (<div><strong>Could not load {activeSymbol} {activeTf}</strong>{file.error}</div>);
@@ -515,9 +644,19 @@ export default function TerminalPage() {
 
   // Sources without trades (SMC data) show the watchlist instead of the trade list
   const shownRightTab = rightTab === 'trade' || sourceDef.hasTrades ? rightTab : 'watchlist';
+  const quotes = useMemo(() => (source === 'live' ? liveQuotes(groups) : {}), [source, groups]);
+
+  // Signals waiting for a decision, shown over the chart unless the Trade panel (which lists them) is open
+  const tradePanelOpen = rightOpen && shownRightTab === 'trade';
+  const recentMs = trading.serverNow() - 5 * 60000;
+  const alertSignals = trading.conn === 'online' && !tradePanelOpen
+    ? trading.signals
+      .filter(s => !hiddenSignals.has(s.id)
+        && (s.status === 'PENDING' || s.status === 'PLACING' || (s.status === 'FAILED' && s.decidedAt * 1000 > recentMs)))
+      .sort((a, b) => a.createdAt - b.createdAt)
+    : [];
 
   // ---- trading actions -------------------------------------------------------------------
-  const livePrice = source === 'live' && lastClose ? lastClose.close : null;
 
   // Phones have room for one drawer under the chart: a side panel or the tester
   const openRight = (tab) => {
@@ -536,32 +675,61 @@ export default function TerminalPage() {
     if (message) setToast(message);
   };
 
+  const tradable = trading.conn === 'online' && !!activeSymbol && !!trading.config?.symbols?.includes(activeSymbol);
+
   const canTicket = () => {
     if (trading.conn !== 'online') {
       openTradePanel('Connect to the bot in the Trade panel first');
       return false;
     }
-    if (!activeSymbol || !trading.config?.symbols?.includes(activeSymbol)) {
+    if (!tradable) {
       setToast(`${activeSymbol || 'This symbol'} is not one of the bot symbols`);
       return false;
     }
     return true;
   };
 
+  /**
+   * Open the order on the chart: draggable lines + ticket. Without stop / target they are
+   * set from the recent bars once live data is on screen (orders are always made on Live).
+   */
+  const startOrder = ({ side, orderType = 'market', entry, stopLoss, takeProfit }) => {
+    if (!canTicket()) return;
+    if (source !== 'live') {
+      changeSource('live');
+      setSymbol(activeSymbol);
+      setToast('Switched to Live data to place the order');
+    }
+    ticket.open({
+      symbol: activeSymbol,
+      side,
+      orderType,
+      entry,
+      stopLoss,
+      takeProfit,
+      autoLevels: !Number.isFinite(stopLoss) || !Number.isFinite(takeProfit),
+    });
+    // The side panel would hide the order zone on narrow screens
+    if (matches(NARROW)) setRightOpen(false);
+  };
+
   const tradeFromDrawing = () => {
     const d = engine?.drawings.getSelected();
-    if (!d || (d.type !== 'long' && d.type !== 'short') || !canTicket()) return;
+    if (!d || (d.type !== 'long' && d.type !== 'short')) return;
     const [entry, target, stop] = d.points;
-    setOrderTicket({
-      symbol: activeSymbol,
+    const near = Number.isFinite(livePrice) && Math.abs(entry.price - livePrice) / livePrice <= 0.001;
+    startOrder({
       side: d.type === 'long' ? 'LONG' : 'SHORT',
-      initial: { entry: entry.price, takeProfit: target.price, stopLoss: stop.price },
+      orderType: near ? 'market' : 'limit',
+      entry: entry.price,
+      takeProfit: target.price,
+      stopLoss: stop.price,
     });
   };
 
   const newOrder = (side) => {
-    if (!canTicket()) return;
-    setOrderTicket({ symbol: activeSymbol, side, initial: { entry: livePrice ?? undefined } });
+    startOrder({ side, orderType: 'market' });
+    engine?.scrollToRealtime();
   };
 
   const showSignal = (sig) => {
@@ -580,18 +748,57 @@ export default function TerminalPage() {
       return;
     }
     showSignal(sig);
-    setOrderTicket({
+    ticket.open({
       symbol: sig.symbol,
       side: sig.side,
-      initial: {
-        signalId: sig.id,
-        timeframe: sig.signalTimeframe,
-        entry: sig.entry,
-        stopLoss: sig.stopLoss,
-        takeProfit: sig.takeProfit,
-        risk: sig.riskPerTrade,
-      },
+      orderType: 'market',
+      entry: sig.entry,
+      stopLoss: sig.stopLoss,
+      takeProfit: sig.takeProfit,
+      risk: sig.riskPerTrade,
+      signalId: sig.id,
+      timeframe: sig.signalTimeframe,
+      bot: { entry: sig.entry, stopLoss: sig.stopLoss, takeProfit: sig.takeProfit },
     });
+  };
+
+  // Right-click menu: start an order at that price, or move the open order's levels there
+  const chartMenuItems = () => {
+    if (!chartMenu) return [];
+    const price = chartMenu.price;
+    const at = formatPrice(price);
+    if (trading.conn !== 'online') {
+      return [{ label: 'Connect to the bot to trade', onSelect: () => openTradePanel() }];
+    }
+    if (!tradable) return [{ label: `${activeSymbol || 'This symbol'} is not one of the bot symbols`, disabled: true }];
+    const above = Number.isFinite(livePrice) && price > livePrice;
+    const items = [];
+    if (draftOnChart) {
+      items.push(
+        { label: `Entry here (limit) ${at}`, onSelect: () => ticket.update({ orderType: 'limit', entry: price }) },
+        { label: `Stop here ${at}`, tone: 'down', onSelect: () => ticket.update({ stopLoss: price }) },
+        { label: `Target here ${at}`, tone: 'up', onSelect: () => ticket.update({ takeProfit: price }) },
+        'sep',
+      );
+    }
+    items.push(
+      { label: `Long limit ${at}`, hint: above ? 'above price: fills now' : '', tone: 'up', onSelect: () => startOrder({ side: 'LONG', orderType: 'limit', entry: price }) },
+      { label: `Short limit ${at}`, hint: !above && Number.isFinite(livePrice) ? 'below price: fills now' : '', tone: 'down', onSelect: () => startOrder({ side: 'SHORT', orderType: 'limit', entry: price }) },
+      'sep',
+      { label: 'Long at market', tone: 'up', onSelect: () => startOrder({ side: 'LONG', orderType: 'market' }) },
+      { label: 'Short at market', tone: 'down', onSelect: () => startOrder({ side: 'SHORT', orderType: 'market' }) },
+    );
+    return items;
+  };
+
+  // Order history (Trade panel): show that order on the chart
+  const focusHistory = (item) => {
+    if (source !== 'live') changeSource('live');
+    setSymbol(item.symbol);
+    if (item.timeframe) setTf(item.timeframe);
+    setTradeFilter('all');
+    setHistoryFocus({ item, pending: true });
+    if (matches(NARROW)) setRightOpen(false);
   };
 
   const showOrder = (order) => {
@@ -600,6 +807,21 @@ export default function TerminalPage() {
     if (order.timeframe) setTf(order.timeframe);
     engine?.scrollToRealtime();
     if (matches(NARROW)) setRightOpen(false);
+  };
+
+  useLayoutEffect(() => {
+    showRef.current = { signal: showSignal, order: showOrder };
+  });
+
+  // Decision from a signal card over the chart: the card closes, so confirm it with a toast
+  const decideFromAlert = async (id, action) => {
+    const sig = trading.signals.find(s => s.id === id);
+    const res = await trading.decide(id, action);
+    if (res?.ok && sig) {
+      const what = `${sig.side === 'LONG' ? 'Long' : 'Short'} ${sig.symbol}`;
+      setToast(action === 'approve' ? `Approved: ${what} · order sent, waiting for the exchange to fill` : `Rejected: ${what}`);
+    }
+    return res;
   };
 
   const toggleRight = (tab) => {
@@ -644,9 +866,11 @@ export default function TerminalPage() {
         live={sourceDef.live ? {
           lastUpdate: file.lastUpdate,
           autoRefresh,
+          offline: liveOffline,
           onToggle: () => setAutoRefresh(a => !a),
           onRefresh: file.refresh,
         } : null}
+        bot={{ conn: trading.conn, pending: pendingCount, onClick: () => toggleRight('trade') }}
         onScreenshot={takeScreenshot}
         onUndo={() => {
           engine?.drawings.undo();
@@ -717,6 +941,23 @@ export default function TerminalPage() {
               </div>
             )}
             {chartMessage && <div className="tv-chart-msg" role="status">{chartMessage}</div>}
+            {ticketDraft && (
+              <OrderTicket
+                key={ticketDraft.id}
+                order={ticket}
+                trading={trading}
+                lastPrice={ticketDraft.symbol === activeSymbol ? livePrice : null}
+                signal={ticketDraft.signalId ? trading.signals.find(s => s.id === ticketDraft.signalId) : undefined}
+                onClose={ticket.close}
+                onPlaced={(res) => {
+                  const d = ticketDraft;
+                  ticket.close();
+                  const what = `${d.side === 'LONG' ? 'Long' : 'Short'} ${d.symbol}`;
+                  const limit = (res.order?.orderType || res.signal?.orderType) === 'limit';
+                  setToast(`${d.signalId ? 'Approved' : 'Order sent'}: ${what}${limit ? ' limit' : ''} · waiting for the exchange to fill`);
+                }}
+              />
+            )}
           </ChartView>
 
           <StrategyTester
@@ -754,6 +995,7 @@ export default function TerminalPage() {
               },
               sourceId: source,
               currentQuote,
+              quotes,
               baseTf: tfOption?.baseTf || null,
             }}
             trades={{
@@ -772,6 +1014,8 @@ export default function TerminalPage() {
                 onEditSignal={editSignal}
                 onShowOrder={showOrder}
                 onNewOrder={newOrder}
+                onFocusHistory={focusHistory}
+                focusedHistoryId={historyFocus?.item.id || null}
               />
             )}
           />
@@ -851,27 +1095,25 @@ export default function TerminalPage() {
       {settingsInst && (
         <IndicatorSettings inst={settingsInst} onApply={applyIndicator} onClose={() => setSettingsUid(null)} />
       )}
-      {orderTicket && (
-        <OrderDialog
-          key={`${orderTicket.symbol}-${orderTicket.side}-${orderTicket.initial?.signalId || ''}`}
-          trading={trading}
-          symbol={orderTicket.symbol}
-          side={orderTicket.side}
-          initial={orderTicket.initial}
-          lastPrice={orderTicket.symbol === activeSymbol ? livePrice : null}
-          signal={orderTicket.initial?.signalId ? trading.signals.find(s => s.id === orderTicket.initial.signalId) : undefined}
-          onDraft={setOrderDraft}
-          onClose={() => setOrderTicket(null)}
-          onPlaced={(res) => {
-            const t = orderTicket;
-            setOrderTicket(null);
-            const what = `${t.side === 'LONG' ? 'Long' : 'Short'} ${t.symbol}`;
-            const limit = (res.order?.orderType || res.signal?.orderType) === 'limit';
-            setToast(`${t.initial?.signalId ? 'Approved' : 'Order sent'}: ${what}${limit ? ' limit' : ''} · waiting for the exchange to fill`);
-          }}
+      {chartMenu && (
+        <ChartMenu
+          x={chartMenu.clientX}
+          y={chartMenu.clientY}
+          title={activeSymbol ? `${activeSymbol} · ${formatPrice(chartMenu.price)}` : ''}
+          items={chartMenuItems()}
+          onClose={closeChartMenu}
         />
       )}
       <Tooltip rootRef={rootRef} />
+      <SignalAlerts
+        signals={alertSignals}
+        serverNow={trading.serverNow}
+        timeoutMinutes={trading.approval.timeoutMinutes}
+        onDecide={decideFromAlert}
+        onShow={showSignal}
+        onDismiss={(id) => setHiddenSignals(set => new Set(set).add(id))}
+        onOpenPanel={() => openRight('trade')}
+      />
       <OrderAlerts
         alerts={orderAlerts}
         onDismiss={(id) => setOrderAlerts(list => list.filter(a => a.id !== id))}

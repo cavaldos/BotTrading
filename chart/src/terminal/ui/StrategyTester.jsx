@@ -144,9 +144,12 @@ function Summary({ stats }) {
   );
 }
 
+// `optional` columns only show when some trade has the value (live files: timeframe, bot decision)
 const COLUMNS = [
   { key: 'n', label: '#', get: r => r.n },
   { key: 'type', label: 'Type', get: r => r.type },
+  { key: 'timeframe', label: 'TF', get: r => r.timeframe, optional: true },
+  { key: 'bot', label: 'Bot', get: r => r.bot?.label, optional: true },
   { key: 'entryTime', label: 'Entry time', get: r => r.entryTimeRaw ?? r.entryTime },
   { key: 'entryPrice', label: 'Entry', get: r => r.entryPrice },
   { key: 'exitTime', label: 'Exit time', get: r => r.exitTimeRaw ?? r.exitTime },
@@ -160,9 +163,16 @@ const COLUMNS = [
   { key: 'duration', label: 'Duration', get: r => r.duration },
 ];
 
+const botTitle = (bot) => [bot?.reason, bot?.sentAt && `sent ${bot.sentAt}`].filter(Boolean).join(' · ') || undefined;
+
 function TradesTable({ rows, selectedId, onSelect }) {
   const [sort, setSort] = useState({ key: 'n', dir: 'desc' });
   const bodyRef = useRef(null);
+  const columns = useMemo(
+    () => COLUMNS.filter(c => !c.optional || rows.some(r => c.get(r) != null)),
+    [rows],
+  );
+  const has = (key) => columns.some(c => c.key === key);
 
   const sorted = useMemo(() => {
     const col = COLUMNS.find(c => c.key === sort.key) || COLUMNS[0];
@@ -189,7 +199,7 @@ function TradesTable({ rows, selectedId, onSelect }) {
     <table className="tv-table">
       <thead>
         <tr>
-          {COLUMNS.map(c => (
+          {columns.map(c => (
             <th key={c.key} scope="col" aria-sort={sort.key === c.key ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}>
               <button type="button" onClick={() => toggle(c.key)}>
                 {c.label}
@@ -211,6 +221,12 @@ function TradesTable({ rows, selectedId, onSelect }) {
           >
             <td className="num">{r.n}</td>
             <td className={r.type === 'LONG' ? 'tv-up' : 'tv-down'}>{r.type === 'LONG' ? 'Long' : 'Short'}</td>
+            {has('timeframe') && <td className="num">{r.timeframe || '—'}</td>}
+            {has('bot') && (
+              <td title={botTitle(r.bot)}>
+                {r.bot ? <span style={{ color: r.bot.color || undefined }}>{r.bot.label}</span> : '—'}
+              </td>
+            )}
             <td className="num">{formatDateTime(r.entryTimeRaw ?? r.entryTime)}</td>
             <td className="num">{formatPrice(r.entryPrice)}</td>
             <td className="num">{r.closed ? formatDateTime(r.exitTimeRaw ?? r.exitTime) : 'Open'}</td>
