@@ -249,6 +249,7 @@ class LighterExchange:
         self._auth_token: Optional[str] = None
         self._auth_expires_at = 0.0
         self._nonce: Optional[int] = None
+        self._client_ids: dict[str, str] = {}  # order index -> client order index, of orders seen
         self._tx_lock = threading.Lock()
         self._lock = threading.Lock()
 
@@ -568,8 +569,11 @@ class LighterExchange:
         raw_status = str(item.get("status") or "")
         parent = item.get("parent_order_index")
         client_id = item.get("client_order_index")
+        order_id = str(item.get("order_index") or item.get("order_id") or "")
+        if order_id and client_id not in (None, "", 0, "0"):
+            self._client_ids[order_id] = str(client_id)
         return {
-            "id": str(item.get("order_index") or item.get("order_id") or ""),
+            "id": order_id,
             "clientOrderId": str(client_id) if client_id not in (None, "", 0, "0") else None,
             "symbol": market["symbol"] if market else str(item.get("market_index")),
             "market_id": market["id"] if market else None,
@@ -601,6 +605,22 @@ class LighterExchange:
         }
         data = self._request("GET", "accountActiveOrders", params, auth=True)
         return [self._parse_order(o) for o in data.get("orders") or []]
+
+    def fetch_order_by_client_id(self, client_order_index: str) -> Optional[dict]:
+        """One order by client order index, open or not. Shows a fill or cancel within about
+        a second, while accountInactiveOrders can lag by a minute. None when not found."""
+        self.load_markets()
+        try:
+            data = self._request(
+                "GET", "accountOrders",
+                {"account_index": self.account_index, "client_order_indexes": str(client_order_index)},
+                auth=True,
+            )
+        except LighterAPIError:
+            return None
+        wanted = str(client_order_index)
+        return next((order for order in (self._parse_order(o) for o in data.get("orders") or [])
+                     if order["clientOrderId"] == wanted), None)
 
     def fetch_closed_orders(self, symbol: Optional[str] = None, limit: int = 50, since: Optional[int] = None) -> list[dict]:
         """Filled / cancelled orders, newest first (`since` in ms)."""
@@ -718,6 +738,11 @@ class LighterExchange:
         for order in self.fetch_open_orders(symbol):
             if wanted in (order["id"], order["clientOrderId"]):
                 return order, "open"
+        # Not open: ask by client order index first (up to date), then the slower history.
+        # `wanted` itself may be a client order index when its order index is not known.
+        order = self.fetch_order_by_client_id(self._client_ids.get(wanted, wanted))
+        if order is not None and wanted in (order["id"], order["clientOrderId"]):
+            return order, "open" if order["status"] == "open" else "closed"
         for order in self.fetch_closed_orders(symbol, limit=closed_limit):
             if wanted in (order["id"], order["clientOrderId"]):
                 return order, "closed"
@@ -734,6 +759,10 @@ class LighterExchange:
             try:
                 open_orders = self.fetch_open_orders(symbol)
                 order = next((o for o in open_orders if o["clientOrderId"] == wanted), None)
+                if order is None:
+                    order = self.fetch_order_by_client_id(wanted)
+                    if order is not None and order["status"] == "open":
+                        order = None  # still in progress (IOC) or not listed as open yet: look again
                 if order is None:
                     order = next((o for o in self.fetch_closed_orders(symbol, limit=20) if o["clientOrderId"] == wanted), None)
                 if order is not None:
@@ -1472,6 +1501,12 @@ def close_position_market(exchange: LighterExchange, symbol: str) -> dict:
         response = exchange.send_order(order)
         filled_order, _ = exchange.wait_for_order(client_order_index, market_symbol)
         filled = filled_order['filled'] if filled_order else None
+        if filled_order is None:
+            # Order not visible yet: the position size tells whether the close filled
+            position_after = get_position(exchange, market_symbol)
+            remaining = position_after['contracts'] if position_after else 0.0
+            if remaining < position['contracts']:
+                filled = position['contracts'] - remaining
         cancelled = _cancel_exit_orders(exchange, market_symbol) if filled else []
         return {
             'success': bool(filled),

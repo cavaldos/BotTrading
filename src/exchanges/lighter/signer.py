@@ -49,6 +49,7 @@ TIF_POST_ONLY = 2
 
 EXPIRY_28_DAYS = -1  # resting orders and SL/TP
 EXPIRY_IOC = 0  # immediate-or-cancel orders
+EXPIRY_28_DAYS_MS = 28 * 24 * 60 * 60 * 1000
 
 GROUPING_ONE_TRIGGERS_THE_OTHER = 1  # entry -> SL
 GROUPING_ONE_CANCELS_THE_OTHER = 2  # SL <-> TP (tied to the position)
@@ -283,7 +284,14 @@ class LighterSigner:
     def sign_create_grouped_orders(
         self, grouping_type: int, orders: Sequence[CreateOrderTxReq], nonce: int
     ) -> tuple[int, str]:
+        # The library turns each -1 expiry into "now + 28 days" one order at a time, so two
+        # orders can end up 1 ms apart. Lighter rejects a group whose SL/TP (and resting entry)
+        # expiries differ ("OrderExpiry is invalid"), so give the whole group one timestamp.
+        expiry = int(time.time() * 1000) + EXPIRY_28_DAYS_MS
         array = (CreateOrderTxReq * len(orders))(*orders)
+        for item in array:
+            if item.OrderExpiry == EXPIRY_28_DAYS:
+                item.OrderExpiry = expiry
         with self._lock:
             result = self.lib.SignCreateGroupedOrders(
                 int(grouping_type), array, len(orders),
