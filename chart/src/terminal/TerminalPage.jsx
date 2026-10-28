@@ -228,9 +228,9 @@ export default function TerminalPage() {
 
   // ---- bot connection (signals to approve, manual orders) -------------------------
   const trading = useTrading({
-    onSignal: (sig) => {
-      setToast(`New signal: ${sig.symbol} ${sig.side === 'LONG' ? 'Long' : 'Short'} · waiting for approval`);
-      announceSignal(sig, { onClick: () => showRef.current.signal?.(sig) });
+    onSignal: (sig, { auto } = {}) => {
+      setToast(`New signal: ${sig.symbol} ${sig.side === 'LONG' ? 'Long' : 'Short'} · ${auto ? 'auto trade: placing order' : 'waiting for approval'}`);
+      announceSignal(sig, { auto, onClick: () => showRef.current.signal?.(sig) });
       if (!matches(NARROW)) {
         setRightTab('trade');
         setRightOpen(true);
@@ -870,7 +870,7 @@ export default function TerminalPage() {
           onToggle: () => setAutoRefresh(a => !a),
           onRefresh: file.refresh,
         } : null}
-        bot={{ conn: trading.conn, pending: pendingCount, onClick: () => toggleRight('trade') }}
+        bot={{ conn: trading.conn, pending: pendingCount, auto: trading.approval.enabled && trading.approval.auto, onClick: () => toggleRight('trade') }}
         onScreenshot={takeScreenshot}
         onUndo={() => {
           engine?.drawings.undo();

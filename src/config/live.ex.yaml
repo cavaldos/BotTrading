@@ -63,6 +63,8 @@ approval:
   timeout_minutes: 5 # default: 5 (no decision in time -> signal expires, no order)
   telegram: true # default: true (also send signals to Telegram; needs TELEGRAM_TOKEN + TELEGRAM_CHAT_ID)
   allowed_user_ids: [] # default: [] (Telegram user ids allowed to click; empty = anyone in TELEGRAM_CHAT_ID)
+  auto: false # default: false (start in auto mode: approve every signal at once; the web chart's Auto switch overrides it)
+  auto_file: "res/logs/approval_mode.json" # default: "res/logs/approval_mode.json" (Auto switch state, kept after a restart)
 
 # Trading API for the web chart: approve signals and place manual orders from the chart.
 # Needs WEB_API_TOKEN in .env (enter the same token in the chart's Trade panel).

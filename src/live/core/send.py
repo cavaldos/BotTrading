@@ -518,7 +518,7 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
     signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
     label = entry_title(str(row['Type']), symbol, signal_timeframe)
     now = lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    via_label = lambda sig: "Web" if sig.decided_via == "web" else f"Telegram: {sig.decided_by}"
+    via_label = lambda sig: {"web": "Web", "auto": "Tự động"}.get(sig.decided_via, f"Telegram: {sig.decided_by}")
 
     def on_approve(sig: Signal) -> tuple[bool, str]:
         # The signal holds the values to trade: the bot's, or the ones edited on the web
@@ -707,7 +707,10 @@ def _check_and_send_open_orders(
                     risk_per_trade=effective_risk_per_trade,
                 )
                 sender = _make_approval_sender(hub, row, order_key, log_file, place_kwargs)
-                pending_note = f"⏳ Chờ duyệt trên Web / Telegram (hết hạn sau {hub.timeout_minutes:g} phút)"
+                pending_note = (
+                    "🤖 Chế độ tự động: đang vào lệnh" if hub.auto_approve
+                    else f"⏳ Chờ duyệt trên Web / Telegram (hết hạn sau {hub.timeout_minutes:g} phút)"
+                )
                 notify_entry(row, dict(message_kwargs, result=pending_note), sender=sender)
                 continue
 

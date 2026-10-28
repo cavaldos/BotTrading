@@ -719,7 +719,15 @@ class TradingServices:
                 timeout_minutes=float(APPROVAL_CONFIG.get("timeout_minutes", 5)),
                 on_log=lambda msg: state.add_log("Approval", msg),
                 on_error=lambda msg: state.add_error("APR", msg),
+                auto_approve=bool(APPROVAL_CONFIG.get("auto", False)),
+                auto_file=str(APPROVAL_CONFIG.get("auto_file") or "") or None,
             ).start()
+            self.hub.add_mode_listener(
+                lambda on, by: self.notify_text(
+                    f"🤖 Chế độ tự động BẬT ({by}): tín hiệu mới vào lệnh luôn, không cần duyệt" if on
+                    else f"✋ Chế độ tự động TẮT ({by}): tín hiệu chờ duyệt trên Web / Telegram"
+                )
+            )
             if APPROVAL_CONFIG.get("telegram", True):
                 try:
                     self.telegram = TelegramChannel(
@@ -784,7 +792,8 @@ class TradingServices:
         set_approval_hub(self.hub)
         if self.hub is not None:
             channels = " + ".join(n for n, c in (("Web", self.web), ("Telegram", self.telegram)) if c is not None)
-            state.add_log("Main", f"Manual approval on {channels} ({self.hub.timeout_minutes:g} min timeout)")
+            mode = "AUTO mode (no approval)" if self.hub.auto_approve else "Manual approval"
+            state.add_log("Main", f"{mode} on {channels} ({self.hub.timeout_minutes:g} min timeout)")
         return self
 
     def stop(self) -> None:

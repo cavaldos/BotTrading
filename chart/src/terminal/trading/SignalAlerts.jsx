@@ -1,6 +1,6 @@
 import { formatPrice } from '../lib/format';
 import { IconClose } from '../ui/icons';
-import { countdown, shortReason, sideLabel } from './orderText';
+import { approvedVia, countdown, shortReason, sideLabel } from './orderText';
 import { useTicker } from './useTrading';
 import { useSignalDecision } from './useSignalDecision';
 
@@ -17,7 +17,7 @@ function SignalAlert({ signal, serverNow, timeoutMinutes, onDecide, onShow, onDi
   const failed = signal.status === 'FAILED';
   let title = 'New signal · waiting for you';
   if (signal.status === 'PLACING') title = 'Placing order…';
-  if (failed) title = `Order failed${signal.decidedVia === 'telegram' ? ' (approved on Telegram)' : ''}`;
+  if (failed) title = `Order failed${signal.decidedVia && signal.decidedVia !== 'web' ? ` (${approvedVia(signal.decidedVia)})` : ''}`;
 
   return (
     <article

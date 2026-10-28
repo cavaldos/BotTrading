@@ -188,3 +188,96 @@ class WebOrderTest(FakeExchangeCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AutoApproveTest(unittest.TestCase):
+    """Auto mode: new signals are approved at once; the switch is saved and served by the web API."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def _signal(self, placed):
+        from src.live.core.approval import Signal
+
+        def on_approve(sig):
+            placed.append(sig.id)
+            return True, "ok"
+
+        return Signal(key="k", label="BTCUSDT_5m| LONG", symbol="BTCUSDT", side="LONG", signal_timeframe="5m",
+                      entry_time="2026-01-01 00:00:00", entry=100.0, stop_loss=95.0, take_profit=110.0,
+                      risk_per_trade=1.0, message_kwargs={}, on_approve=on_approve,
+                      on_reject=lambda s: None, on_expire=lambda s: None)
+
+    def _wait(self, cond, seconds=3.0):
+        deadline = time.time() + seconds
+        while time.time() < deadline and not cond():
+            time.sleep(0.02)
+        return cond()
+
+    def test_auto_mode_places_new_signals_and_persists(self):
+        from src.live.core.approval import ApprovalHub
+
+        auto_file = str(self.dir / "mode.json")
+        hub = ApprovalHub(timeout_minutes=5, auto_file=auto_file).start()
+        self.addCleanup(hub.stop)
+        changes = []
+        hub.add_mode_listener(lambda on, by: changes.append((on, by)))
+        placed = []
+
+        manual = hub.submit(self._signal(placed))
+        time.sleep(0.1)
+        self.assertEqual((manual.status, placed), ("PENDING", []))
+
+        hub.set_auto_approve(True, by="web")
+        self.assertEqual(changes, [(True, "web")])
+        time.sleep(0.1)
+        self.assertEqual(manual.status, "PENDING")  # signals already waiting are not traded
+
+        auto = hub.submit(self._signal(placed))
+        self.assertTrue(self._wait(lambda: auto.status == "PLACED"), auto.status)
+        self.assertEqual((auto.decided_via, placed), ("auto", [auto.id]))
+
+        # Kept after a restart, overrides the config default
+        self.assertTrue(ApprovalHub(auto_approve=False, auto_file=auto_file).auto_approve)
+        hub.set_auto_approve(False)
+        self.assertFalse(ApprovalHub(auto_approve=True, auto_file=auto_file).auto_approve)
+        self.assertTrue(ApprovalHub(auto_approve=True, auto_file=str(self.dir / "none.json")).auto_approve)
+
+    def test_web_endpoint_toggles_auto_mode(self):
+        import urllib.request
+
+        from src.live.core.approval import ApprovalHub
+        from src.live.web.server import WebApiServer
+
+        hub = ApprovalHub(auto_file=str(self.dir / "mode.json")).start()
+        self.addCleanup(hub.stop)
+        tracker = mock.Mock()
+        tracker.recent.return_value = []
+        orders = mock.Mock()
+        orders.config.return_value = {}
+        token = "t" * 20
+        server = WebApiServer("127.0.0.1", 0, token, orders=orders, tracker=tracker, hub=hub)
+        server.start()
+        self.addCleanup(server.stop)
+        port = server._httpd.server_address[1]
+        events = server.subscribe()
+
+        def post(body):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/approval/auto", data=json.dumps(body).encode(), method="POST",
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=5) as res:
+                    return res.status, json.loads(res.read())
+            except urllib.error.HTTPError as err:
+                return err.code, json.loads(err.read())
+
+        self.assertEqual(post({"enabled": True}), (200, {"ok": True, "autoApprove": True}))
+        self.assertTrue(hub.auto_approve)
+        self.assertTrue(server.snapshot()["autoApprove"])
+        self.assertEqual(events.get(timeout=2)[0], "mode")
+        self.assertEqual(post({"enabled": "yes"})[0], 400)
+        self.assertEqual(post({"enabled": False})[1]["autoApprove"], False)

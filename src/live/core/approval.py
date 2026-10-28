@@ -10,15 +10,21 @@ An approval can carry `changes` (order type, entry, SL, TP, risk edited on the w
 they replace the signal's values before the order is placed.
 On approve, `signal.on_approve(signal)` places the order and returns (success, text).
 Listeners run on one dispatcher thread, so a slow channel never blocks a decision.
+
+Auto mode (toggled on the web chart): new signals are approved at once (via "auto"),
+still through `on_approve`, so the same late-entry checks apply. The mode is saved in
+`auto_file` and kept after a restart; mode listeners get (enabled, by) on each change.
 """
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Optional
 
@@ -92,6 +98,7 @@ class Signal:
 
 
 Listener = Callable[[str, Signal], None]
+ModeListener = Callable[[bool, str], None]
 
 
 class ApprovalHub:
@@ -101,6 +108,8 @@ class ApprovalHub:
         history: int = 30,
         on_log: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
+        auto_approve: bool = False,
+        auto_file: Optional[str] = None,
     ):
         self.timeout_minutes = float(timeout_minutes)
         self.history = int(history)
@@ -108,6 +117,9 @@ class ApprovalHub:
         self.on_error = on_error or (lambda msg: print(f"Approval error: {msg}"))
         self._signals: "OrderedDict[str, Signal]" = OrderedDict()
         self._listeners: list[Listener] = []
+        self._mode_listeners: list[ModeListener] = []
+        self.auto_file = auto_file
+        self._auto = self._load_auto(bool(auto_approve))
         self._events: Queue = Queue()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -118,6 +130,9 @@ class ApprovalHub:
 
     def add_listener(self, listener: Listener) -> None:
         self._listeners.append(listener)
+
+    def add_mode_listener(self, listener: ModeListener) -> None:
+        self._mode_listeners.append(listener)
 
     def start(self) -> "ApprovalHub":
         self._expiry_thread.start()
@@ -142,13 +157,39 @@ class ApprovalHub:
 
     # ---------------- public ----------------
 
+    @property
+    def auto_approve(self) -> bool:
+        return self._auto
+
+    def set_auto_approve(self, enabled: bool, by: str = "web") -> bool:
+        """Turn auto mode on/off. Signals already waiting keep waiting for a decision."""
+        enabled = bool(enabled)
+        with self._lock:
+            changed = enabled != self._auto
+            self._auto = enabled
+        if not changed:
+            return enabled
+        self._save_auto(enabled, by)
+        self.on_log(f"Auto mode {'ON: new signals are traded without approval' if enabled else 'OFF: signals wait for approval'} ({by})")
+        for listener in list(self._mode_listeners):
+            self._safe(listener, enabled, by)
+        return enabled
+
     def submit(self, sig: Signal) -> Signal:
         sig.expires_at = sig.created_at + self.timeout_minutes * 60
+        auto = self._auto
         with self._lock:
             self._signals[sig.id] = sig
             self._prune_locked()
-        self.on_log(f"{sig.label}: waiting for approval")
+        if not auto:
+            self.on_log(f"{sig.label}: waiting for approval")
         self._emit("new", sig)
+        if auto:
+            # Own thread: placing the order must not hold up the caller (order scan / snapshot worker)
+            threading.Thread(
+                target=self.decide, args=(sig.id, "approve"), kwargs={"via": "auto", "by": "auto"},
+                daemon=True, name="AutoApprove",
+            ).start()
         return sig
 
     def get(self, signal_id: str) -> Optional[Signal]:
@@ -208,7 +249,8 @@ class ApprovalHub:
             return True, "Rejected", sig
 
         edited = f", edited: {sig.order_type} SL {sig.stop_loss:g} TP {sig.take_profit:g}" if sig.edited and sig.take_profit else ""
-        self.on_log(f"{sig.label}: approved by {by} ({via}){edited}, placing order")
+        approved = "auto-approved" if via == "auto" else f"approved by {by} ({via})"
+        self.on_log(f"{sig.label}: {approved}{edited}, placing order")
         outcome = self._safe(sig.on_approve, sig)
         success, text = outcome if outcome else (False, "Order failed (see bot log)")
         with self._lock:
@@ -218,6 +260,29 @@ class ApprovalHub:
         return success, text, sig
 
     # ---------------- internals ----------------
+
+    def _load_auto(self, default: bool) -> bool:
+        if not self.auto_file:
+            return default
+        try:
+            data = json.loads(Path(self.auto_file).read_text(encoding="utf-8"))
+            return bool(data.get("auto_approve", default))
+        except FileNotFoundError:
+            return default
+        except Exception as exc:
+            self.on_error(f"cannot read {self.auto_file}: {exc}")
+            return default
+
+    def _save_auto(self, enabled: bool, by: str) -> None:
+        if not self.auto_file:
+            return
+        try:
+            path = Path(self.auto_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {"auto_approve": enabled, "changed_by": by, "changed_at": time.strftime("%Y-%m-%d %H:%M:%S")}
+            path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self.on_error(f"cannot save {self.auto_file}: {exc}")
 
     def _prune_locked(self) -> None:
         done = [k for k, s in self._signals.items() if s.status in FINAL_STATUSES]

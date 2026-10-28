@@ -69,7 +69,8 @@ function upsert(list, item) {
  * signals: bot signals (pending and recently decided).
  * orders: orders followed on the exchange (approved signals and web orders) with their fill status.
  * history: bot signals and web orders from the bot's files (survives restarts), newest first.
- * `onSignal(signal)` is called for each new bot signal, `onSignalFailed(signal)` when its order could not be placed,
+ * approval: {enabled, timeoutMinutes, auto}; auto = the bot trades new signals without approval.
+ * `onSignal(signal, {auto})` is called for each new bot signal, `onSignalFailed(signal)` when its order could not be placed,
  * `onOrderChange(order, change)` when an order fills, partly fills, does not fill or is cancelled.
  */
 export function useTrading({ onSignal, onSignalFailed, onOrderChange } = {}) {
@@ -80,7 +81,8 @@ export function useTrading({ onSignal, onSignalFailed, onOrderChange } = {}) {
   const [orders, setOrders] = useState([]);
   const [history, setHistory] = useState([]);
   const [config, setConfig] = useState(null);
-  const [approval, setApproval] = useState({ enabled: false, timeoutMinutes: null });
+  const [approval, setApproval] = useState({ enabled: false, timeoutMinutes: null, auto: false });
+  const autoRef = useRef(false);
   const clockOffset = useRef(0);
   const onSignalRef = useRef(onSignal);
   const onSignalFailedRef = useRef(onSignalFailed);
@@ -123,15 +125,19 @@ export function useTrading({ onSignal, onSignalFailed, onOrderChange } = {}) {
         setOrders(data.orders || []);
         if (Array.isArray(data.history)) setHistory(data.history);
         setConfig(data.config || null);
-        setApproval({ enabled: !!data.approval, timeoutMinutes: data.timeoutMinutes });
+        autoRef.current = !!data.autoApprove;
+        setApproval({ enabled: !!data.approval, timeoutMinutes: data.timeoutMinutes, auto: autoRef.current });
         setConn('online');
         setError(null);
         retry = 0;
       } else if (name === 'signal' && data?.signal) {
         setSignals(list => upsert(list, data.signal));
-        if (data.event === 'new') onSignalRef.current?.(data.signal);
+        if (data.event === 'new') onSignalRef.current?.(data.signal, { auto: data.signal.decidedVia === 'auto' || autoRef.current });
         else if (data.signal.status === 'FAILED') onSignalFailedRef.current?.(data.signal);
         reloadHistory();
+      } else if (name === 'mode') {
+        autoRef.current = !!data?.autoApprove;
+        setApproval(a => ({ ...a, auto: autoRef.current }));
       } else if (name === 'order' && data?.order) {
         setOrders(list => upsert(list, data.order));
         if (ORDER_CHANGES[data.change]) onOrderChangeRef.current?.(data.order, data.change);
@@ -204,6 +210,14 @@ export function useTrading({ onSignal, onSignalFailed, onOrderChange } = {}) {
     return res;
   }, []);
 
+  // Auto mode on the bot: new signals are traded without approval
+  const setAutoApprove = useCallback(async (enabled) => {
+    const res = await api('/approval/auto', { method: 'POST', body: { enabled } });
+    autoRef.current = !!res?.autoApprove;
+    setApproval(a => ({ ...a, auto: autoRef.current }));
+    return res;
+  }, []);
+
   const preview = useCallback((body, signal) => api('/orders/preview', { method: 'POST', body, signal }), []);
 
   const placeOrder = useCallback(async (body) => {
@@ -221,7 +235,7 @@ export function useTrading({ onSignal, onSignalFailed, onOrderChange } = {}) {
   const serverNow = useCallback(() => Date.now() + clockOffset.current, []);
   const mergedHistory = useMemo(() => mergeHistory(history, signals), [history, signals]);
 
-  return { conn, error, signals, orders, history: mergedHistory, config, approval, login, logout, decide, preview, placeOrder, cancelOrder, serverNow };
+  return { conn, error, signals, orders, history: mergedHistory, config, approval, login, logout, decide, setAutoApprove, preview, placeOrder, cancelOrder, serverNow };
 }
 
 /** Re-render every `ms` while `active`. */

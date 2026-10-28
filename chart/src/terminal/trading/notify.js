@@ -61,8 +61,11 @@ function desktopNotice(title, options, onClick) {
   };
 }
 
-/** New bot signal waiting for approval. `onClick` runs when the desktop notification is clicked. */
-export function announceSignal(signal, { onClick } = {}) {
+/**
+ * New bot signal: waiting for approval, or (`auto`) already being traded by the bot.
+ * `onClick` runs when the desktop notification is clicked.
+ */
+export function announceSignal(signal, { onClick, auto = false } = {}) {
   try {
     chime();
   } catch {
@@ -71,10 +74,10 @@ export function announceSignal(signal, { onClick } = {}) {
   try {
     const side = sideLabel(signal.side);
     desktopNotice(`New signal: ${side} ${signal.symbol} ${signal.signalTimeframe || ''}`.trim(), {
-      body: `Entry ${signal.entry} · Stop ${signal.stopLoss} · Target ${signal.takeProfit}\nWaiting for your approval`,
+      body: `Entry ${signal.entry} · Stop ${signal.stopLoss} · Target ${signal.takeProfit}\n${auto ? 'Auto mode: placing the order' : 'Waiting for your approval'}`,
       tag: `signal-${signal.id}`,
-      // Stays on screen until clicked: the signal needs a decision
-      requireInteraction: true,
+      // Stays on screen until clicked when the signal needs a decision
+      requireInteraction: !auto,
     }, onClick);
   } catch {
     // notifications not supported

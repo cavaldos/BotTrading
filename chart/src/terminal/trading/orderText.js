@@ -9,6 +9,13 @@ export const sideLabel = (side) => (String(side).toUpperCase() === 'LONG' ? 'Lon
 
 export const typeLabel = (orderType) => (orderType === 'limit' ? 'Limit' : 'Market');
 
+/** Who approved a bot signal: 'the web', 'auto mode' or 'Telegram by <name>'. */
+export function approvedVia(via, by) {
+  if (via === 'web') return 'the web';
+  if (via === 'auto') return 'auto mode';
+  return by ? `Telegram by ${by}` : 'Telegram';
+}
+
 export const sourceLabel = (order) => (order.source === 'signal' ? `Bot ${order.timeframe || ''}`.trim() : 'Web');
 
 /** Changes worth telling the user about (order SSE event `change`). */

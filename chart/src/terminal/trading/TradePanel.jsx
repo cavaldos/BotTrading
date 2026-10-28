@@ -3,7 +3,7 @@ import { formatPrice } from '../lib/format';
 import { Dialog } from '../ui/Dialog';
 import { apiImageUrl } from './api';
 import { notificationPermission, requestNotifications } from './notify';
-import { countdown, isOpenOrder, orderDetail, orderTitle, shortReason, sideLabel, typeLabel } from './orderText';
+import { approvedVia, countdown, isOpenOrder, orderDetail, orderTitle, shortReason, sideLabel, typeLabel } from './orderText';
 import { useTicker } from './useTrading';
 import { useSignalDecision } from './useSignalDecision';
 
@@ -150,7 +150,7 @@ function SignalCard({ signal, serverNow, timeoutMinutes, onDecide, onShow, onEdi
         </p>
       )}
       {signal.status === 'PLACING' && (
-        <p className="tv-muted tv-sig-note">Placing order (approved on {signal.decidedVia === 'web' ? 'the web' : `Telegram by ${signal.decidedBy}`})…</p>
+        <p className="tv-muted tv-sig-note">Placing order ({signal.decidedVia === 'auto' ? 'auto mode' : `approved on ${approvedVia(signal.decidedVia, signal.decidedBy)}`})…</p>
       )}
       {/* A failed order already shows its reason above */}
       {error && signal.status !== 'FAILED' && <p className="tv-trade-error" role="alert">{error}</p>}
@@ -221,7 +221,8 @@ function historyDetail(item) {
   if (item.fillPrice) parts.push(`filled ${formatPrice(item.fillPrice)}`);
   else if (item.entry) parts.push(`${item.orderType === 'limit' ? 'limit' : 'entry'} ${formatPrice(item.entry)}`);
   if (item.source === 'web') parts.push('web order');
-  else if (item.via) parts.push(`${item.status === 'REJECTED' ? 'rejected' : 'approved'} on ${item.via === 'web' ? 'the web' : 'Telegram'}`);
+  else if (item.via === 'auto') parts.push('auto mode');
+  else if (item.via) parts.push(`${item.status === 'REJECTED' ? 'rejected' : 'approved'} on ${approvedVia(item.via)}`);
   return parts.join(' · ');
 }
 
@@ -327,6 +328,65 @@ function OrderList({ items, serverNow, onCancel, onShow }) {
   );
 }
 
+// ---- auto mode ----------------------------------------------------------------------------
+
+/**
+ * Auto mode switch: when on, the bot trades every new signal at once (no approval).
+ * Turning it on asks once more, turning it off is immediate.
+ */
+function AutoTradeSwitch({ auto, onChange }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  const apply = async (enabled) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onChange(enabled);
+      setAsking(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className={`tv-auto ${auto ? 'is-on' : ''}`}>
+      <div className="tv-auto-row">
+        <span className="tv-auto-text">
+          <b id="auto-trade-label">Auto trade</b>
+          <span className="tv-muted">
+            {auto ? 'On: new signals are traded at once, no approval.' : 'Off: each signal waits for your approval.'}
+          </span>
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={auto}
+          aria-labelledby="auto-trade-label"
+          className="tv-switch"
+          disabled={busy || asking}
+          onClick={() => (auto ? apply(false) : setAsking(true))}
+        >
+          <span className="tv-switch-knob" aria-hidden="true" />
+        </button>
+      </div>
+      {asking && (
+        <div className="tv-auto-confirm" role="alertdialog" aria-label="Turn on auto trade">
+          <p>The bot will place an order for every new signal without asking. Signals already waiting still need you.</p>
+          <div className="tv-auto-actions">
+            <button type="button" className="tv-btn tv-btn--ghost tv-btn--xs" onClick={() => setAsking(false)} disabled={busy}>Cancel</button>
+            <button type="button" className="tv-btn tv-btn--primary tv-btn--xs" onClick={() => apply(true)} disabled={busy}>
+              {busy ? 'Turning on…' : 'Turn on auto trade'}
+            </button>
+          </div>
+        </div>
+      )}
+      {error && <p className="tv-trade-error" role="alert">{error}</p>}
+    </div>
+  );
+}
+
 // ---- desktop alerts --------------------------------------------------------------------
 
 /** Desktop notifications reach you while the bot terminal (or another app) is in front. */
@@ -392,8 +452,15 @@ export default function TradePanel({ trading, activeSymbol, onShowSignal, onEdit
         {!approval.enabled && conn === 'online' && (
           <div className="tv-empty">Approval is off on the bot (approval.enabled: false): signals are traded automatically.</div>
         )}
+        {approval.enabled && conn === 'online' && (
+          <AutoTradeSwitch auto={!!approval.auto} onChange={trading.setAutoApprove} />
+        )}
         {approval.enabled && cards.length === 0 && (
-          <div className="tv-empty">No signals waiting. New bot signals show up here and on Telegram.</div>
+          <div className="tv-empty">
+            {approval.auto
+              ? 'No signals right now. In auto mode new signals are traded at once and show up under Orders and History.'
+              : 'No signals waiting. New bot signals show up here and on Telegram.'}
+          </div>
         )}
         {cards.map(s => (
           <SignalCard

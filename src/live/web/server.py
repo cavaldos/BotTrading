@@ -13,13 +13,15 @@ to it, so a public chart link still needs the token to see or place anything.
   POST /api/signals/<id>/approve|reject  decide a pending signal; an approve body
                                          {orderType, entry, stopLoss, takeProfit, risk,
                                          fillTimeoutMinutes} trades edited values
+  POST /api/approval/auto                auto mode {enabled: bool}: new signals are traded
+                                         without approval (saved, kept after a restart)
   POST /api/orders/preview               size / checks for an order (nothing placed)
   POST /api/orders                       place a manual order ({..., confirm: true, clientId})
   GET  /api/orders                       orders followed on the exchange (signals + manual)
   GET  /api/history                      bot signals and web orders from the bot's files
                                          (survives restarts, see src/live/web/history.py)
   POST /api/orders/<id>/cancel           cancel a limit order still waiting to fill
-  GET  /api/events                       server-sent events: snapshot (with history), signal, order
+  GET  /api/events                       server-sent events: snapshot (with history), signal, order, mode
                                          (order events carry `change`: placed, partial,
                                          filled, not_filled, cancelled, unknown, update)
 """
@@ -85,6 +87,7 @@ class WebApiServer:
         self._thread.start()
         if self.hub is not None:
             self.hub.add_listener(self._on_hub_event)
+            self.hub.add_mode_listener(self._on_mode_change)
         self.tracker.add_listener(self._on_order_event)
         self.on_log(f"Web API on http://{self.host}:{self.port}")
         return self
@@ -119,6 +122,9 @@ class WebApiServer:
     def _on_hub_event(self, event: str, sig: Signal) -> None:
         self.broadcast("signal", {"event": event, "signal": sig.to_dict(), "serverTime": time.time()})
 
+    def _on_mode_change(self, enabled: bool, by: str) -> None:
+        self.broadcast("mode", {"autoApprove": enabled, "by": by, "serverTime": time.time()})
+
     def _on_order_event(self, event: str, order: TrackedOrder) -> None:
         self.broadcast("order", {"change": event, "order": order.to_dict(), "serverTime": time.time()})
 
@@ -136,6 +142,7 @@ class WebApiServer:
             "serverTime": time.time(),
             "approval": self.hub is not None,
             "timeoutMinutes": self.hub.timeout_minutes if self.hub is not None else None,
+            "autoApprove": self.hub.auto_approve if self.hub is not None else False,
             "signals": signals,
             "orders": self.tracker.recent(),
             "config": self.orders.config(),
@@ -234,6 +241,8 @@ class _Handler(BaseHTTPRequestHandler):
             return None
         try:
             body = self._read_json()
+            if path == "/api/approval/auto":
+                return self._set_auto(body)
             if path == "/api/orders/preview":
                 return self._send_json(200, self.app.orders.preview(body))
             if path == "/api/orders":
@@ -280,6 +289,15 @@ class _Handler(BaseHTTPRequestHandler):
             }
         ok, message, sig = hub.decide(signal_id, action, via="web", by="web", changes=changes)
         return self._send_json(200, {"ok": ok, "message": message, "signal": sig.to_dict() if sig else None})
+
+    def _set_auto(self, body: dict):
+        hub = self.app.hub
+        if hub is None:
+            return self._send_json(400, {"error": "Approval is not enabled on the bot (approval.enabled: false): signals are already traded automatically"})
+        enabled = body.get("enabled")
+        if not isinstance(enabled, bool):
+            raise OrderError("enabled must be true or false")
+        return self._send_json(200, {"ok": True, "autoApprove": hub.set_auto_approve(enabled, by="web")})
 
     def _signal_image(self, signal_id: str):
         sig = self.app.hub.get(signal_id) if self.app.hub is not None else None

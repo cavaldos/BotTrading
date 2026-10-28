@@ -524,9 +524,54 @@
 }
 .tv-trade-alerts > span { flex: 1; }
 
+/* Auto trade switch in the Trade panel (signals section) */
+.tv-auto {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--tv-border);
+  border-radius: var(--tv-radius);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.tv-auto.is-on { border-color: rgba(255, 152, 0, 0.5); background: rgba(255, 152, 0, 0.08); }
+.tv-auto-row { display: flex; align-items: center; gap: 10px; }
+.tv-auto-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.tv-auto-text b { color: var(--tv-text-strong); font-weight: 600; }
+.tv-auto.is-on .tv-auto-text b { color: var(--tv-warn); }
+.tv-auto-confirm { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--tv-border); }
+.tv-auto-confirm p { margin: 0 0 8px; color: var(--tv-text); }
+.tv-auto-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.tv-switch {
+  position: relative;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--tv-border-strong);
+  transition: background-color 0.15s var(--tv-ease);
+}
+.tv-switch[aria-checked="true"] { background: var(--tv-warn); }
+.tv-switch:disabled { opacity: 0.6; cursor: default; }
+.tv-switch-knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--tv-text-strong);
+  transition: transform 0.15s var(--tv-ease);
+}
+.tv-switch[aria-checked="true"] .tv-switch-knob { transform: translateX(14px); }
+@media (prefers-reduced-motion: reduce) {
+  .tv-switch, .tv-switch-knob { transition: none; }
+}
+
 /* ---- bot connection button (top bar) ------------------------------------------------ */
 
 .tv-bot-btn { position: relative; font-size: 12px; font-weight: 600; }
+.tv-bot-btn .tv-bot-auto { height: 16px; padding: 0 4px; font-size: 10px; }
 .tv-bot-btn .tv-trade-dot { background: var(--tv-faint); }
 .tv-bot-btn.is-online .tv-trade-dot { background: var(--tv-up); }
 .tv-bot-btn.is-offline .tv-trade-dot { background: var(--tv-warn); }

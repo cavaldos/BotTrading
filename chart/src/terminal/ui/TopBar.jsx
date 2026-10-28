@@ -176,13 +176,17 @@ const BOT_LABELS = {
 };
 
 /** Connection to the bot (signals, approvals); opens the Trade panel. */
-function BotButton({ conn, pending, onClick, compact }) {
+function BotButton({ conn, pending, auto, onClick, compact }) {
   const [label, title] = BOT_LABELS[conn] || BOT_LABELS.offline;
-  const tip = pending ? `${pending} signal${pending > 1 ? 's' : ''} waiting for approval` : title;
+  const showAuto = auto && conn === 'online';
+  const tip = pending
+    ? `${pending} signal${pending > 1 ? 's' : ''} waiting for approval`
+    : showAuto ? 'Auto trade is on: the bot places orders for new signals without approval' : title;
   return (
     <button type="button" className={`tv-btn tv-bot-btn is-${conn}`} onClick={onClick} title={tip} aria-label={`${label}. ${tip}`}>
       {conn !== 'login' && <span className="tv-trade-dot" aria-hidden="true" />}
       {(!compact || conn === 'login') && label}
+      {showAuto && <span className="tv-tag tv-tag--warn tv-bot-auto" aria-hidden="true">Auto</span>}
       {pending > 0 && <span className="tv-count" aria-hidden="true">{pending}</span>}
     </button>
   );

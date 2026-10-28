@@ -28,13 +28,15 @@ APPROVAL_DEFAULTS: dict[str, Any] = {
     "timeout_minutes": 5,
     "telegram": True,          # also send signals to Telegram (with buttons)
     "allowed_user_ids": [],
+    "auto": False,             # start in auto mode (no approval); the web toggle overrides it
+    "auto_file": "res/logs/approval_mode.json",  # auto mode set on the web, kept after a restart
 }
 
 POLL_SECONDS = 10
 CAPTION_LIMIT = 1024       # Telegram limit for photo captions
 MESSAGE_LIMIT = 4096       # Telegram limit for text messages
 
-VIA_LABEL = {"web": "Web", "telegram": "Telegram"}
+VIA_LABEL = {"web": "Web", "telegram": "Telegram", "auto": "Tự động"}
 
 
 def load_approval_config(live_config: dict | None) -> dict[str, Any]:
