@@ -20,6 +20,7 @@ from src.live.core.discord_notify import (
     send_custom_message,
     send_entry_discord,
 )
+from src.live.core.telegram_approval import send_entry_telegram
 
 # Set by the live runner when chart snapshots are enabled (see src/live/core/snapshot.py)
 _snapshot_worker = None
@@ -50,6 +51,12 @@ def set_approval_hub(hub) -> None:
 def set_order_tracker(tracker) -> None:
     global _order_tracker
     _order_tracker = tracker
+
+
+def _send_entry_all(message_kwargs: dict, image: bytes | None) -> None:
+    """Bot traded without approval: entry message with the chart image on Discord and Telegram."""
+    send_entry_discord(**message_kwargs, image=image)
+    send_entry_telegram(message_kwargs, image)
 
 
 def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
@@ -725,7 +732,7 @@ def _check_and_send_open_orders(
                 signal_timestamp=signal_timestamp,
             )
             result_text = f"**{exchange_label().upper()}**\n{format_order_message(order_result)}"
-            notify_entry(row, dict(message_kwargs, result=result_text.strip()))
+            notify_entry(row, dict(message_kwargs, result=result_text.strip()), sender=_send_entry_all)
 
             order_detail["order_id"] = order_result.get('order_id')
             sent_orders.append(order_detail)

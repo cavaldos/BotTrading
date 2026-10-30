@@ -281,3 +281,53 @@ class AutoApproveTest(unittest.TestCase):
         self.assertEqual(events.get(timeout=2)[0], "mode")
         self.assertEqual(post({"enabled": "yes"})[0], 400)
         self.assertEqual(post({"enabled": False})[1]["autoApprove"], False)
+
+
+class EntryImageTest(unittest.TestCase):
+    """The chart image of an entry reaches Telegram in every mode (approval, auto, no approval)."""
+
+    KWARGS = dict(type="LONG", entry=100.0, stoploss=95.0, takeprofit=110.0, time="2026-01-01 00:00:00",
+                  name_coin="BTCUSDT", risk_per_trade=1.0, signal_timeframe="5m")
+
+    def _post(self, calls):
+        def post(url, **kw):
+            calls.append((url.rsplit("/", 1)[-1], kw))
+            return mock.Mock(json=lambda: {"ok": True, "result": {"message_id": len(calls)}})
+        return post
+
+    def test_no_approval_entry_sends_photo_with_result(self):
+        from src.live.core import telegram_approval
+
+        calls = []
+        with mock.patch.object(telegram_approval.requests, "post", self._post(calls)):
+            ok = telegram_approval.send_entry_telegram(dict(self.KWARGS, result="**FAKE**\nOK"), b"png", "t", "1")
+        self.assertTrue(ok)
+        self.assertEqual([c[0] for c in calls], ["sendPhoto"])
+        self.assertIn("FAKE", calls[0][1]["data"]["caption"])
+        self.assertNotIn("**", calls[0][1]["data"]["caption"])
+
+    def test_no_approval_order_path_uses_telegram_sender(self):
+        from src.live.core import send
+
+        sent = []
+        with mock.patch.object(send, "send_entry_discord") as discord, \
+                mock.patch.object(send, "send_entry_telegram", lambda kw, img: sent.append(img)):
+            send._send_entry_all(dict(self.KWARGS, result="r"), b"png")
+        discord.assert_called_once()
+        self.assertEqual(sent, [b"png"])
+
+    def test_channel_sends_photo_even_when_text_is_too_long(self):
+        from src.live.core.approval import ApprovalHub, Signal
+        from src.live.core import telegram_approval
+
+        hub = ApprovalHub()
+        channel = telegram_approval.TelegramChannel("t", "1", hub)
+        calls = []
+        channel._call = lambda method, **kw: calls.append(method) or {"message_id": 1}
+        sig = Signal(key="k", label="L", symbol="BTCUSDT", side="LONG", signal_timeframe="5m",
+                     entry_time="2026-01-01 00:00:00", entry=100.0, stop_loss=95.0, take_profit=110.0,
+                     risk_per_trade=1.0, message_kwargs=self.KWARGS, image=b"png",
+                     on_approve=lambda s: (True, "ok"), on_reject=lambda s: None, on_expire=lambda s: None)
+        with mock.patch.object(telegram_approval, "CAPTION_LIMIT", 10):
+            channel._send_signal(sig)
+        self.assertEqual(calls, ["sendPhoto", "sendMessage"])

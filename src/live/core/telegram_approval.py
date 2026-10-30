@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import threading
 from typing import Any, Callable, Optional
 
@@ -56,6 +57,42 @@ def send_telegram_text(token: str, chat_id: str, text: str, timeout: float = 15)
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat_id, "text": f"<pre>{html.escape(text)[: MESSAGE_LIMIT - 20]}</pre>", "parse_mode": "HTML"},
             timeout=timeout,
+        )
+        return bool(response.json().get("ok"))
+    except Exception:
+        return False
+
+
+def send_entry_telegram(message_kwargs: dict, image: bytes | None, token: str | None = None, chat_id: str | None = None) -> bool:
+    """Entry message (chart image + text + order result) on Telegram, without approval buttons.
+
+    Used when the bot trades without the approval hub. Token / chat id default to .env.
+    The image is always sent when there is one (text goes in a second message if too long for a caption).
+    """
+    token = token if token is not None else os.environ.get("TELEGRAM_TOKEN", "")
+    chat_id = chat_id if chat_id is not None else os.environ.get("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return False
+    kwargs = {k: v for k, v in message_kwargs.items() if k != "result"}
+    text = format_entry_message_telegram(**kwargs)
+    result = str(message_kwargs.get("result") or "").replace("**", "").strip()
+    if result:
+        text += f"\n<pre>{html.escape(result)}</pre>"
+    api = f"https://api.telegram.org/bot{token}"
+    try:
+        if image:
+            caption = text if len(text) <= CAPTION_LIMIT else None
+            data = {"chat_id": chat_id, **({"caption": caption, "parse_mode": "HTML"} if caption else {})}
+            response = requests.post(
+                f"{api}/sendPhoto", data=data, files={"photo": ("chart.png", image, "image/png")}, timeout=30,
+            )
+            sent_photo = bool(response.json().get("ok"))
+            if sent_photo and caption:
+                return True
+        response = requests.post(
+            f"{api}/sendMessage",
+            json={"chat_id": chat_id, "text": text[:MESSAGE_LIMIT], "parse_mode": "HTML"},
+            timeout=15,
         )
         return bool(response.json().get("ok"))
     except Exception:
@@ -178,6 +215,13 @@ class TelegramChannel:
                 has_photo = True
             except Exception as exc:
                 self.on_error(f"{sig.label}: send photo failed, sending text only ({exc})")
+        elif sig.image:
+            # Text too long for a caption: image first, then the text with the buttons
+            try:
+                self._call("sendPhoto", http_timeout=30, files={"photo": ("chart.png", sig.image, "image/png")},
+                           chat_id=self.chat_id)
+            except Exception as exc:
+                self.on_error(f"{sig.label}: send photo failed ({exc})")
         if message is None:
             try:
                 message = self._call("sendMessage", chat_id=self.chat_id, text=text, parse_mode="HTML", reply_markup=markup)
