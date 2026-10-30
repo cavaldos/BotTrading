@@ -31,6 +31,19 @@ export const SOURCES = {
     symbolsRefreshMs: 3000,
     refreshMs: 30000,
   },
+  // Live candles, but the trades are the ones on the exchange account (open + last 30),
+  // read from the bot (GET /api/exchange/trades) instead of the bot's own trade log
+  exchange: {
+    id: 'exchange',
+    label: 'Exchange',
+    base: '/data/live',
+    smcInline: true,
+    hasTrades: true,
+    live: true,
+    exchangeTrades: true,
+    symbolsRefreshMs: 3000,
+    refreshMs: 30000,
+  },
 };
 
 const SMC_KEYS = ['bos', 'choch', 'orderBlocks', 'fvg', 'ifvg', 'eqhEql', 'imbalance', 'breakerBlocks', 'mitigationBlocks', 'retracement', 'swing', 'gannSwing'];

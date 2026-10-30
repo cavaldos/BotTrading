@@ -3,10 +3,13 @@
 // Like the Python backtest (fee_per_trade_r), a fixed commission in R is taken
 // from every closed trade; a trade whose R after commission is <= 0 is a loss.
 
+// Missing values (null / '') must not become 0: exchange trades can lack a stop or a target
+const price = (v) => (v == null || v === '' ? NaN : Number(v));
+
 export function tradeR(trade) {
-  const entry = Number(trade.entryPrice);
-  const exit = Number(trade.exitPrice);
-  const stop = Number(trade.stopLoss);
+  const entry = price(trade.entryPrice);
+  const exit = price(trade.exitPrice);
+  const stop = price(trade.stopLoss);
   if (!Number.isFinite(entry) || !Number.isFinite(exit) || !Number.isFinite(stop)) return null;
   const risk = Math.abs(entry - stop);
   if (risk <= 0) return null;
@@ -15,23 +18,23 @@ export function tradeR(trade) {
 }
 
 export function tradePct(trade) {
-  const entry = Number(trade.entryPrice);
-  const exit = Number(trade.exitPrice);
+  const entry = price(trade.entryPrice);
+  const exit = price(trade.exitPrice);
   if (!Number.isFinite(entry) || !Number.isFinite(exit) || entry === 0) return null;
   const dir = trade.type === 'SHORT' ? -1 : 1;
   return ((exit - entry) * dir / entry) * 100;
 }
 
 export function plannedRR(trade) {
-  const entry = Number(trade.entryPrice);
-  const risk = Math.abs(entry - Number(trade.stopLoss));
-  const reward = Math.abs(Number(trade.takeProfit) - entry);
+  const entry = price(trade.entryPrice);
+  const risk = Math.abs(entry - price(trade.stopLoss));
+  const reward = Math.abs(price(trade.takeProfit) - entry);
   return risk > 0 && Number.isFinite(reward) ? reward / risk : null;
 }
 
 export function isClosed(trade) {
   if (trade.status === 'open' || trade.result === 'Pending') return false;
-  return Number.isFinite(Number(trade.exitPrice)) && Number.isFinite(Number(trade.exitTime));
+  return Number.isFinite(price(trade.exitPrice)) && Number.isFinite(price(trade.exitTime));
 }
 
 const exitTimeOf = (r) => Number(r.exitTimeRaw ?? r.exitTime);
@@ -104,7 +107,7 @@ function summarize(rows) {
   return {
     total: rows.length,
     closed: closed.length,
-    open: rows.length - closed.length,
+    open: rows.filter(r => !r.closed).length, // closed trades without a stop have no R: not counted as open
     wins: wins.length,
     losses: losses.length,
     winRate: closed.length ? (wins.length / closed.length) * 100 : null,

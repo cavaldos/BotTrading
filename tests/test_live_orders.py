@@ -105,7 +105,7 @@ class ApprovalFlowTest(FakeExchangeCase):
 
         send.set_order_tracker(tracker)
         try:
-            with mock.patch.object(send, "send_custom_message"), mock.patch.object(send, "send_entry_discord"):
+            with mock.patch.object(send, "send_entry_telegram"):
                 sender = send._make_approval_sender(Hub(), row, key, log_file, place_kwargs)
                 sender({"type": "LONG"}, None)
                 sig = Hub.signal
@@ -310,10 +310,8 @@ class EntryImageTest(unittest.TestCase):
         from src.live.core import send
 
         sent = []
-        with mock.patch.object(send, "send_entry_discord") as discord, \
-                mock.patch.object(send, "send_entry_telegram", lambda kw, img: sent.append(img)):
+        with mock.patch.object(send, "send_entry_telegram", lambda kw, img: sent.append(img)):
             send._send_entry_all(dict(self.KWARGS, result="r"), b"png")
-        discord.assert_called_once()
         self.assertEqual(sent, [b"png"])
 
     def test_channel_sends_photo_even_when_text_is_too_long(self):

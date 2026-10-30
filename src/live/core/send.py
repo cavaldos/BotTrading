@@ -15,11 +15,7 @@ SENT_ORDERS_METADATA_KEY = "_metadata"
 
 
 from src.live.core.approval import Signal
-from src.live.core.discord_notify import (
-    entry_title,
-    send_custom_message,
-    send_entry_discord,
-)
+from src.live.core.discord_notify import entry_title
 from src.live.core.telegram_approval import send_entry_telegram
 
 # Set by the live runner when chart snapshots are enabled (see src/live/core/snapshot.py)
@@ -54,15 +50,14 @@ def set_order_tracker(tracker) -> None:
 
 
 def _send_entry_all(message_kwargs: dict, image: bytes | None) -> None:
-    """Bot traded without approval: entry message with the chart image on Discord and Telegram."""
-    send_entry_discord(**message_kwargs, image=image)
+    """Bot traded without approval: entry message with the chart image on Telegram."""
     send_entry_telegram(message_kwargs, image)
 
 
 def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
     """Send the entry message; with a chart image when the snapshot worker is running.
 
-    `sender(message_kwargs, image)` delivers it; default: Discord entry message.
+    `sender(message_kwargs, image)` delivers it; default: Telegram entry message.
     """
     worker = _snapshot_worker
     if worker is not None and worker.submit(row.to_dict(), message_kwargs, sender):
@@ -70,7 +65,7 @@ def notify_entry(row: pd.Series, message_kwargs: dict, sender=None) -> None:
     if sender is not None:
         sender(message_kwargs, None)
     else:
-        send_entry_discord(**message_kwargs)
+        send_entry_telegram(message_kwargs, None)
 
 from src.core.symbols import strip_timeframe
 from src.exchanges import get_exchange
@@ -520,12 +515,11 @@ def _short_reason(order_result: dict, text: str) -> str:
 
 
 def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, place_kwargs: dict):
-    """Build the sender that puts the signal in the approval hub and posts the image to Discord."""
+    """Build the sender that puts the signal in the approval hub (web chart + Telegram)."""
     symbol = str(row['Symbol']).strip()
     signal_timeframe = str(row.get('Signal_Timeframe', '')).strip()
     label = entry_title(str(row['Type']), symbol, signal_timeframe)
     now = lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    via_label = lambda sig: {"web": "Web", "auto": "Tự động"}.get(sig.decided_via, f"Telegram: {sig.decided_by}")
 
     def on_approve(sig: Signal) -> tuple[bool, str]:
         # The signal holds the values to trade: the bot's, or the ones edited on the web
@@ -539,7 +533,6 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
         )
         if sig.leverage:
             kwargs['leverage'] = int(sig.leverage)
-        approved = f"Đã duyệt ({via_label(sig)})" + (f", đã chỉnh: {sig.order_type.upper()}" if sig.edited else "")
 
         if not is_limit:
             problem = _late_entry_problem(kwargs['symbol'], kwargs['order_type'], kwargs['stop_loss'], kwargs['take_profit'])
@@ -547,7 +540,6 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
                 result_text = f"❌ KHÔNG ĐẶT LỆNH\n└─ {problem}"
                 update_sent_order(log_file, order_key, status="FAILED", approved_at=now(), approved_via=sig.decided_via,
                                   reason=problem)
-                send_custom_message(f"**{label}** ⚠️ {approved} — không đặt lệnh\n```\n{result_text}\n```")
                 return False, result_text
 
         if is_limit:
@@ -579,18 +571,13 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
                 _follow_order(sig, order_result, order_key)
             except Exception as e:  # the order is placed: never report it as failed
                 print(f"Order tracking failed for {order_key}: {e}")
-        verdict = "đã gửi lệnh, chờ sàn khớp" if success else "đặt lệnh thất bại"
-        icon = "✅" if success else "⚠️"
-        send_custom_message(f"**{label}** {icon} {approved} — {verdict}\n```\n{result_text}\n```")
         return success, result_text
 
     def on_reject(sig: Signal) -> None:
         update_sent_order(log_file, order_key, status="REJECTED", decided_at=now(), approved_via=sig.decided_via)
-        send_custom_message(f"**{label}** ❌ Bỏ qua ({via_label(sig)}) — không đặt lệnh")
 
     def on_expire(sig: Signal) -> None:
         update_sent_order(log_file, order_key, status="EXPIRED", decided_at=now())
-        send_custom_message(f"**{label}** ⌛ Hết hạn duyệt — không đặt lệnh")
 
     def sender(message_kwargs: dict, image: bytes | None) -> None:
         hub.submit(Signal(
@@ -610,7 +597,6 @@ def _make_approval_sender(hub, row: pd.Series, order_key: str, log_file: str, pl
             on_reject=on_reject,
             on_expire=on_expire,
         ))
-        send_entry_discord(**message_kwargs, image=image)
 
     return sender
 

@@ -106,9 +106,14 @@ function TradeListPanel({ rows, filter, onFilter, selectedId, onSelect, showOpen
                 {bot && <i className="tv-tl-bot" style={{ background: bot.color }} aria-label={botText} />}
               </span>
               <span className="num tv-muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis' }} title={formatDateTime(r.entryTimeRaw ?? r.entryTime)}>{formatShortDateTime(r.entryTimeRaw ?? r.entryTime)}</span>
-              <span className={`num ${r.r == null ? 'tv-muted' : r.r > 0 ? 'tv-up' : 'tv-down'}`}>
-                {r.r == null ? 'open' : formatSigned(r.r, 2, 'R')}
-              </span>
+              {r.r == null && r.closed && Number.isFinite(r.pct) ? (
+                // Closed without a known stop (exchange trade): no R, show the price move
+                <span className={`num ${r.pct > 0 ? 'tv-up' : 'tv-down'}`}>{formatSigned(r.pct, 2, '%')}</span>
+              ) : (
+                <span className={`num ${r.r == null ? 'tv-muted' : r.r > 0 ? 'tv-up' : 'tv-down'}`}>
+                  {r.r == null ? 'open' : formatSigned(r.r, 2, 'R')}
+                </span>
+              )}
             </button>
           );
         })}
@@ -118,10 +123,10 @@ function TradeListPanel({ rows, filter, onFilter, selectedId, onSelect, showOpen
   );
 }
 
-const TITLES = { trades: 'Trades', watchlist: 'Watchlist', trade: 'Trade' };
+const TITLES = { trades: 'Trades', watchlist: 'Watchlist', trade: 'Trade', orders: 'Exchange orders' };
 
 /** Side panel; on phones (`compact`) it is a drawer under the chart. */
-export default function RightPanel({ tab, onClose, watchlist, trades, trade, compact }) {
+export default function RightPanel({ tab, onClose, watchlist, trades, trade, orders, compact }) {
   const title = TITLES[tab] || 'Watchlist';
   return (
     <aside className="tv-panel tv-side" aria-label={title}>
@@ -134,7 +139,8 @@ export default function RightPanel({ tab, onClose, watchlist, trades, trade, com
       <div className="tv-side-body">
         {tab === 'trade' && trade}
         {tab === 'trades' && <TradeListPanel {...trades} />}
-        {tab !== 'trade' && tab !== 'trades' && <Watchlist {...watchlist} />}
+        {tab === 'orders' && orders}
+        {tab !== 'trade' && tab !== 'trades' && tab !== 'orders' && <Watchlist {...watchlist} />}
       </div>
     </aside>
   );

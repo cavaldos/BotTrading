@@ -1,4 +1,4 @@
-import { IconBrush, IconWatchlist, IconTrades, IconOrder, IconStrategy } from './icons';
+import { IconBrush, IconWatchlist, IconTrades, IconOrder, IconStrategy, IconExchange } from './icons';
 
 /**
  * Phone bottom bar. Replaces the left drawing toolbar and the right panel strip,
@@ -31,6 +31,7 @@ export default function MobileNav({ toolsOpen, toolActive, onTools, panel, onPan
         badge: pendingCount,
         ariaLabel: pendingCount ? `Trade, ${pendingCount} signal${pendingCount > 1 ? 's' : ''} waiting` : undefined,
       })}
+      {item('orders', 'Orders', IconExchange, panel === 'orders', () => onPanel('orders'))}
       {item('tester', 'Tester', IconStrategy, testerOpen, onTester)}
     </nav>
   );

@@ -20,6 +20,12 @@ to it, so a public chart link still needs the token to see or place anything.
   GET  /api/orders                       orders followed on the exchange (signals + manual)
   GET  /api/history                      bot signals and web orders from the bot's files
                                          (survives restarts, see src/live/web/history.py)
+  GET  /api/exchange/accounts            exchanges with an order list: [{name, label, configured, active}]
+  GET  /api/exchange/orders              every order + open position on an exchange account, also ones
+                                         placed by hand (?exchange=bybit&symbol=BTCUSDT&days=7&fresh=1;
+                                         read-only, see src/live/web/exchange_orders.py)
+  GET  /api/exchange/trades              those orders as trades (entry -> exit, SL / TP) for the chart:
+                                         open ones + the last ?limit=30 closed (src/exchanges/trades.py)
   POST /api/orders/<id>/cancel           cancel a limit order still waiting to fill
   GET  /api/events                       server-sent events: snapshot (with history), signal, order, mode
                                          (order events carry `change`: placed, partial,
@@ -31,18 +37,24 @@ from __future__ import annotations
 import hmac
 import json
 import re
+import sys
 import threading
 import time
+from urllib.parse import parse_qs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from queue import Empty, Full, Queue
 from typing import Callable, Optional
 
 from src.live.core.approval import ApprovalHub, Signal
 from src.live.core.order_tracker import OrderTracker, TrackedOrder
+from src.live.web.exchange_orders import ExchangeOrdersService, ExchangeReadError
 from src.live.web.orders import ManualOrderService, OrderError, parse_fill_timeout
 
 
 MAX_BODY = 64 * 1024
+# The browser closed the connection before the answer was sent (a signal card closed while
+# its chart image loaded, a page reload, ...): normal, nothing to answer or report
+CLIENT_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 KEEPALIVE_SECONDS = 15
 EDIT_FIELDS = ("orderType", "entry", "stopLoss", "takeProfit", "risk", "fillTimeoutMinutes")
 
@@ -57,6 +69,7 @@ class WebApiServer:
         tracker: OrderTracker,
         hub: Optional[ApprovalHub] = None,
         history: Optional[Callable[[], list]] = None,
+        exchange_orders: Optional[ExchangeOrdersService] = None,
         on_log: Optional[Callable[[str], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
@@ -69,6 +82,9 @@ class WebApiServer:
         self.tracker = tracker
         self.hub = hub
         self.history = history or (lambda: [])
+        self.exchange_orders = exchange_orders or ExchangeOrdersService(
+            symbols=orders.config().get("symbols") or [], known_levels=self.known_levels,
+        )
         self.on_log = on_log or (lambda msg: None)
         self.on_error = on_error or (lambda msg: print(f"Web API error: {msg}"))
         self.stopping = threading.Event()
@@ -81,8 +97,9 @@ class WebApiServer:
 
     def start(self) -> "WebApiServer":
         handler = type("Handler", (_Handler,), {"app": self})
-        self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
+        self._httpd = _Server((self.host, self.port), handler)
         self._httpd.daemon_threads = True
+        self._httpd.report = self.on_error
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="WebApiServer")
         self._thread.start()
         if self.hub is not None:
@@ -135,6 +152,15 @@ class WebApiServer:
             self.on_error(f"history: {exc}")
             return []
 
+    def known_levels(self) -> dict:
+        """{exchange order id: {stopLoss, takeProfit}} the bot placed (its history and tracker)."""
+        levels: dict[str, dict] = {}
+        for item in self.safe_history() + list(self.tracker.recent(limit=1000) or []):
+            oid = item.get("orderId") if isinstance(item, dict) else None
+            if oid and (item.get("stopLoss") or item.get("takeProfit")):
+                levels.setdefault(str(oid), {"stopLoss": item.get("stopLoss"), "takeProfit": item.get("takeProfit")})
+        return levels
+
     def snapshot(self) -> dict:
         signals = self.hub.snapshot() if self.hub is not None else {"pending": [], "recent": []}
         return {
@@ -152,6 +178,19 @@ class WebApiServer:
         if not header.startswith("Bearer "):
             return False
         return hmac.compare_digest(header[7:].strip().encode(), self.token.encode())
+
+
+class _Server(ThreadingHTTPServer):
+    report = None  # WebApiServer.on_error
+
+    def handle_error(self, request, client_address):
+        """Errors a handler did not catch: dropped connections are ignored, others go to the
+        bot's error log (the default prints a traceback, which ends up in the dashboard)."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, CLIENT_GONE):
+            return
+        if self.report is not None:
+            self.report(f"request from {client_address[0]}: {exc!r}")
 
 
 _SIGNAL_ACTION = re.compile(r"^/api/signals/([0-9a-f]{8,32})/(approve|reject)$")
@@ -202,6 +241,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _path(self) -> str:
         return self.path.split("?", 1)[0].rstrip("/") or "/"
 
+    def _query(self) -> dict:
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+        return {k: v[-1] for k, v in parse_qs(query).items()}
+
     # ---------------- routes ----------------
 
     def do_GET(self):
@@ -223,12 +266,30 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._send_json(200, self.app.tracker.recent())
             if path == "/api/history":
                 return self._send_json(200, self.app.safe_history())
+            if path == "/api/exchange/accounts":
+                return self._send_json(200, self.app.exchange_orders.accounts())
+            if path == "/api/exchange/orders":
+                q = self._query()
+                return self._send_json(200, self.app.exchange_orders.fetch(
+                    q.get("exchange", ""), q.get("symbol"), q.get("days"), force=q.get("fresh") == "1",
+                ))
+            if path == "/api/exchange/trades":
+                q = self._query()
+                return self._send_json(200, self.app.exchange_orders.trades(
+                    q.get("exchange", ""), q.get("symbol"), q.get("limit"), force=q.get("fresh") == "1",
+                ))
             if path == "/api/events":
                 return self._stream_events()
             match = _SIGNAL_IMAGE.match(path)
             if match:
                 return self._signal_image(match.group(1))
             return self._send_json(404, {"error": "Not found"})
+        except OrderError as exc:
+            return self._send_json(400, {"error": str(exc)})
+        except ExchangeReadError as exc:
+            return self._send_json(502, {"error": str(exc)})
+        except CLIENT_GONE:
+            return None
         except Exception as exc:
             self.app.on_error(f"GET {path}: {exc}")
             return self._send_json(500, {"error": str(exc)})
@@ -258,6 +319,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send_json(404, {"error": "Not found"})
         except OrderError as exc:
             return self._send_json(400, {"error": str(exc)})
+        except CLIENT_GONE:
+            return None  # an order was still placed: the chart learns it from the event stream
         except Exception as exc:
             self.app.on_error(f"POST {path}: {exc}")
             return self._send_json(500, {"error": str(exc)})

@@ -583,3 +583,89 @@
 /* Trade button in the drawing toolbar */
 .tv-draw-bar .tv-btn--trade { font-weight: 600; color: var(--tv-text-strong); background: var(--tv-accent); padding: 0 10px; }
 .tv-draw-bar .tv-btn--trade:hover { background: var(--tv-accent-hover); }
+
+/* ---- Orders tab: exchange account orders and positions ------------------------------ */
+
+.tv-xo-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 0;
+}
+.tv-xo-select { flex: 1; min-width: 0; height: 30px; }
+.tv-xo-days { flex: 0 0 64px; width: 64px; height: 30px; }
+.tv-xo-bar .tv-segment { min-width: 0; }
+.tv-xo-bar .tv-segment button { overflow: hidden; text-overflow: ellipsis; }
+.tv-xo-bar .tv-segment button:disabled { opacity: 0.5; cursor: default; }
+.tv-xo-show {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  color: var(--tv-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tv-xo-switch[aria-checked="true"] { background: var(--tv-accent); }
+.tv-xo-status { margin: 0; padding: 8px 12px 0; font-size: 11px; min-height: 1.4em; }
+.tv-xo > .tv-trade-error { margin: 6px 12px 0; }
+.tv-xo-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  vertical-align: middle;
+}
+.tv-xo-pnl { margin-left: auto; font-size: 12px; }
+.tv-xo-empty { padding: 12px 0; }
+.tv-xo-connect { margin-top: 10px; }
+.tv-xo-spin { animation: tv-spin 0.8s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .tv-xo-spin { animation: none; }
+}
+.tv-xo-status { display: flex; align-items: center; gap: 8px; }
+.tv-xo-status > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-xo-page { color: var(--tv-accent); text-decoration: none; white-space: nowrap; }
+.tv-xo-page:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+/* ---- Exchange source: account / trade count bar over the chart (bottom left) ---------- */
+
+.tv-exbar-wrap {
+  position: absolute;
+  z-index: 25;
+  left: 52px;
+  bottom: 34px;
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  max-width: calc(100% - 180px);
+}
+.tv-exbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-height: 30px;
+  padding: 2px 4px 2px 8px;
+  border-radius: var(--tv-radius-sm);
+  background: rgba(30, 34, 45, 0.92);
+  box-shadow: var(--tv-shadow-pop);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.tv-exbar--warn {
+  padding: 6px 10px;
+  color: var(--tv-warn);
+  white-space: normal;
+  line-height: 1.4;
+  box-shadow: inset 3px 0 0 var(--tv-warn), var(--tv-shadow-pop);
+}
+.tv-exbar-select { width: auto; height: 24px; padding: 0 6px; font-size: 12px; }
+.tv-exbar-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tv-exbar-text b { color: var(--tv-text-strong); font-weight: 600; }
+.tv-exbar-refresh { width: 24px; height: 24px; }
+@media (max-width: 640px) {
+  .tv-exbar-wrap { left: 8px; max-width: calc(100% - 124px); }
+  .tv-exbar-time { display: none; }
+}

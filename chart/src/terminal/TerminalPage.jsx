@@ -21,19 +21,23 @@ import GoToDate from './ui/GoToDate';
 import Tooltip from './ui/Tooltip';
 import { DrawingBar, TextEditor } from './ui/DrawingBar';
 import MobileNav from './ui/MobileNav';
-import { IconToEnd, IconWatchlist, IconTrades, IconOrder } from './ui/icons';
+import { IconToEnd, IconWatchlist, IconTrades, IconOrder, IconExchange } from './ui/icons';
 import { TOOL_DEFS } from './drawings/tools';
 import { matches, NARROW, PHONE, SHORT, useMediaQuery, useWindowHeight } from './lib/useMediaQuery';
 import TradePanel from './trading/TradePanel';
 import OrderTicket from './trading/OrderTicket';
 import { defaultLevels, num, useOrderDraft } from './trading/useOrderDraft';
 import ChartMenu from './ui/ChartMenu';
-import { formatNumber, formatPrice } from './lib/format';
+import { formatDateTime, formatNumber, formatPrice } from './lib/format';
 import OrderAlerts from './trading/OrderAlerts';
 import SignalAlerts from './trading/SignalAlerts';
 import { useTrading } from './trading/useTrading';
 import { announceOrder, announceSignal, announceSignalFailed } from './trading/notify';
 import { isOpenOrder } from './trading/orderText';
+import ExchangeOrdersPanel from './trading/ExchangeOrdersPanel';
+import { useExchangeOrders } from './trading/useExchangeOrders';
+import { PENDING_FOCUS_KEY, eventTime, exchangeChartTrades, exchangeLines, exchangeMarkers, hasFill, levelOf } from './trading/exchangeOrders';
+import ExchangeTradesBar from './trading/ExchangeTradesBar';
 import './trading/trading.css';
 
 /** useState that is mirrored to localStorage. */
@@ -86,6 +90,17 @@ function tradeMarkers(markers, rows) {
   });
   return (markers || []).filter(m => times.has(m.time));
 }
+
+/** Low / high of the bars around `time`, so a focused exchange order shows whole candles. */
+function barsRange(candles, time, around = 40) {
+  const after = candles.findIndex(c => c.time > time);
+  const i = after < 0 ? candles.length - 1 : Math.max(0, after - 1);
+  const part = candles.slice(Math.max(0, i - around), i + around + 1);
+  return [Math.min(...part.map(c => c.low)), Math.max(...part.map(c => c.high))];
+}
+
+// Orders tab (exchange account orders): exchange, symbol scope, history days, drawn on the chart, list filter
+const DEFAULT_EXCHANGE_VIEW = { exchange: null, scope: 'symbol', days: 7, show: true, filter: 'open' };
 
 function filterRows(rows, filter) {
   switch (filter) {
@@ -174,7 +189,11 @@ export default function TerminalPage() {
   const [magnet, setMagnet] = usePersisted('magnet', false);
   // Same default as fee_per_trade_r in the Python strategy config
   const [commissionR, setCommissionR] = usePersisted('commissionR', 0.5);
-  const commission = Number.isFinite(Number(commissionR)) && Number(commissionR) >= 0 ? Number(commissionR) : 0.5;
+  const [exchangeView, setExchangeView] = usePersisted('exchangeOrders', DEFAULT_EXCHANGE_VIEW);
+  const exSettings = { ...DEFAULT_EXCHANGE_VIEW, ...(exchangeView && typeof exchangeView === 'object' ? exchangeView : {}) };
+  const commissionSetting = Number.isFinite(Number(commissionR)) && Number(commissionR) >= 0 ? Number(commissionR) : 0.5;
+  // Exchange trades are real fills: no assumed backtest fee in their R
+  const commission = sourceDef.exchangeTrades ? 0 : commissionSetting;
 
   useEffect(() => {
     saveJSON('rightOpen', rightOpen);
@@ -218,6 +237,24 @@ export default function TerminalPage() {
   const [focusSignalId, setFocusSignalId] = useState(null);
   // Order picked in the Trade panel history: { item, pending, found } (found = its trade is in the chart file)
   const [historyFocus, setHistoryFocus] = useState(null);
+  // Exchange order / position picked in the Orders tab or on the Orders page (#/orders):
+  // { kind: 'order' | 'position', key, item, pending }
+  const [exFocus, setExFocus] = useState(() => {
+    try {
+      const f = JSON.parse(window.sessionStorage.getItem(PENDING_FOCUS_KEY) || 'null');
+      return f?.item?.symbol ? { ...f, pending: true } : null;
+    } catch {
+      return null;
+    }
+  });
+  // Taken once: a reload later opens the chart as usual
+  useEffect(() => {
+    try {
+      window.sessionStorage.removeItem(PENDING_FOCUS_KEY);
+    } catch {
+      // storage blocked
+    }
+  }, []);
   // Signal cards hidden from the chart (they stay in the Trade panel)
   const [hiddenSignals, setHiddenSignals] = useState(() => new Set());
   // Latest show functions for desktop notification clicks (defined further down)
@@ -262,6 +299,46 @@ export default function TerminalPage() {
   const ticketDraft = ticket.draft;
   const ticketSignalId = ticketDraft?.signalId || null;
 
+  // Exchange source: the trades on the exchange account (open + last 30) instead of the bot's trade log
+  const exchangeSource = !!sourceDef.exchangeTrades;
+  const exchangeTrades = useExchangeOrders({
+    online: trading.conn === 'online',
+    enabled: exchangeSource && !!activeSymbol,
+    exchange: exSettings.exchange,
+    symbol: activeSymbol,
+    resource: 'trades',
+    limit: 30,
+    pollMs: 30000,
+  });
+  // Every order on the exchange account (Orders tab), read while the tab is open or drawn on the chart
+  // (on the Exchange source the trades answer carries the working orders already)
+  const exchangeOrders = useExchangeOrders({
+    online: trading.conn === 'online',
+    enabled: (rightOpen && rightTab === 'orders') || (exSettings.show && !exchangeSource),
+    exchange: exSettings.exchange,
+    symbol: exSettings.scope === 'all' ? null : activeSymbol,
+    days: exSettings.days,
+  });
+  const exLineView = exchangeSource ? exchangeTrades : exchangeOrders;
+  const exShow = exSettings.show && trading.conn === 'online';
+  // Opened from the Orders page: the Orders tab shows the same exchange
+  const focusExchangeName = exFocus?.exchange;
+  useEffect(() => {
+    if (focusExchangeName) setExchangeView(v => ({ ...DEFAULT_EXCHANGE_VIEW, ...v, exchange: focusExchangeName }));
+  }, [focusExchangeName, setExchangeView]);
+  // The bot's own exchange: its orders are already in the exchange list, do not draw them twice
+  const exCoversBot = exShow && !!exLineView.current?.active && !!exLineView.data;
+  const exFocusOrder = exFocus?.kind === 'order' ? exFocus.item : null;
+  const exLines = useMemo(
+    () => exchangeLines(exShow ? exLineView.data : { orders: [], positions: [] }, activeSymbol, exchangeSource ? null : exFocusOrder),
+    [exShow, exLineView.data, activeSymbol, exFocusOrder, exchangeSource],
+  );
+  // Fill arrows of the Orders tab; the Exchange source draws whole trades instead
+  const exMarkers = useMemo(
+    () => (exShow && !exchangeSource ? exchangeMarkers(exchangeOrders.data, activeSymbol) : []),
+    [exShow, exchangeSource, exchangeOrders.data, activeSymbol],
+  );
+
   useEffect(() => {
     const base = document.title.replace(/^\(\d+\) /, '');
     document.title = pendingCount ? `(${pendingCount}) ${base}` : base;
@@ -272,9 +349,16 @@ export default function TerminalPage() {
   // Live: symbols.json tells when the file on screen was re-exported
   const fileVersion = group?.tfs.find(t => t.id === tfOption?.baseId)?.updatedAt ?? null;
   const file = useChartFile(source, tfOption, { wantSmc, autoRefresh, version: fileVersion });
-  const data = file.data;
+  const exTradesData = exchangeTrades.data;
+  const data = useMemo(() => {
+    const d = file.data;
+    if (!d || !exchangeSource) return d;
+    // Live candles with the exchange account's trades, snapped to the bars on screen
+    const list = exTradesData && exTradesData.symbol === activeSymbol ? exTradesData.trades : [];
+    return { ...d, ...exchangeChartTrades(list, d.candles) };
+  }, [file.data, exchangeSource, exTradesData, activeSymbol]);
   const lastBar = data?.candles?.[data.candles.length - 1];
-  const livePrice = source === 'live' && lastBar ? lastBar.close : null;
+  const livePrice = sourceDef.live && lastBar ? lastBar.close : null;
   const rows = useMemo(() => enrichTrades(data?.trades, commission), [data, commission]);
   const filteredRows = useMemo(() => filterRows(rows, tradeFilter), [rows, tradeFilter]);
   const markers = useMemo(() => tradeMarkers(data?.markers, filteredRows), [data, filteredRows]);
@@ -291,6 +375,12 @@ export default function TerminalPage() {
     if (!engine || !data) return;
     engine.setTrades(filteredRows, markers);
   }, [engine, data, filteredRows, markers]);
+
+  // Fills on the exchange account (snapped to the bars on screen, so redone with new data)
+  useEffect(() => {
+    if (!engine || !data) return;
+    engine.setExchangeMarkers(exMarkers);
+  }, [engine, data, exMarkers]);
 
   const barDuration = tfOption?.seconds || tfToSeconds(tfOption?.tf) || 60;
   useEffect(() => {
@@ -339,7 +429,7 @@ export default function TerminalPage() {
       });
     // Limit orders on the exchange still waiting to fill
     trading.orders
-      .filter(o => o.symbol === activeSymbol && o.orderType === 'limit' && isOpenOrder(o))
+      .filter(o => !exCoversBot && o.symbol === activeSymbol && o.orderType === 'limit' && isOpenOrder(o))
       .forEach(o => {
         lines.push(
           { price: o.price, color: '#5b8bff', title: `${o.side === 'LONG' ? 'Long' : 'Short'} limit`, dashed: false },
@@ -356,8 +446,10 @@ export default function TerminalPage() {
         { price: historyLines.takeProfit, color: '#089981', title: 'Target', dashed: false },
       );
     }
+    // Orders tab: positions and working orders on the exchange account
+    lines.push(...exLines);
     engine.setSignalLines(lines);
-  }, [engine, trading.signals, trading.orders, activeSymbol, focusSignalId, ticketSignalId, historyLines]);
+  }, [engine, trading.signals, trading.orders, activeSymbol, focusSignalId, ticketSignalId, historyLines, exLines, exCoversBot]);
 
   // The order being prepared, with draggable entry / stop / target lines
   const draftOnChart = ticketDraft && ticketDraft.symbol === activeSymbol ? ticketDraft : null;
@@ -389,7 +481,7 @@ export default function TerminalPage() {
   useEffect(() => {
     const d = ticketDraft;
     const candles = data?.candles;
-    if (!d?.autoLevels || source !== 'live' || d.symbol !== activeSymbol || !candles?.length || !engine) return;
+    if (!d?.autoLevels || !sourceDef.live || d.symbol !== activeSymbol || !candles?.length || !engine) return;
     const entry = d.orderType === 'limit' && num(d.entry) ? num(d.entry) : candles[candles.length - 1].close;
     const lv = defaultLevels(d.side, entry, candles);
     ticket.update({
@@ -398,7 +490,7 @@ export default function TerminalPage() {
       takeProfit: num(d.takeProfit) ?? engine.roundPrice(lv.takeProfit),
       ...(d.orderType === 'limit' && !num(d.entry) ? { entry } : {}),
     });
-  }, [ticketDraft, source, activeSymbol, data, engine, ticket]);
+  }, [ticketDraft, sourceDef.live, activeSymbol, data, engine, ticket]);
 
   useEffect(() => { engine?.drawings.setTool(tool); }, [engine, tool]);
   useEffect(() => { engine?.setCompact(phone); }, [engine, phone]);
@@ -444,8 +536,24 @@ export default function TerminalPage() {
   const selectTrade = useCallback((row) => {
     if (!row) return;
     setSelectedKey(row.key);
+    // A trade outside the candles on screen: say why instead of scrolling to an empty chart
+    const candles = data?.candles;
+    if (candles?.length) {
+      const first = candles[0].time;
+      const last = candles[candles.length - 1].time;
+      const entry = Number(row.entryTimeRaw ?? row.entryTime);
+      const exit = Number(row.exitTimeRaw ?? row.exitTime);
+      if (entry > last + Math.max(3 * barDuration, 300)) {
+        setToast(`#${row.n} opened ${formatDateTime(entry)} UTC, after the chart data (ends ${formatDateTime(last)} UTC). Is the live export running? Start the bot with ./start.sh`);
+        return;
+      }
+      if ((Number.isFinite(exit) ? exit : entry) < first) {
+        setToast(`#${row.n} (${formatDateTime(entry)} UTC) is older than the chart data, which starts ${formatDateTime(first)} UTC`);
+        return;
+      }
+    }
     engine?.focusTrade(row);
-  }, [engine]);
+  }, [engine, data, barDuration]);
 
   // History click: once the order's symbol / timeframe is on screen, focus its trade (or its prices)
   useEffect(() => {
@@ -466,6 +574,39 @@ export default function TerminalPage() {
     setHistoryFocus({ item: it, pending: false, found: !!row });
     if (!row && at < data.candles[0].time) setToast('This order is older than the chart data: only its prices are shown');
   }, [historyFocus, engine, source, data, activeSymbol, activeTf, tfOptions, rows, selectTrade]);
+
+  // Orders tab click: once the symbol's data is on screen, show the fill / order level / position
+  useEffect(() => {
+    const f = exFocus;
+    if (!f?.pending || !engine || !sourceDef.live || !data?.candles?.length || activeSymbol !== f.item.symbol) return;
+    const it = f.item;
+    const candles = data.candles;
+    const last = candles[candles.length - 1];
+    let older = false;
+    const recent = barsRange(candles, last.time);
+    // Exchange source: wait for the account's trades, then select the trade the order belongs to
+    if (exchangeSource && (!exTradesData || exTradesData.symbol !== it.symbol || (f.exchange && exTradesData.exchange !== f.exchange))) return;
+    const tradeRow = exchangeSource
+      ? rows.find(r => (f.kind === 'position' ? !r.closed && r.type === it.side : (r.orders || []).includes(it.id)))
+      : null;
+    // Runs once per click, after the symbol's data (and its exchange trades) have loaded:
+    // it cannot be done in the click handler
+    if (tradeRow) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      selectTrade(tradeRow);
+    } else if (f.kind === 'position') {
+      engine.focusTrade({ entryTime: last.time, entryPrice: it.entryPrice, stopLoss: it.stopLoss, takeProfit: it.takeProfit, priceRange: recent });
+    } else if (it.status === 'open' && !hasFill(it)) {
+      // Still working: recent bars, with the order's price in view
+      engine.focusTrade({ entryTime: last.time, entryPrice: levelOf(it), priceRange: recent });
+    } else {
+      const at = eventTime(it);
+      older = at < candles[0].time;
+      engine.focusTrade({ entryTime: at, entryPrice: hasFill(it) ? it.average : levelOf(it), priceRange: older ? [] : barsRange(candles, at) });
+    }
+    setExFocus({ ...f, pending: false });
+    if (older) setToast('This order is older than the chart data: only its price is shown');
+  }, [exFocus, engine, sourceDef.live, data, activeSymbol, exchangeSource, exTradesData, rows, selectTrade]);
 
   // ---- indicator actions ------------------------------------------------------------
   const addIndicator = (type) => {
@@ -522,6 +663,7 @@ export default function TerminalPage() {
           return;
         }
         setHistoryFocus(null);
+        setExFocus(null);
         if (s.selectedKey) setSelectedKey(null);
         return;
       }
@@ -592,7 +734,8 @@ export default function TerminalPage() {
 
   useEffect(() => {
     if (!toast) return undefined;
-    const t = setTimeout(() => setToast(null), 2200);
+    // Long messages (why a trade cannot be shown) stay long enough to be read
+    const t = setTimeout(() => setToast(null), Math.min(9000, Math.max(2200, toast.length * 55)));
     return () => clearTimeout(t);
   }, [toast]);
 
@@ -605,7 +748,7 @@ export default function TerminalPage() {
   }, [file.smc, group, tfOption]);
 
   let smcNote = null;
-  if (source === 'live' && !file.smc) {
+  if (sourceDef.live && !file.smc) {
     const natives = (group?.tfs || []).map(t => t.tf).join(', ');
     smcNote = tfOption && !tfOption.native
       ? `On Live, SMC overlays come with the bot's timeframes (${natives}). Pick one of them to see the overlays.`
@@ -618,19 +761,25 @@ export default function TerminalPage() {
 
   const lastClose = data?.candles?.[data.candles.length - 1];
   const firstOpen = data?.candles?.[0];
-  const currentQuote = source === 'live' && lastClose && firstOpen
+  const currentQuote = sourceDef.live && lastClose && firstOpen
     ? { last: lastClose.close, chg: ((lastClose.close - firstOpen.open) / firstOpen.open) * 100 }
     : null;
 
   const settingsInst = settingsUid ? safeIndicators.find(i => i.uid === settingsUid) : null;
   // Leave the chart at least ~200px; on short (sideways phone) screens the tester gets at most ~half
   const maxBottom = short ? Math.max(140, Math.round(windowHeight * 0.5)) : Math.max(200, windowHeight - 200);
-  const testerEmpty = !sourceDef.hasTrades
+  let testerEmpty = !sourceDef.hasTrades
     ? 'SMC data files have no trades. Switch to Backtest to use the Strategy Tester.'
     : rows.length === 0 && data ? 'No trades in this file yet.' : null;
+  if (exchangeSource && rows.length === 0) {
+    if (trading.conn !== 'online') testerEmpty = 'Connect to the bot (Trade panel) to load your exchange trades.';
+    else if (exchangeTrades.error || exchangeTrades.accountsError) testerEmpty = exchangeTrades.error || exchangeTrades.accountsError;
+    else if (!exTradesData) testerEmpty = 'Loading exchange trades…';
+    else testerEmpty = `No ${activeSymbol} trades on ${exTradesData.label} in the last ${exTradesData.days} days.`;
+  }
 
   // With data on screen a failed refresh only shows in the LIVE badge (OFFLINE)
-  const liveOffline = source === 'live' && data ? (symbolList.error || file.error || null) : null;
+  const liveOffline = sourceDef.live && data ? (symbolList.error || file.error || null) : null;
   let chartMessage = null;
   if (symbolList.error && groups.length === 0) {
     chartMessage = (<div><strong>Could not load the symbol list</strong>{symbolList.error}</div>);
@@ -643,8 +792,8 @@ export default function TerminalPage() {
   }
 
   // Sources without trades (SMC data) show the watchlist instead of the trade list
-  const shownRightTab = rightTab === 'trade' || sourceDef.hasTrades ? rightTab : 'watchlist';
-  const quotes = useMemo(() => (source === 'live' ? liveQuotes(groups) : {}), [source, groups]);
+  const shownRightTab = rightTab === 'trade' || rightTab === 'orders' || sourceDef.hasTrades ? rightTab : 'watchlist';
+  const quotes = useMemo(() => (sourceDef.live ? liveQuotes(groups) : {}), [sourceDef.live, groups]);
 
   // Signals waiting for a decision, shown over the chart unless the Trade panel (which lists them) is open
   const tradePanelOpen = rightOpen && shownRightTab === 'trade';
@@ -695,7 +844,7 @@ export default function TerminalPage() {
    */
   const startOrder = ({ side, orderType = 'market', entry, stopLoss, takeProfit }) => {
     if (!canTicket()) return;
-    if (source !== 'live') {
+    if (!sourceDef.live) {
       changeSource('live');
       setSymbol(activeSymbol);
       setToast('Switched to Live data to place the order');
@@ -734,7 +883,7 @@ export default function TerminalPage() {
 
   const showSignal = (sig) => {
     setFocusSignalId(sig.id);
-    if (source !== 'live') changeSource('live');
+    if (!sourceDef.live) changeSource('live');
     setSymbol(sig.symbol);
     if (sig.signalTimeframe) setTf(sig.signalTimeframe);
     engine?.scrollToRealtime();
@@ -801,8 +950,22 @@ export default function TerminalPage() {
     if (matches(NARROW)) setRightOpen(false);
   };
 
+  // Orders tab: show an exchange order / position on the Exchange chart (its trade box)
+  const focusExchange = (f) => {
+    const sym = f.item.symbol;
+    if (sourceDef.live && groups.length && !groups.some(g => g.symbol === sym)) {
+      setExFocus({ ...f, pending: false });
+      setToast(`${sym} has no live chart data (the live export only covers the bot symbols)`);
+      return;
+    }
+    if (!exchangeSource) changeSource('exchange');
+    setSymbol(sym);
+    setExFocus({ ...f, pending: true });
+    if (matches(NARROW)) setRightOpen(false);
+  };
+
   const showOrder = (order) => {
-    if (source !== 'live') changeSource('live');
+    if (!sourceDef.live) changeSource('live');
     setSymbol(order.symbol);
     if (order.timeframe) setTf(order.timeframe);
     engine?.scrollToRealtime();
@@ -888,7 +1051,7 @@ export default function TerminalPage() {
             <Legend
               store={legendStore}
               engine={engine}
-              title={activeSymbol ? `${activeSymbol} · ${activeTf} · ${sourceDef.label}` : ''}
+              title={activeSymbol ? `${activeSymbol} · ${activeTf} · ${sourceDef.label}${exchangeSource && exchangeTrades.current ? ` ${exchangeTrades.current.label}` : ''}` : ''}
               indicators={safeIndicators}
               panesVersion={panesVersion}
               onToggle={toggleIndicator}
@@ -941,6 +1104,21 @@ export default function TerminalPage() {
               </div>
             )}
             {chartMessage && <div className="tv-chart-msg" role="status">{chartMessage}</div>}
+            {exchangeSource && (
+              <ExchangeTradesBar
+                conn={trading.conn}
+                view={exchangeTrades}
+                symbol={activeSymbol}
+                trades={rows}
+                // Candles stop well before the time they were read: the live export is not running
+                staleSince={lastBar && file.lastUpdate && file.lastUpdate.getTime() / 1000 - lastBar.time > Math.max(900, 5 * barDuration) ? lastBar.time : null}
+                onExchange={(name) => {
+                  setExFocus(null);
+                  setExchangeView(v => ({ ...DEFAULT_EXCHANGE_VIEW, ...v, exchange: name }));
+                }}
+                onConnect={() => openRight('trade')}
+              />
+            )}
             {ticketDraft && (
               <OrderTicket
                 key={ticketDraft.id}
@@ -976,7 +1154,7 @@ export default function TerminalPage() {
             emptyNote={testerEmpty}
             onEmptyAction={!sourceDef.hasTrades ? () => changeSource('backtest') : null}
             commission={commission}
-            onCommission={setCommissionR}
+            onCommission={sourceDef.exchangeTrades ? null : setCommissionR}
             compact={phone}
           />
         </main>
@@ -993,7 +1171,7 @@ export default function TerminalPage() {
                 setSymbol(s);
                 if (matches(NARROW)) setRightOpen(false);
               },
-              sourceId: source,
+              sourceId: sourceDef.live ? 'live' : source,
               currentQuote,
               quotes,
               baseTf: tfOption?.baseTf || null,
@@ -1004,7 +1182,7 @@ export default function TerminalPage() {
               onFilter: setTradeFilter,
               selectedId: selectedKey,
               onSelect: selectTrade,
-              showOpen: source === 'live',
+              showOpen: !!sourceDef.live,
             }}
             trade={(
               <TradePanel
@@ -1016,6 +1194,22 @@ export default function TerminalPage() {
                 onNewOrder={newOrder}
                 onFocusHistory={focusHistory}
                 focusedHistoryId={historyFocus?.item.id || null}
+              />
+            )}
+            orders={(
+              <ExchangeOrdersPanel
+                conn={trading.conn}
+                view={exchangeOrders}
+                settings={exSettings}
+                onSettings={(next) => {
+                  // The picked order belongs to the exchange shown
+                  if (next.exchange !== exSettings.exchange) setExFocus(null);
+                  setExchangeView(next);
+                }}
+                activeSymbol={activeSymbol}
+                focusedKey={exFocus?.key || null}
+                onFocus={focusExchange}
+                onConnect={() => openRight('trade')}
               />
             )}
           />
@@ -1040,6 +1234,9 @@ export default function TerminalPage() {
             >
               <IconOrder size={20} />
               {pendingCount > 0 && <span className="tv-strip-badge" aria-hidden="true">{pendingCount}</span>}
+            </button>
+            <button type="button" className="tv-tool" aria-pressed={rightOpen && shownRightTab === 'orders'} onClick={() => toggleRight('orders')} aria-label="Exchange orders" data-tip="Exchange orders" data-tip-side="left">
+              <IconExchange size={20} />
             </button>
           </nav>
         )}

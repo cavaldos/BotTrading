@@ -21,7 +21,6 @@ from src.exchanges import TRADING_ADAPTERS, configure_exchange, get_candle_sourc
 from src.live.dashboard import create_dashboard, update_dashboard
 from src.live.core.execute import execute
 from src.live.core.approval import ApprovalHub
-from src.live.core.discord_notify import send_custom_message
 from src.live.core.send import (
     check_and_send_open_orders,
     expire_stale_pending,
@@ -678,7 +677,7 @@ def start_snapshot_worker() -> SnapshotWorker | None:
 class TradingServices:
     """Approval hub, its Telegram channel, the order tracker and the web trading API (each optional)."""
 
-    # Order tracker events announced on Telegram + Discord
+    # Order tracker events announced on Telegram
     ANNOUNCED_CHANGES = ("partial", "filled", "not_filled", "cancelled", "unknown")
 
     def __init__(self):
@@ -688,12 +687,11 @@ class TradingServices:
         self.web: WebApiServer | None = None
 
     def notify_text(self, text: str) -> None:
-        """Send a message to Telegram + Discord (web orders, fills; also an alert if someone else uses the web)."""
+        """Send a message to Telegram (web orders, fills; also an alert if someone else uses the web)."""
         if self.telegram is not None:
             self.telegram.notify(text)
         else:
             send_telegram_text(os.environ.get("TELEGRAM_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", ""), text)
-        send_custom_message(f"```\n{text}\n```")
 
     def history(self) -> list:
         """Order history for the web chart (bot signals + web orders, from the bot's files)."""

@@ -62,6 +62,7 @@ export const IconArea = make(<><path d="M3 17l5-6 4 3 4-7 5 5" /><path d="M3 17l
 export const IconToEnd = make(<><path d="M7 7l5 5-5 5M13 7l5 5-5 5" /></>);
 export const IconWatchlist = make(<><path d="M4 6h16M4 12h16M4 18h10" /></>);
 export const IconTrades = make(<><path d="M4 18l5-6 4 3 7-9" /><path d="M15 6h5v5" /></>);
+export const IconExchange = make(<><path d="M4 7h9M4 12h16M4 17h6" /><circle cx="17" cy="7" r="2.2" /><circle cx="14" cy="17" r="2.2" /></>);
 export const IconOrder = make(<><path d="M7 4v16M7 8h-2.5v7H7M17 4v16M17 9h2.5v6H17" /><path d="M10.5 12h3" /></>);
 export const IconMaximize = make(<><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></>);
 export const IconMinimize = make(<><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /></>);

@@ -402,7 +402,7 @@ class SnapshotWorker:
             self._server.stop()
 
     def _run(self) -> None:
-        from src.live.core.discord_notify import send_entry_discord
+        from src.live.core.telegram_approval import send_entry_telegram
 
         try:
             while not self._stop.is_set():
@@ -411,7 +411,7 @@ class SnapshotWorker:
                 except Empty:
                     continue
                 if sender is None:
-                    sender = lambda kwargs, img: send_entry_discord(**kwargs, image=img)
+                    sender = send_entry_telegram
                 image = None
                 try:
                     payload = build_snapshot_payload(
@@ -475,7 +475,7 @@ def main() -> None:
     parser.add_argument("--tf", default=None, help="Signal timeframe (default: first strategy signal_timeframe)")
     parser.add_argument("--out", default="snapshot.png")
     parser.add_argument("--json", default=None, help="Also save the payload JSON here")
-    parser.add_argument("--send", action="store_true", help="Send the image to Discord")
+    parser.add_argument("--send", action="store_true", help="Send the image to Telegram")
     args = parser.parse_args()
 
     live_config = load_live_config(include_strategy=False)
@@ -504,9 +504,9 @@ def main() -> None:
     print(f"Saved {args.out} ({len(image) / 1024:.0f} KB)")
 
     if args.send:
-        from src.live.core.discord_notify import send_entry_discord
+        from src.live.core.telegram_approval import send_entry_telegram
 
-        send_entry_discord(
+        send_entry_telegram(dict(
             type=row["Type"],
             entry=float(row["Entry_Price"]),
             stoploss=float(row["Stop_Loss"]),
@@ -515,9 +515,8 @@ def main() -> None:
             name_coin=row["Symbol"],
             result="SNAPSHOT TEST",
             signal_timeframe=row["Signal_Timeframe"],
-            image=image,
-        )
-        print("Sent to Discord")
+        ), image)
+        print("Sent to Telegram")
 
 
 if __name__ == "__main__":

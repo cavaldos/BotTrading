@@ -213,33 +213,36 @@ export function createTradeZones(trade, orderIndex) {
   const isLong = trade.type === 'LONG';
   const rectangles = [];
 
-  // Calculate TP% and SL%
-  const tpPercent = Math.abs((trade.takeProfit - trade.entryPrice) / trade.entryPrice * 100);
-  const slPercent = Math.abs((trade.stopLoss - trade.entryPrice) / trade.entryPrice * 100);
-  const rr = slPercent > 0 ? (tpPercent / slPercent) : null;
-  const rrText = rr !== null && Number.isFinite(rr) ? `${rr.toFixed(2)}R` : 'N/A';
+  const hasTp = Number.isFinite(trade.takeProfit);
+  const hasSl = Number.isFinite(trade.stopLoss);
+
+  // TP% and SL%; RR only when both levels are known (exchange trades can miss one)
+  const tpPercent = hasTp ? Math.abs((trade.takeProfit - trade.entryPrice) / trade.entryPrice * 100) : null;
+  const slPercent = hasSl ? Math.abs((trade.stopLoss - trade.entryPrice) / trade.entryPrice * 100) : null;
+  const rr = hasTp && hasSl && slPercent > 0 ? (tpPercent / slPercent) : null;
+  const rrText = rr !== null && Number.isFinite(rr) ? ` RR: ${rr.toFixed(2)}R` : '';
 
   const prefix = orderIndex != null ? `#${orderIndex} ` : '';
 
   // TP Zone (green)
-  rectangles.push(new RectanglePrimitive({
+  if (hasTp) rectangles.push(new RectanglePrimitive({
     startTime: trade.entryTime,
     endTime: trade.exitTime,
     lowPrice: isLong ? trade.entryPrice : trade.takeProfit,
     highPrice: isLong ? trade.takeProfit : trade.entryPrice,
     fillColor: 'rgba(38, 166, 154, 0.25)',
-    label: `${prefix}TP: ${tpPercent.toFixed(2)}% RR: ${rrText}`,
+    label: `${prefix}TP: ${tpPercent?.toFixed(2)}%${rrText}`,
     labelColor: '#26a69a',
   }));
 
   // SL Zone (red)
-  rectangles.push(new RectanglePrimitive({
+  if (hasSl) rectangles.push(new RectanglePrimitive({
     startTime: trade.entryTime,
     endTime: trade.exitTime,
     lowPrice: isLong ? trade.stopLoss : trade.entryPrice,
     highPrice: isLong ? trade.entryPrice : trade.stopLoss,
     fillColor: 'rgba(239, 83, 80, 0.25)',
-    label: `${prefix}SL: ${slPercent.toFixed(2)}% RR: ${rrText}`,
+    label: `${prefix}SL: ${slPercent?.toFixed(2)}%${rrText}`,
     labelColor: '#ef5350',
   }));
 

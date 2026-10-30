@@ -16,7 +16,7 @@ from `exchange:` in live.yaml (or the EXCHANGE environment variable):
     get_candle_source().append_latest_candle_parallel(...)
 
 To add an exchange: create the package, then add one line to TRADING_ADAPTERS
-(and CANDLE_SOURCES for its data feed).
+(and CANDLE_SOURCES for its data feed, ACCOUNT_VIEWS for its read-only order list).
 """
 
 from __future__ import annotations
@@ -41,6 +41,13 @@ CANDLE_SOURCES: dict[str, str] = {
     "binance": "src.exchanges.binance.candles",
     "bybit": "src.exchanges.bybit.candles",
     "lighter": "src.exchanges.lighter.candles",
+}
+
+# name -> read-only account module (orders + positions for the web chart, see account.py)
+ACCOUNT_VIEWS: dict[str, str] = {
+    "bybit": "src.exchanges.bybit.account",
+    "binance": "src.exchanges.binance.account",
+    "lighter": "src.exchanges.lighter.account",
 }
 
 DEFAULT_EXCHANGE = "bybit"
@@ -131,6 +138,28 @@ def get_candle_source(name: Optional[str] = None) -> ModuleType:
     return _load(target)
 
 
+def get_account_view(name: str) -> ModuleType:
+    """The read-only account module of `name` (fetch_account, is_configured, LABEL)."""
+    target = ACCOUNT_VIEWS.get(_normalize(name))
+    if target is None:
+        raise ValueError(f"No order list for '{name}'. Known: {', '.join(sorted(ACCOUNT_VIEWS))}")
+    return _load(target)
+
+
+def account_views() -> list[dict]:
+    """Exchanges with an order list: [{name, label, configured}] (configured = API keys in .env)."""
+    views = []
+    for name in ACCOUNT_VIEWS:
+        try:
+            module = get_account_view(name)
+            label = module.label() if callable(getattr(module, "label", None)) else module.LABEL
+            configured = bool(module.is_configured())
+        except Exception:  # a missing SDK of one exchange must not hide the others
+            label, configured = name.title(), False
+        views.append({"name": name, "label": label, "configured": configured})
+    return views
+
+
 __all__ = [
     "ExchangeAdapter",
     "OrderState",
@@ -142,4 +171,7 @@ __all__ = [
     "get_exchange",
     "register_exchange",
     "get_candle_source",
+    "ACCOUNT_VIEWS",
+    "get_account_view",
+    "account_views",
 ]

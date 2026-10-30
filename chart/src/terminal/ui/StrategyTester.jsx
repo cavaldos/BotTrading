@@ -321,6 +321,7 @@ export default function StrategyTester({
           ))}
         </div>
         <span className="tv-spacer" />
+        {onCommission && (
         <label className="tv-fee" title="Fixed cost taken from every closed trade, like fee_per_trade_r in the Python backtest">
           <span>{compact ? 'Fee R' : 'Commission (R / trade)'}</span>
           <input
@@ -340,6 +341,7 @@ export default function StrategyTester({
             aria-label="Commission in R per trade"
           />
         </label>
+        )}
         <span className="tv-status tv-hide-narrow">{title}</span>
         {open && (
           <button type="button" className="tv-btn tv-btn--icon" onClick={() => setMaximized(m => !m)} aria-label={maximized ? 'Restore panel size' : 'Maximize panel'} data-tip={maximized ? 'Restore' : 'Maximize'} data-tip-side="left">

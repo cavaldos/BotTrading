@@ -34,6 +34,7 @@ APPROVAL_DEFAULTS: dict[str, Any] = {
 }
 
 POLL_SECONDS = 10
+CONFLICT_RETRY_SECONDS = 30  # back off while another instance polls the same token
 CAPTION_LIMIT = 1024       # Telegram limit for photo captions
 MESSAGE_LIMIT = 4096       # Telegram limit for text messages
 
@@ -295,6 +296,7 @@ class TelegramChannel:
             self.on_log(f"Telegram click ignored: {message}")
 
     def _run(self) -> None:
+        in_conflict = False
         while not self._stop.is_set():
             try:
                 updates = self._call(
@@ -305,9 +307,22 @@ class TelegramChannel:
                     allowed_updates=["callback_query"],
                 )
             except Exception as exc:
+                if "Conflict" in str(exc):
+                    # Telegram allows one reader per token: another bot (e.g. the VPS) uses the same TELEGRAM_TOKEN.
+                    if not in_conflict:
+                        self.on_error(
+                            "another bot instance is reading this Telegram token - button clicks may be lost; "
+                            "run only one bot per token (or set approval.telegram: false on this machine)"
+                        )
+                        in_conflict = True
+                    self._stop.wait(CONFLICT_RETRY_SECONDS)
+                    continue
                 self.on_error(f"poll failed: {exc}")
                 self._stop.wait(5)
                 continue
+            if in_conflict:
+                self.on_log("Telegram polling resumed (no other bot instance on this token)")
+                in_conflict = False
             for update in updates or []:
                 self._offset = update["update_id"] + 1
                 query = update.get("callback_query")

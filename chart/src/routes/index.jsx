@@ -1,6 +1,7 @@
 import { lazy } from 'react';
 
 const TerminalPage = lazy(() => import('@/terminal/TerminalPage'));
+const OrdersPage = lazy(() => import('@/terminal/OrdersPage'));
 const SnapshotPage = lazy(() => import('@/pages/Snapshot'));
 const BacktestRedirect = lazy(() => import('@/terminal/LegacyRedirects').then(m => ({ default: m.BacktestRedirect })));
 const LiveRedirect = lazy(() => import('@/terminal/LegacyRedirects').then(m => ({ default: m.LiveRedirect })));
@@ -13,6 +14,13 @@ const Router = [
         name: 'Chart',
         path: '/',
         component: TerminalPage,
+        Layout: null,
+    },
+    {
+        // Every order and position on the exchange accounts (read-only)
+        name: 'Exchange orders',
+        path: '/orders',
+        component: OrdersPage,
         Layout: null,
     },
     {

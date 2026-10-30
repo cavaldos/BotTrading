@@ -85,6 +85,7 @@ export class ChartEngine {
     this.trades = [];
     this.tradeByTime = new Map();
     this.markersData = [];
+    this.exchangeMarkers = [];
     this.indicators = new Map();
     this.volumeVisible = true;
     this.dataKey = null;
@@ -418,13 +419,39 @@ export class ChartEngine {
   _rebuildTradeLayer() {
     const shapes = [];
     this.trades.forEach((t, i) => {
-      if ([t.entryPrice, t.stopLoss, t.takeProfit, t.entryTime].every(Number.isFinite)) {
+      // Exchange trades may lack a stop or a target: draw the zone that is known
+      if ([t.entryPrice, t.entryTime].every(Number.isFinite) && (Number.isFinite(t.stopLoss) || Number.isFinite(t.takeProfit))) {
         const exitTime = Number.isFinite(t.exitTime) ? t.exitTime : this.times[this.times.length - 1];
         shapes.push(...createTradeZones({ ...t, exitTime }, t.n ?? i + 1));
       }
     });
-    shapes.push(...createMarkerPrimitives(this.markersData, this.display, this.times));
+    const markers = this.exchangeMarkers.length
+      ? [...this.markersData, ...this._snapMarkers(this.exchangeMarkers)].sort((a, b) => a.time - b.time)
+      : this.markersData;
+    shapes.push(...createMarkerPrimitives(markers, this.display, this.times));
     this.tradeLayer.setPrimitives(shapes, this.times);
+  }
+
+  /** Fills on the exchange account: [{ time (any unix seconds), position, shape, color, text }]. */
+  setExchangeMarkers(markers) {
+    this.exchangeMarkers = markers || [];
+    this._rebuildTradeLayer();
+  }
+
+  // Exchange times fall inside a bar: move each marker to the bar that contains it
+  _snapMarkers(markers) {
+    const times = this.times;
+    const n = times.length;
+    if (!n) return [];
+    const bar = n > 1 ? times[n - 1] - times[n - 2] : 60;
+    const out = [];
+    markers.forEach(m => {
+      const t = Number(m.time);
+      if (!Number.isFinite(t) || t < times[0] || t >= times[n - 1] + bar) return;
+      const i = lowerBound(times, t);
+      out.push({ ...m, time: times[i] === t ? t : times[i - 1] });
+    });
+    return out;
   }
 
   setSmcPrimitives(primitives) {
@@ -451,7 +478,7 @@ export class ChartEngine {
       price: l.price,
       color: l.color,
       lineWidth: l.width || 1,
-      lineStyle: l.dashed === false ? LineStyle.Solid : LineStyle.Dashed,
+      lineStyle: l.style === 'dotted' ? LineStyle.Dotted : l.dashed === false ? LineStyle.Solid : LineStyle.Dashed,
       axisLabelVisible: true,
       title: l.title || '',
     }));
@@ -464,7 +491,21 @@ export class ChartEngine {
     const l2 = Number.isFinite(trade.exitTime) ? (timeToLogical(this.times, trade.exitTime) ?? l1) : l1;
     this.chart.timeScale().setVisibleLogicalRange({ from: l1 - barsAround, to: Math.max(l2, l1) + barsAround });
 
-    const prices = [trade.entryPrice, trade.stopLoss, trade.takeProfit, trade.exitPrice].map(Number).filter(Number.isFinite);
+    // `priceRange`: extra prices to keep in view (e.g. the bars around an exchange fill)
+    // null = not known (open trade without exit, exchange trade without a stop): Number(null) would be 0
+    const prices = [trade.entryPrice, trade.stopLoss, trade.takeProfit, trade.exitPrice, ...(trade.priceRange || [])]
+      .filter(v => v != null && v !== '').map(Number).filter(Number.isFinite);
+    // The bars the trade lasted stay whole (a move past the stop / target is not cut off)
+    const n = this.times.length;
+    if (entry >= this.times[0] && entry <= this.times[n - 1]) {
+      const end = Number.isFinite(trade.exitTime) ? trade.exitTime : this.times[n - 1];
+      const i1 = Math.min(n - 1, lowerBound(this.times, entry));
+      const i2 = Math.min(n - 1, lowerBound(this.times, end));
+      for (let i = i1; i <= i2 && i - i1 < 2000; i += 1) {
+        const bar = this.display[i];
+        if (bar) prices.push(bar.high, bar.low);
+      }
+    }
     if (prices.length) {
       const low = Math.min(...prices);
       const high = Math.max(...prices);
