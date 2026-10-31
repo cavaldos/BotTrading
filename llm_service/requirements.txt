@@ -1,0 +1,7 @@
+# Both are already in the bot's requirements.txt, so the bot's venv can import llm_service as is.
+httpx>=0.27
+python-dotenv>=1.0
+
+# Only for running llm_service/tests:
+# pytest
+# pytest-asyncio
