@@ -48,6 +48,7 @@ from src.indicators.export import (
 config = load_backtest_config(include_strategy=True)
 DATA_DIR = config.get('folder_path', 'res/data')
 OUTPUT_DIR = 'chart/public/data/indicators'
+BACKTEST_CHART_DIR = 'chart/public/data/orders'
 
 strategy_config = config.get('strategy', {}) if isinstance(config.get('strategy', {}), dict) else {}
 try:
@@ -214,6 +215,16 @@ def export_symbols_list(symbols: List[dict]):
     print(f"\nSymbols list saved to {output_file}")
 
 
+def backtest_timeframes() -> set:
+    """Timeframes listed in the backtest chart export (chart/public/data/orders/symbols.json)."""
+    try:
+        with open(os.path.join(BACKTEST_CHART_DIR, 'symbols.json'), 'r', encoding='utf-8') as f:
+            entries = json.load(f).get('symbols', [])
+    except (OSError, ValueError, AttributeError):
+        return set()
+    return {e['timeframe'] for e in entries if isinstance(e, dict) and e.get('timeframe')}
+
+
 # ==================== ENTRY POINT ====================
 
 def main():
@@ -222,6 +233,15 @@ def main():
     parser.add_argument("--tfs", default="", help="Comma-separated timeframes to export, e.g. 1m,5m,15m,1h,4h")
     args = parser.parse_args()
     tfs = [tf.strip() for tf in args.tfs.split(',') if tf.strip()]
+
+    native_infos = scan_data_files()
+    if not tfs:
+        # Native files plus every timeframe the backtest chart shows, so the
+        # Backtest source finds its SMC overlay (indicators/<SYMBOL>_<TF>.json)
+        backtest_tfs = backtest_timeframes()
+        if backtest_tfs:
+            tfs = sorted({info['timeframe'] for info in native_infos} | backtest_tfs,
+                         key=lambda tf: parse_timeframe_minutes(tf) or 0)
 
     print("=" * 60)
     print("SMC Indicators - Export All to JSON")
@@ -232,7 +252,9 @@ def main():
 
     # Scan for data files
     print(f"\nScanning {DATA_DIR}/ for data files...")
-    symbol_infos = plan_exports(scan_data_files(), tfs)
+    if tfs:
+        print(f"Timeframes: {', '.join(tfs)}")
+    symbol_infos = plan_exports(native_infos, tfs)
 
     if not symbol_infos:
         print("No data files found!")

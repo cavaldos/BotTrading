@@ -218,7 +218,8 @@ def to_json(imbalances: List[Imbalance]) -> List[dict]:
     result = []
     for imb in imbalances:
         result.append({
-            'time': int(imb.time.timestamp()),
+            # pd.Timestamp reads naive times as UTC like the candles; datetime.timestamp() would use local time
+            'time': int(pd.Timestamp(imb.time).timestamp()),
             'high': imb.high,
             'low': imb.low,
             'bias': imb.bias,
