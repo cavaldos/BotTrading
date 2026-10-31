@@ -62,13 +62,13 @@ async function fetchJson(url, { bust = false, signal } = {}) {
  */
 export function useSymbolList(sourceId) {
   const source = SOURCES[sourceId] || SOURCES.backtest;
-  const [state, setState] = useState({ symbols: [], loading: true, error: null, sourceId });
+  const [state, setState] = useState({ symbols: [], signalTfs: [], loading: true, error: null, sourceId });
 
   useEffect(() => {
     let cancelled = false;
     let lastText = null;
     const load = (initial) => {
-      if (initial) setState({ symbols: [], loading: true, error: null, sourceId });
+      if (initial) setState({ symbols: [], signalTfs: [], loading: true, error: null, sourceId });
       const url = source.live ? `${source.base}/symbols.json?t=${Date.now()}` : `${source.base}/symbols.json`;
       fetch(url)
         .then(res => {
@@ -85,7 +85,14 @@ export function useSymbolList(sourceId) {
           }
           const json = JSON.parse(text);
           lastText = text;
-          setState({ symbols: Array.isArray(json.symbols) ? json.symbols : [], loading: false, error: null, sourceId });
+          setState({
+            symbols: Array.isArray(json.symbols) ? json.symbols : [],
+            // Signal timeframes of the strategy config: the main timeframe buttons
+            signalTfs: Array.isArray(json.signalTimeframes) ? json.signalTimeframes : [],
+            loading: false,
+            error: null,
+            sourceId,
+          });
         })
         .catch(err => {
           if (cancelled) return;
@@ -101,7 +108,7 @@ export function useSymbolList(sourceId) {
     };
   }, [sourceId, source]);
 
-  return state.sourceId === sourceId ? state : { symbols: [], loading: true, error: null };
+  return state.sourceId === sourceId ? state : { symbols: [], signalTfs: [], loading: true, error: null };
 }
 
 function hasSmc(json) {

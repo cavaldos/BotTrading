@@ -32,7 +32,7 @@ from typing import List, Dict
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from src.config import load_backtest_config
+from src.config import load_backtest_config, load_strategy_config
 
 from src.core.timeframe import convert_timeframe, parse_timeframe_minutes
 from src.indicators.export import (
@@ -210,6 +210,8 @@ def export_symbols_list(symbols: List[dict]):
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump({
             'symbols': symbols,
+            # Main timeframes of the chart's timeframe bar (strategy config)
+            'signalTimeframes': list(load_strategy_config().get('signal_timeframe') or []),
             'exportedAt': datetime.now().isoformat(),
         }, f, indent=2)
     print(f"\nSymbols list saved to {output_file}")

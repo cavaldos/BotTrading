@@ -463,6 +463,8 @@ def write_symbols(entries: dict[str, dict]) -> None:
     symbols = sorted(entries.values(), key=lambda e: (e["symbol"], _tf_minutes(e["timeframe"])))
     write_json_atomic(OUTPUT_DIR / "symbols.json", {
         "symbols": symbols,
+        # Main timeframes of the chart's timeframe bar (strategy config)
+        "signalTimeframes": SIGNAL_TFS,
         "exportedAt": datetime.now().isoformat(timespec="seconds"),
         "isLive": True,
     })

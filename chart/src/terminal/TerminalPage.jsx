@@ -151,8 +151,16 @@ export default function TerminalPage() {
   const symbolList = useSymbolList(source);
   const groups = useMemo(() => groupSymbols(symbolList.symbols), [symbolList.symbols]);
   const group = groups.find(g => g.symbol === symbol) || groups[0] || null;
-  const tfOptions = useMemo(() => buildTimeframeOptions(group?.tfs || []), [group]);
-  const tfOption = tfOptions.find(o => o.tf === normalizeTf(tf)) || tfOptions.find(o => o.native) || null;
+  // Signal timeframes of the strategy config are the main ones; the rest stay in the menu
+  const signalTfKey = (symbolList.signalTfs || []).map(normalizeTf).join(',');
+  const tfOptions = useMemo(() => {
+    const main = new Set(signalTfKey ? signalTfKey.split(',') : []);
+    return buildTimeframeOptions(group?.tfs || []).map(o => ({ ...o, main: main.has(o.tf) }));
+  }, [group, signalTfKey]);
+  const tfOption = tfOptions.find(o => o.tf === normalizeTf(tf))
+    || tfOptions.find(o => o.main)
+    || tfOptions.find(o => o.native)
+    || null;
   const activeSymbol = group?.symbol || null;
   const activeTf = tfOption?.tf || null;
   const sourceDef = SOURCES[source];

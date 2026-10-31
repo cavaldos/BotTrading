@@ -35,6 +35,7 @@ strategy_config = load_strategy_config()
 DATA_DIR = config.get('folder_path', 'res/data')
 TRADES_DIR = config.get('output_folder', 'res/output')
 ENTRY_TIMEFRAME = strategy_config.get('entry_timeframe', '1m')
+SIGNAL_TIMEFRAMES = list(strategy_config.get('signal_timeframe') or [])
 OUTPUT_DIR = 'chart/public/data/orders'
 CONVERTED_DATA_DIR = 'res/data_converted'
 
@@ -370,6 +371,8 @@ def export_symbols_list(symbols: list[dict]):
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump({
             'symbols': symbols,
+            # Main timeframes of the chart's timeframe bar (strategy config)
+            'signalTimeframes': SIGNAL_TIMEFRAMES,
             'exportedAt': datetime.now().isoformat(),
         }, f, indent=2)
     print(f"\nSymbols list saved to {output_file}")

@@ -24,14 +24,19 @@ const QUICK = ['1m', '5m', '15m', '1h', '4h', '1D'];
 function TimeframeMenu({ options, value, onChange, compact }) {
   const ref = useRef(null);
   const [open, setOpen] = useState(false);
-  const groups = {};
+  // With signal timeframes in the config, they are the buttons and the first menu group;
+  // every other timeframe is only in the menu, under "Other"
+  const hasMain = options.some(o => o.main);
+  const groups = hasMain ? { 'Signal timeframes (config)': [] } : {};
   options.forEach(o => {
-    const g = tfGroup(o.tf);
+    const g = !hasMain ? tfGroup(o.tf) : (o.main ? 'Signal timeframes (config)' : `Other · ${tfGroup(o.tf)}`);
     (groups[g] = groups[g] || []).push(o);
   });
 
-  // Quick buttons: files that exist plus common TFs, always including the current one
-  const quick = options.filter(o => o.native || QUICK.includes(o.tf)).slice(0, 6);
+  // Quick buttons: the signal timeframes (else files that exist plus common TFs), always including the current one
+  const quick = hasMain
+    ? options.filter(o => o.main)
+    : options.filter(o => o.native || QUICK.includes(o.tf)).slice(0, 6);
   if (value && !quick.some(o => o.tf === value)) {
     const cur = options.find(o => o.tf === value);
     if (cur) quick.push(cur);
