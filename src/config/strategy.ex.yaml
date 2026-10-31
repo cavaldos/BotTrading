@@ -69,7 +69,22 @@ fee_per_trade_r: 0.5 # default: 0.5 (phí giao dịch tính bằng R, trừ cho 
 
 
 # Flexible TP
-tp_mode: "htf_liquidity_or_rr" # default: "htf_liquidity_or_rr" ("fixed_rr" | "opposite_ob" | "opposite_swing" | "opposite_ob_or_swing" | "htf_liquidity" | "htf_liquidity_or_rr")
+tp_mode: "htf_level_or_rr" # default: "htf_liquidity_or_rr" ("fixed_rr" | "opposite_ob" | "opposite_swing" | "opposite_ob_or_swing" | "htf_liquidity" | "htf_liquidity_or_rr" | "htf_level" | "htf_level_or_rr")
 tp_no_target_policy: "fixed_rr" # default: "fixed_rr" ("skip" | "fixed_rr")
 tp_swing_length: 5 # default: 5
 flex_tp_risk_boost_factor: 0.0 # default: 0.0 (boost risk_per_trade when flex RR is above base RR)
+
+
+# SL / TP at higher-timeframe key levels (swing highs/lows, EQH/EQL, OB, FVG)
+# The first timeframe in the list that has a usable level wins (15m, else 10m); SL and TP are picked separately.
+# Only levels already confirmed and not yet traded through at entry are used.
+# Trades CSV columns SL_Source / TP_Source say where they went (e.g. "15m swing low", "10m OB", "OB", "RR").
+level_timeframe: ["15m", "10m"] # default: [] (off)
+level_sources: ["swing", "eqhl", "ob", "fvg"] # default: all four
+level_swing_length: 5 # default: 5 (candles on each side of a swing high/low)
+level_lookback_bars: 200 # default: 200 (only levels formed in the last N level candles, 0 = all)
+sl_mode: "level_or_zone" # default: "zone" ("zone" = entry OB | "level" = key level or skip | "level_or_zone" = key level, else entry OB)
+level_sl_buffer_pct: 0.05 # default: 0.05 (SL this % beyond the level)
+max_sl_pct: 0.0 # default: 0.0 (a level SL wider than this % does not count, 0 = no limit)
+level_tp_buffer_pct: 0.0 # default: 0.0 (TP this % before the level)
+level_tp_min_rr: 1.0 # default: 1.0 (TP level must give at least this RR; 0 = nearest level; used with tp_mode htf_level / htf_level_or_rr)

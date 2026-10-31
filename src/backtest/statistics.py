@@ -50,7 +50,9 @@ class Trade:
     zone_low: Optional[float] = None
     zone_time: Optional[datetime] = None
     zone_type: str = ""
-    
+    sl_source: str = ""
+    tp_source: str = ""
+
     # Exit info (calculated by TradeSimulator)
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -251,6 +253,8 @@ class TradeSimulator:
                 zone_low=getattr(signal, 'zone_low', None),
                 zone_time=getattr(signal, 'zone_time', None),
                 zone_type=getattr(signal, 'zone_type', ''),
+                sl_source=getattr(signal, 'sl_source', ''),
+                tp_source=getattr(signal, 'tp_source', ''),
                 exit_time=exit_time_dt,
                 exit_price=exit_price,
                 result=result_map[result_code],
@@ -310,6 +314,8 @@ def generate_trade_orders(trades: List[Trade], output_dir: str, symbol: str) -> 
             'Zone_Low': round_price(t.zone_low) if t.zone_low is not None else None,
             'Zone_Time': t.zone_time,
             'Zone_Type': t.zone_type,
+            'SL_Source': t.sl_source,
+            'TP_Source': t.tp_source,
         })
     
     df = pd.DataFrame(data)

@@ -1,0 +1,6 @@
+files:
+  - .env
+  - llm_service/.env
+  - src/config/backtest.yaml
+  - src/config/live.yaml
+  - src/config/strategy.yaml

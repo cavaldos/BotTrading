@@ -64,6 +64,7 @@ Core flow:
 5. Reversal: `require_reversal_pattern`, `reversal_pattern_ids`, `min_reversal_pattern_matches`, `doji_body_ratio`, `tweezer_tolerance_ratio`, `enable_simple_reversal`, `simple_reversal_wick_ratio`
 6. Risk: `risk_reward_ratio`, `sl_buffer_pct`, `sl_multiplier`, `min_sl_pct`, `risk_per_trade`, `fee_per_trade_r` (report only)
 7. Take profit: `tp_mode`, `tp_no_target_policy`, `tp_swing_length`, `flex_tp_risk_boost_factor`
+8. Higher-timeframe key levels for SL / TP (Section 7.1): `level_timeframe`, `level_sources`, `level_swing_length`, `level_lookback_bars`, `sl_mode`, `level_sl_buffer_pct`, `max_sl_pct`, `level_tp_buffer_pct`, `level_tp_min_rr`
 
 `entry_on_candle_close` exists in `BaseConfig` but SMC ignores it: entries always fill at the confirmation candle close.
 
@@ -160,10 +161,27 @@ TP modes (`tp_mode`):
 | `opposite_ob_or_swing` | both |
 | `htf_liquidity` | opposite OB, EQH/EQL, FVG/IFVG |
 | `htf_liquidity_or_rr` | as above, fixed RR if none |
+| `htf_level` | key level of `level_timeframe` (Section 7.1), skip the trade if none |
+| `htf_level_or_rr` | as above, fixed RR if none |
 
-Selection: prefer targets with RR ≥ `risk_reward_ratio` (closest to it); otherwise the highest-RR target. If the structural RR is above the fixed RR, the **executed TP is capped at the fixed RR** and `risk_per_trade` is boosted by `1 + flex_tp_risk_boost_factor * (flex_rr - base_rr)`. No target → `tp_no_target_policy` (`skip` or `fixed_rr`).
+Selection (all modes except `htf_level*`): prefer targets with RR ≥ `risk_reward_ratio` (closest to it); otherwise the highest-RR target. If the structural RR is above the fixed RR, the **executed TP is capped at the fixed RR** and `risk_per_trade` is boosted by `1 + flex_tp_risk_boost_factor * (flex_rr - base_rr)`. No target → `tp_no_target_policy` (`skip` or `fixed_rr`).
 
 Prices are rounded with `round_price(...)`.
+
+### 7.1 Higher-timeframe key levels (`src/strategy/smc/key_levels.py`)
+
+`level_timeframe` (e.g. `["15m", "10m"]`) lists timeframes in priority order; each is resampled from the entry-TF (1m) data. Levels per timeframe (`level_sources`):
+- `swing`: swing high/low = candle above/below the `level_swing_length` candles on each side
+- `eqhl`: EQH / EQL (`eqhl_length`, `eqhl_threshold`)
+- `ob`: order blocks (`swing_length`, `internal_length`, `ob_body_ratio`)
+- `fvg`: fair value gaps (`fvg_atr_filter`)
+
+Support = swing lows, EQL, bullish OB/FVG; resistance = the mirror. A level is used only when it was confirmed (close of the confirming level-TF candle) at or before the decision time, no 1m candle has traded through it yet (support: low below its low; resistance: high above its high), and it formed within the last `level_lookback_bars` level candles.
+
+- SL (`sl_mode: level | level_or_zone`), LONG: nearest support below the entry with `stop = support.low * (1 - level_sl_buffer_pct/100)` at least `min_sl_pct` away; skipped if wider than `max_sl_pct` (> 0). SHORT: mirror with resistance highs.
+- TP (`tp_mode: htf_level | htf_level_or_rr`), LONG: nearest resistance above the entry with `tp = resistance.low * (1 - level_tp_buffer_pct/100)` and RR ≥ `level_tp_min_rr`. Not capped at `risk_reward_ratio`. SHORT: mirror with support highs.
+- SL and TP each use the first timeframe in the list that has a usable level (15m, else 10m). None on any timeframe: `level_or_zone` → OB SL, `htf_level_or_rr` → fixed RR TP; `level` / `htf_level` → skip the trade.
+- The trades CSV columns `SL_Source` / `TP_Source` record the choice, e.g. `15m swing low`, `10m OB`, `OB`, `RR`.
 
 ---
 
@@ -207,6 +225,7 @@ Each family counts at most once per candle.
 - Multi-TF confirmation candles start after the signal bar closes.
 - Entry fills at the confirmation candle close (the pattern is unknown before that).
 - HTF trend uses only closed HTF candles.
+- Key levels for SL / TP: known from the close of the confirming level-TF candle, dropped from the 1m candle that trades through them (tests/test_key_levels.py checks that truncating the data does not change earlier signals).
 - Live: `execute.py` drops still-forming candles on both entry TF and signal TF.
 
 ---

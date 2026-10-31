@@ -70,8 +70,8 @@ swings, and optional FVG/IFVG confluence detection.
 
 import warnings
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple, cast
+from dataclasses import dataclass, field, replace
+from typing import Any, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -96,7 +96,15 @@ from src.indicators.FVG import detect_fvg, FairValueGap
 from src.indicators.ifvg import detect_ifvg, InverseFairValueGap
 from src.indicators.swing import detect_swings, Swing as IndicatorSwing
 from src.indicators.adx import compute_adx_jit
-from src.core.timeframe import convert_timeframe
+from src.core.timeframe import convert_timeframe, normalize_timeframes
+from src.strategy.smc.key_levels import (
+    LEVEL_SOURCES,
+    KeyLevelParams,
+    KeyLevels,
+    build_key_levels,
+    pick_stop,
+    pick_target,
+)
 
 
 # ==================== STRATEGY NAME ====================
@@ -188,6 +196,8 @@ class Config(BaseConfig):
     # opposite_ob_or_swing: combine both target sources
     # htf_liquidity: TP from opposite liquidity only (OB, EQH/EQL, FVG/IFVG)
     # htf_liquidity_or_rr: same as htf_liquidity, fallback to fixed RR if no target
+    # htf_level: TP at a key level of level_timeframe (skip the trade if none)
+    # htf_level_or_rr: same as htf_level, fallback to fixed RR if no level
     tp_mode: str = "opposite_ob_or_swing"
     # skip: reject trade when no structural target exists
     # fixed_rr: fallback to classic RR TP when no structural target exists
@@ -197,6 +207,24 @@ class Config(BaseConfig):
     # Extra risk multiplier per 1R above the configured base RR.
     # effective_risk = risk_per_trade * (1 + factor * max(0, flex_rr - base_rr))
     flex_tp_risk_boost_factor: float = 0.0
+
+    # === SL / TP AT HIGHER-TIMEFRAME KEY LEVELS ===
+    # [] = off. e.g. ["15m", "10m"]: SL / TP go to the swing highs/lows and key
+    # zones (EQH/EQL, OB, FVG) of these timeframes that are known and not yet
+    # traded through at entry. The first timeframe in the list that has a
+    # usable level wins (15m, else 10m); SL and TP are picked separately.
+    level_timeframe: Union[str, List[str]] = field(default_factory=list)
+    level_sources: List[str] = field(default_factory=lambda: list(LEVEL_SOURCES))  # swing | eqhl | ob | fvg
+    level_swing_length: int = 5          # candles on each side of a swing high/low
+    level_lookback_bars: int = 200       # only levels formed in the last N level candles (0 = all)
+    # zone: SL from the entry OB (as before)
+    # level: SL beyond the nearest key level, skip the trade if there is none
+    # level_or_zone: key level, else the entry OB SL
+    sl_mode: str = "zone"
+    level_sl_buffer_pct: float = 0.05    # SL this % beyond the level
+    max_sl_pct: float = 0.0              # a level SL wider than this % does not count (0 = no limit)
+    level_tp_buffer_pct: float = 0.0     # TP this % before the level
+    level_tp_min_rr: float = 1.0         # TP level must give at least this RR (0 = nearest level)
 
     def __post_init__(self) -> None:
         pattern_ids = list(self.reversal_pattern_ids or [])
@@ -256,6 +284,15 @@ class Config(BaseConfig):
             "enable_adx_filter": self.enable_adx_filter,
             "adx_length": self.adx_length,
             "adx_threshold": self.adx_threshold,
+            "level_timeframe": self.level_timeframe,
+            "level_sources": self.level_sources,
+            "level_swing_length": self.level_swing_length,
+            "level_lookback_bars": self.level_lookback_bars,
+            "sl_mode": self.sl_mode,
+            "level_sl_buffer_pct": self.level_sl_buffer_pct,
+            "max_sl_pct": self.max_sl_pct,
+            "level_tp_buffer_pct": self.level_tp_buffer_pct,
+            "level_tp_min_rr": self.level_tp_min_rr,
         }
 
 
@@ -340,6 +377,7 @@ class Strategy(BaseStrategy):
         super().__init__(config)
         self.config: Config = config  # type narrowing: BaseConfig → Config
         self._tp_context: dict[str, Any] | None = None
+        self._key_levels: List[KeyLevels] = []
 
     def generate_signals(self, df: pd.DataFrame, symbol: str, df_entry: pd.DataFrame | None = None) -> List[Signal]:
         return self._generate_signals_core(df=df, symbol=symbol, df_entry=df_entry)
@@ -424,6 +462,7 @@ class Strategy(BaseStrategy):
             entry_closes = entry_df['Close'].to_numpy(dtype=np.float64)
 
         trend_filter = self._build_trend_filter(entry_df if use_multi_tf and df_entry is not None else df)
+        self._key_levels = self._build_key_levels(entry_df if use_multi_tf and df_entry is not None else df)
         entry_tf_minutes = max(1, parse_timeframe_minutes(self.config.entry_timeframe))
         single_tf_minutes = max(1, parse_timeframe_minutes(self.config.signal_timeframe))
 
@@ -642,7 +681,7 @@ class Strategy(BaseStrategy):
                 remaining_gap_zones.append(gap_zone)
             active_gap_zones = remaining_gap_zones
 
-            self._tp_context = {
+            tp_context: dict[str, Any] = {
                 "current_index": i,
                 "current_high": float(highs[i]),
                 "current_low": float(lows[i]),
@@ -654,6 +693,7 @@ class Strategy(BaseStrategy):
                 "confirmed_eqh_levels": confirmed_eqh_levels,
                 "confirmed_eql_levels": confirmed_eql_levels,
             }
+            self._tp_context = tp_context
 
             # 3d. Check mitigation & entry for each active OB
             remaining_obs = []
@@ -721,6 +761,7 @@ class Strategy(BaseStrategy):
                             if precise_entry:
                                 trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
                                 decision_time = precise_entry.entry_time + timedelta(minutes=entry_tf_minutes)
+                                tp_context["decision_time"] = decision_time
                                 if not self._passes_trend_filter(trend_filter, trade_type, decision_time):
                                     remaining_obs.append(ob)
                                     continue
@@ -770,6 +811,7 @@ class Strategy(BaseStrategy):
                                 continue
                             trade_type = 'LONG' if ob.bias == 'BULLISH' else 'SHORT'
                             decision_time = current_time + timedelta(minutes=single_tf_minutes)
+                            tp_context["decision_time"] = decision_time
                             if not self._passes_trend_filter(trend_filter, trade_type, decision_time):
                                 remaining_obs.append(ob)
                                 continue
@@ -851,6 +893,103 @@ class Strategy(BaseStrategy):
         if trade_type == 'LONG':
             return bool(closes[idx] > ema[idx])
         return bool(closes[idx] < ema[idx])
+
+    # ==================== HIGHER-TIMEFRAME KEY LEVELS (SL / TP) ====================
+
+    def _normalize_sl_mode(self) -> str:
+        mode = str(self.config.sl_mode or "zone").strip().lower()
+        return mode if mode in {"zone", "level", "level_or_zone"} else "zone"
+
+    def _level_timeframes(self) -> List[str]:
+        return normalize_timeframes(self.config.level_timeframe or [])
+
+    def _uses_level_targets(self) -> bool:
+        return self._normalize_tp_mode() in {"htf_level", "htf_level_or_rr"}
+
+    def _build_key_levels(self, source_df: pd.DataFrame) -> List[KeyLevels]:
+        """Key levels of each level_timeframe, in priority order, when the SL or TP uses them."""
+        if self._normalize_sl_mode() == "zone" and not self._uses_level_targets():
+            return []
+        if source_df is None or source_df.empty:
+            return []
+        params = KeyLevelParams(
+            sources=tuple(str(item).strip().lower() for item in (self.config.level_sources or [])),
+            swing_length=max(1, int(self.config.level_swing_length)),
+            ob_swing_length=max(1, int(self.config.swing_length)),
+            ob_internal_length=max(1, int(self.config.internal_length)),
+            ob_body_ratio=float(self.config.ob_body_ratio),
+            fvg_auto_threshold=bool(self.config.fvg_atr_filter),
+            eqhl_length=max(1, int(self.config.eqhl_length)),
+            eqhl_threshold=float(self.config.eqhl_threshold),
+        )
+        levels: List[KeyLevels] = []
+        for tf in self._level_timeframes():
+            item = build_key_levels(source_df, tf, params)
+            if item is not None:
+                levels.append(item)
+        return levels
+
+    def _decision_ns(self) -> Optional[int]:
+        decision_time = (self._tp_context or {}).get("decision_time")
+        if decision_time is None:
+            return None
+        return int(pd.Timestamp(decision_time).value)
+
+    def _level_stop(self, entry: float, trade_type: str) -> Optional[Tuple[float, str]]:
+        """(SL, source) from the first level timeframe that has a usable level."""
+        decision_ns = self._decision_ns()
+        if decision_ns is None:
+            return None
+        for levels in self._key_levels:
+            found = pick_stop(
+                levels,
+                entry=entry,
+                trade_type=trade_type,
+                decision_ns=decision_ns,
+                buffer_pct=float(self.config.level_sl_buffer_pct),
+                min_sl_pct=float(self.config.min_sl_pct),
+                max_sl_pct=float(self.config.max_sl_pct),
+                lookback_bars=int(self.config.level_lookback_bars),
+            )
+            if found is not None:
+                return found
+        return None
+
+    def _level_target(self, entry: float, stop_loss: float, trade_type: str) -> Optional[Tuple[float, float, str]]:
+        """(TP, RR, source) from the first level timeframe that has a usable level."""
+        decision_ns = self._decision_ns()
+        if decision_ns is None:
+            return None
+        for levels in self._key_levels:
+            found = pick_target(
+                levels,
+                entry=entry,
+                stop_loss=stop_loss,
+                trade_type=trade_type,
+                decision_ns=decision_ns,
+                buffer_pct=float(self.config.level_tp_buffer_pct),
+                min_rr=float(self.config.level_tp_min_rr),
+                lookback_bars=int(self.config.level_lookback_bars),
+            )
+            if found is not None:
+                return found
+        return None
+
+    def _plan_with_stop(self, entry: float, trade_type: str, stop_loss: float, sl_source: str) -> Optional[TradePlan]:
+        """Plan with this SL and the fixed-RR TP."""
+        if (trade_type == "LONG" and stop_loss >= entry) or (trade_type == "SHORT" and stop_loss <= entry):
+            return None
+        risk = abs(entry - stop_loss)
+        rr = float(self.config.risk_reward_ratio)
+        take_profit = entry + risk * rr if trade_type == "LONG" else entry - risk * rr
+        return TradePlan(
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            rr_ratio=self._compute_rr_ratio(entry, stop_loss, take_profit),
+            base_risk_per_trade=self.config.risk_per_trade,
+            risk_per_trade=self.config.risk_per_trade,
+            sl_source=sl_source,
+        )
 
     def _classify_ob_structure(
         self,
@@ -1390,6 +1529,8 @@ class Strategy(BaseStrategy):
             "opposite_ob_or_swing",
             "htf_liquidity",
             "htf_liquidity_or_rr",
+            "htf_level",
+            "htf_level_or_rr",
         }
         if mode not in valid_modes:
             return "opposite_ob_or_swing"
@@ -1641,9 +1782,13 @@ class Strategy(BaseStrategy):
         """
         Compute SL/TP with flexible TP mode and per-signal risk sizing.
 
-        SL is inherited from BaseStrategy.
-        TP execution is capped at base RR when structure TP extends beyond it.
-        In that case, risk_per_trade is boosted from the selected structure RR.
+        SL is inherited from BaseStrategy (entry OB), or placed beyond the
+        nearest key level of level_timeframe when sl_mode is level / level_or_zone.
+        tp_mode htf_level / htf_level_or_rr: TP at the nearest key level with
+        RR >= level_tp_min_rr (no cap).
+        Other TP modes: TP execution is capped at base RR when structure TP
+        extends beyond it. In that case, risk_per_trade is boosted from the
+        selected structure RR.
         """
         base_plan = super()._build_trade_plan(
             entry=entry,
@@ -1652,12 +1797,39 @@ class Strategy(BaseStrategy):
             candle_high=candle_high,
             candle_low=candle_low,
         )
+
+        sl_mode = self._normalize_sl_mode()
+        if sl_mode != "zone":
+            level_stop = self._level_stop(entry, trade_type)
+            if level_stop is not None:
+                base_plan = self._plan_with_stop(entry, trade_type, level_stop[0], level_stop[1])
+            elif sl_mode == "level":
+                return None
+            elif base_plan is not None:
+                base_plan = replace(base_plan, sl_source="OB")
         if base_plan is None:
             return None
 
         tp_mode = self._normalize_tp_mode()
         if tp_mode == "fixed_rr":
             return base_plan
+
+        if tp_mode in {"htf_level", "htf_level_or_rr"}:
+            target = self._level_target(entry, base_plan.stop_loss, trade_type)
+            if target is None:
+                return replace(base_plan, tp_source="RR") if tp_mode == "htf_level_or_rr" else None
+            take_profit, rr_ratio, tp_source = target
+            return TradePlan(
+                stop_loss=base_plan.stop_loss,
+                take_profit=take_profit,
+                rr_ratio=rr_ratio,
+                flex_take_profit=take_profit,
+                flex_rr_ratio=rr_ratio,
+                base_risk_per_trade=base_plan.base_risk_per_trade,
+                risk_per_trade=base_plan.risk_per_trade,
+                sl_source=base_plan.sl_source,
+                tp_source=tp_source,
+            )
 
         structure_take_profit = self._select_take_profit_from_structure(
             entry=entry,
@@ -1688,6 +1860,7 @@ class Strategy(BaseStrategy):
                     risk_per_trade=effective_risk_per_trade,
                     risk_boost_multiplier=risk_boost_multiplier,
                     tp_capped=tp_capped,
+                    sl_source=base_plan.sl_source,
                 )
             if trade_type == "SHORT" and structure_tp < entry:
                 execution_take_profit = structure_tp
@@ -1711,6 +1884,7 @@ class Strategy(BaseStrategy):
                     risk_per_trade=effective_risk_per_trade,
                     risk_boost_multiplier=risk_boost_multiplier,
                     tp_capped=tp_capped,
+                    sl_source=base_plan.sl_source,
                 )
 
         if tp_mode == "htf_liquidity_or_rr":

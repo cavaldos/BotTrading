@@ -126,6 +126,9 @@ class BaseSignal:
     zone_low: Optional[float] = None
     zone_time: Optional[datetime] = None
     zone_type: str = ""
+    # Where SL / TP were placed, e.g. "15m swing low", "10m OB", "OB", "RR" ("" = default rules)
+    sl_source: str = ""
+    tp_source: str = ""
 
 
 @dataclass
@@ -139,6 +142,8 @@ class TradePlan:
     risk_per_trade: Optional[float] = None
     risk_boost_multiplier: float = 1.0
     tp_capped: bool = False
+    sl_source: str = ""
+    tp_source: str = ""
 
 
 # ==================== BASE STRATEGY ====================
@@ -529,6 +534,8 @@ class BaseStrategy(ABC):
             risk_per_trade=trade_plan.risk_per_trade,
             risk_boost_multiplier=trade_plan.risk_boost_multiplier,
             tp_capped=trade_plan.tp_capped,
+            sl_source=trade_plan.sl_source,
+            tp_source=trade_plan.tp_source,
             **self._zone_fields(zone),
         )
 
@@ -575,5 +582,7 @@ class BaseStrategy(ABC):
             risk_per_trade=trade_plan.risk_per_trade,
             risk_boost_multiplier=trade_plan.risk_boost_multiplier,
             tp_capped=trade_plan.tp_capped,
+            sl_source=trade_plan.sl_source,
+            tp_source=trade_plan.tp_source,
             **self._zone_fields(zone),
         )
